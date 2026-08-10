@@ -1,0 +1,60 @@
+workflow: story-delivery
+version: 1
+start: story-design
+steps:
+  - id: story-design
+    skill: story-design
+    model: claude-opus-4-8   # per-step model (backend-enforced)
+    label: Design the story
+    deadline: 900
+    "on":
+      completed: test-creator
+      changes_requested: story-design
+      escalation_required: tech-design
+  - id: tech-design
+    skill: tech-design
+    model: claude-opus-4-8   # per-step model (backend-enforced)
+    label: Revisit the architecture
+    deadline: 900
+    "on":
+      completed: story-design
+  - id: test-creator
+    skill: test-creator
+    model: claude-haiku-4-5   # per-step model (backend-enforced)
+    label: Write the tests
+    deadline: 900
+    "on":
+      completed: implement
+  - id: implement
+    skill: implement
+    model: claude-sonnet-4-6   # per-step model (backend-enforced)
+    label: Build it
+    deadline: 1800
+    "on":
+      completed: test-verify
+  - id: test-verify
+    skill: test-verify
+    model: claude-haiku-4-5   # per-step model (backend-enforced)
+    label: Verify the tests pass
+    deadline: 900
+    "on":
+      completed: code-review
+      # A failed honest-green check sends the story back to implementation. Routing lives
+      # in the workflow (backend-authoritative), not in what the agent names — the agent
+      # only reports the BLOCK verdict; the workflow decides where it goes.
+      BLOCK: implement
+  - id: code-review
+    skill: code-review
+    model: claude-sonnet-4-6   # per-step model (backend-enforced)
+    label: Review the code
+    deadline: 900
+    "on":
+      completed: pr-create
+      changes_requested: implement
+  - id: pr-create
+    skill: pr-create
+    model: claude-haiku-4-5   # per-step model (backend-enforced)
+    label: Open the pull request
+    deadline: 600
+    "on":
+      completed: DONE

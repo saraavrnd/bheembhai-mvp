@@ -1,0 +1,32 @@
+# Governance that involves a human on non-happy outcomes as well as on success.
+#
+# `on_status` lists which outcomes require a human. Omit it and the gate applies only to
+# `completed` (the default), which is how policy-strict behaves.
+#
+# Policy decides WHETHER a human is consulted. The workflow still decides WHERE control
+# goes once they approve.
+policy: governed
+version: 1
+applies_to: story-delivery
+gates:
+  story-design:
+    review: required
+    role: any
+    on_status: [completed, BLOCK, escalation_required]
+
+  test-verify:
+    review: required
+    role: lead
+    # a failed honest-green check should never route on automatically
+    on_status: [BLOCK]
+
+  code-review:
+    review: required
+    role: lead
+    # changes_requested is a normal review loop — deliberately NOT gated, so it
+    # cycles back to implement without a human authorising each pass
+    on_status: [completed]
+
+  pr-create:
+    review: required
+    role: lead

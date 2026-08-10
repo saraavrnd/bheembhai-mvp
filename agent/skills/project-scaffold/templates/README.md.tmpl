@@ -1,0 +1,39 @@
+# {{product_name}}
+
+{{one_line_description}}
+
+## Stack
+<!-- filled from tech-stack.md: languages, frameworks, stores, pinned versions -->
+
+## Prerequisites
+- Docker + docker-compose
+- {{language_runtime}} (for local non-container work)
+
+## Run
+```bash
+docker-compose up           # brings up the full stack locally
+# walking skeleton: GET http://localhost:{{port}}/health -> {"status":"ok"}
+```
+
+## Develop
+```bash
+{{install_cmd}}             # install dependencies
+{{lint_cmd}}                # lint + format check
+{{test_cmd}}               # run the full test suite
+```
+
+## Testing (TDD)
+This project is test-driven. For each story:
+1. Write failing tests from the story's Gherkin acceptance criteria (`test-creator`).
+2. Implement until the tests pass (`implement`).
+3. Open a PR using the template; CI runs lint + tests.
+
+## Project structure
+<!-- mirrors architecture.md: list the top-level folders and what each holds -->
+
+## Branching & PRs
+- Branch per story: `feat/{{JIRA_KEY}}-short-slug`
+- PRs use `.github/PULL_REQUEST_TEMPLATE.md`; link the Jira key; suite must be green.
+
+## Architecture & decisions
+See `docs/architecture.md` and `docs/adr/`.

@@ -1,0 +1,40 @@
+# Epic Sequence — {{epic_key}}: {{epic_title}}
+
+**Status:** AWAITING APPROVAL · **Date:** {{date}} · **Stories:** {{n_stories}}
+
+> Proposed build order by dependency. Review and approve before Jira "blocks" links are written.
+> Inferred edges are marked by source so you can scrutinise them; explicit Jira links are ground
+> truth and never changed.
+
+## Build order (waves)
+Stories in the same wave are independent → can be built in parallel.
+
+### Wave 1 (no dependencies — start here)
+- {{story_key}} — {{title}}
+
+### Wave 2 (depends only on Wave 1)
+- {{story_key}} — {{title}}  (depends on: {{deps}})
+
+### Wave 3 …
+- …
+
+## Dependencies (with source)
+| Story | Depends on | Source | Why |
+|-------|-----------|--------|-----|
+| {{B}} | {{A}} | artifact / link / requirement | {{B}} consumes {{what}} that {{A}} produces |
+
+## Parallelizable groups
+<!-- which stories can run concurrently, for multi-developer assignment -->
+
+## Cycles / conflicts flagged (need a human decision)
+<!-- "none", or list circular edges and the recommended re-slice; and any inference that
+     contradicts a human-set Jira link. -->
+None.
+
+## On approval
+- Set "blocks" links: {{list of A blocks B}} via Atlassian MCP.
+- Write `epic-sequence-{{epic_key}}.json` for `story-implement` to pick the next eligible story.
+
+---
+*After approval, `story-implement` works stories in this order, auto-picking the next story whose
+dependencies are all merged. Re-run `epic-sequence` if stories are added or re-designed.*

@@ -1,0 +1,9 @@
+{
+  "epic_key": "LEARN-11",
+  "project_key": "LEARN",
+  "stories": [
+    { "story_key": "LEARN-21", "summary": "Upload course materials", "requirement_ids": ["FR-004"] },
+    { "story_key": "LEARN-22", "summary": "Prepare materials for retrieval", "requirement_ids": ["FR-005"] },
+    { "story_key": "LEARN-23", "summary": "Ground tutoring responses in retrieved material", "requirement_ids": ["FR-006"] }
+  ]
+}

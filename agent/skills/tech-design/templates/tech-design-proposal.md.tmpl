@@ -1,0 +1,77 @@
+# Technical Design Proposal — {{product_name}}
+
+**Status:** AWAITING APPROVAL · **Source:** PRD.md + epics · **Date:** {{date}}
+
+> This is a proposal. Nothing is committed until you approve. Decisions needing your input are
+> listed in §7. Change anything; I'll revise and re-confirm before writing the final design.
+
+## 1. System summary
+<!-- 3-5 sentences: what the system is, its major components implied by the feature areas, and
+     the non-functional drivers (scale, latency, privacy, compliance) that shape the design. -->
+
+## 2. MVP vs Later (scope the design)
+<!-- What the design must support at MVP, and what it should only leave room for. Prevents
+     over-engineering. -->
+
+## 3. Decisions, with options & recommendation
+For each: 2-3 real options, honest trade-offs, a recommendation, and why.
+
+### 3.1 Language & framework (backend)
+| Option | Pros | Cons |
+|--------|------|------|
+| | | |
+**Recommendation:** … because …
+
+### 3.2 Frontend
+| Option | Pros | Cons |
+|--------|------|------|
+**Recommendation:**
+
+### 3.3 Architecture style
+<!-- monolith / modular monolith / services. For MVP, justify the simplest option that meets
+     the NFRs, and name the seams where it would split later. -->
+**Recommendation:**
+
+### 3.4 Data stores
+<!-- primary DB + any specialised store the PRD actually requires. -->
+**Recommendation:**
+
+### 3.5 Key libraries / external services
+<!-- only those the requirements demand. -->
+**Recommendation:**
+
+### 3.6 Deployment target
+<!-- honour the user's target (e.g. local Docker first); note the path to extend later. -->
+**Recommendation:**
+
+### 3.7 Testing approach
+<!-- default: TDD — acceptance criteria become failing tests before implementation. Name the
+     test runner per layer (unit / integration / e2e). -->
+**Recommendation:** TDD with …
+
+### 3.8 Repository shape
+<!-- monorepo vs multi-repo; high-level package/service layout. -->
+**Recommendation:**
+
+## 4. Proposed architecture (overview)
+<!-- Components and how data flows between them. A simple diagram or component list. -->
+
+## 5. Proposed data model (sketch)
+<!-- Main entities and relationships, traceable to PRD requirement IDs. -->
+
+## 6. Versions (pinned)
+| Component | Version | Notes |
+|-----------|---------|-------|
+<!-- verify current stable versions; flag any recent breaking changes. -->
+
+## 7. Decisions I need from you
+- [ ] D1 — …
+- [ ] D2 — …
+
+## 8. Assumptions made
+<!-- Everything inferred because it wasn't specified. -->
+
+---
+*After approval, the `tech-design` skill writes the committed design (architecture.md, ADRs,
+data-model.md, api-contracts/, tech-stack.md, testing-strategy.md), which `project-scaffold`
+then turns into a runnable repository.*

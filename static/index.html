@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BheemBhai</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ground:#0e1621; --panel:#152230; --line:#26394d;
+  --ink:#e8eef5; --ink-dim:#8fa3b8; --ink-faint:#5d7185;
+  --steel:#5b9dd9; --steel-deep:#3d7ab5;
+  --amber:#f0a830; --green:#4bbd8b; --red:#e06b6b; --radius:3px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{background:var(--ground);color:var(--ink);font-family:Inter,system-ui,sans-serif;
+  min-height:100vh;font-size:15px;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:linear-gradient(var(--line) 1px,transparent 1px),
+                   linear-gradient(90deg,var(--line) 1px,transparent 1px);
+  background-size:64px 64px;opacity:.13}
+.wrap{position:relative;z-index:1;max-width:1280px;margin:0 auto;padding:28px 32px 60px}
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;
+  padding-bottom:18px;border-bottom:1px solid var(--line);margin-bottom:26px}
+.brand{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:26px;letter-spacing:-.02em}
+.brand span{color:var(--steel)}
+.tagline{font-size:13px;color:var(--ink-dim);margin-top:3px}
+.controls{display:flex;align-items:center;gap:10px}
+select,button,input[type=text]{font-family:Inter,sans-serif;font-size:13px;border-radius:var(--radius);
+  border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:9px 13px}
+input[type=text]{width:210px}
+input[type=text]::placeholder{color:var(--ink-faint)}
+select:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid var(--steel);outline-offset:2px}
+button.primary{background:var(--steel-deep);border-color:var(--steel);font-weight:600;cursor:pointer}
+button.primary:hover{background:var(--steel)}
+button.primary:disabled{opacity:.45;cursor:not-allowed}
+.cols{display:grid;grid-template-columns:340px 1fr;gap:30px;align-items:start}
+@media(max-width:900px){.cols{grid-template-columns:1fr}}
+.track-head,.feed-head{font-family:'Space Grotesk',sans-serif;font-size:11px;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--ink-dim);margin-bottom:14px}
+.track{position:relative;padding-left:30px}
+.track::before{content:"";position:absolute;left:9px;top:8px;bottom:16px;width:2px;background:var(--line)}
+.stage{position:relative;padding:9px 0 15px}
+.stage .dot{position:absolute;left:-30px;top:11px;width:20px;height:20px;border-radius:50%;
+  background:var(--ground);border:2px solid var(--line);display:grid;place-items:center;
+  font-size:10px;color:var(--ink-dim);transition:all .25s}
+.stage .name{font-size:14.5px;color:var(--ink-dim);transition:color .25s}
+.stage .meta{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--ink-faint);
+  margin-top:3px;min-height:14px;letter-spacing:.02em}
+.stage.active .dot{border-color:var(--steel);box-shadow:0 0 0 4px rgba(91,157,217,.16)}
+.stage.active .name{color:var(--ink);font-weight:500}
+.stage.active .dot::after{content:"";width:8px;height:8px;border-radius:50%;
+  background:var(--steel);animation:pulse 1.3s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}
+.stage.done .dot{border-color:var(--green);color:var(--green)}
+.stage.done .dot::after{content:"\2713";font-size:11px;color:var(--green)}
+.stage.done .name{color:var(--ink)}
+.stage.waiting .dot{border-color:var(--amber);background:var(--amber);
+  box-shadow:0 0 0 5px rgba(240,168,48,.2);animation:held 1.6s ease-in-out infinite}
+.stage.waiting .name{color:var(--amber);font-weight:600}
+@keyframes held{0%,100%{box-shadow:0 0 0 5px rgba(240,168,48,.2)}50%{box-shadow:0 0 0 10px rgba(240,168,48,.06)}}
+.stage.failed .dot{border-color:var(--red);color:var(--red)}
+.stage.failed .dot::after{content:"!";font-size:11px;font-weight:700;color:var(--red)}
+.stage.failed .name{color:var(--red)}
+.stage .gate-tag{display:inline-block;margin-left:7px;font-family:'JetBrains Mono',monospace;
+  font-size:9px;letter-spacing:.08em;color:var(--amber);border:1px solid rgba(240,168,48,.4);
+  border-radius:2px;padding:1px 4px;vertical-align:1px}
+.stagearea{min-height:210px;margin-bottom:26px}
+.idle{border:1px dashed var(--line);border-radius:var(--radius);padding:34px 28px;
+  color:var(--ink-dim);font-size:14px;line-height:1.65}
+.idle b{color:var(--ink);font-weight:600}
+.gate{border:1px solid var(--amber);border-radius:var(--radius);
+  background:linear-gradient(180deg,rgba(240,168,48,.09),rgba(240,168,48,.02));
+  padding:24px 26px;animation:arrive .35s ease-out}
+@keyframes arrive{from{opacity:0;transform:translateY(-7px)}to{opacity:1;transform:none}}
+.gate .eyebrow{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--amber);display:flex;align-items:center;gap:8px}
+.gate .eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--amber);
+  animation:pulse 1.3s ease-in-out infinite}
+.gate h2{font-family:'Space Grotesk',sans-serif;font-size:23px;font-weight:700;
+  margin:11px 0 8px;letter-spacing:-.01em}
+.gate p{margin:0 0 6px;color:var(--ink-dim);font-size:14px;line-height:1.6;max-width:62ch}
+.gate .who{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ink-faint);margin-bottom:18px}
+.gate .actions{display:flex;gap:11px}
+.btn-approve,.btn-changes{font-family:Inter,sans-serif;font-size:14px;font-weight:600;
+  padding:11px 22px;border-radius:var(--radius);cursor:pointer;border:1px solid}
+.btn-approve{background:var(--amber);border-color:var(--amber);color:#231803}
+.btn-approve:hover{filter:brightness(1.09)}
+.btn-changes{background:transparent;border-color:var(--line);color:var(--ink-dim)}
+.btn-changes:hover{border-color:var(--ink-dim);color:var(--ink)}
+.working{border:1px solid var(--line);border-radius:var(--radius);padding:24px 26px;
+  background:linear-gradient(180deg,rgba(91,157,217,.05),transparent)}
+.working .eyebrow{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--steel);display:flex;align-items:center;gap:8px}
+.working .eyebrow::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--steel);
+  animation:pulse 1.3s ease-in-out infinite}
+.working h2{font-family:'Space Grotesk',sans-serif;font-size:22px;font-weight:700;
+  margin:11px 0 7px;letter-spacing:-.01em}
+.working p{margin:0;color:var(--ink-dim);font-size:14px;line-height:1.6}
+/* artifacts a step produced — the reviewer's evidence at a gate */
+.arts{margin:14px 0 4px}
+.arts .hd{font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--ink-dim);margin-bottom:7px}
+.art{display:flex;align-items:center;gap:9px;padding:6px 9px;border:1px solid var(--line);
+  border-radius:var(--radius);margin-bottom:5px;cursor:pointer;background:rgba(0,0,0,.15)}
+.art:hover{border-color:var(--steel)}
+.art .st{font-family:'JetBrains Mono',monospace;font-size:9px;width:15px;height:15px;
+  display:grid;place-items:center;border-radius:2px;flex-shrink:0}
+.art .st.A{background:rgba(75,189,139,.2);color:var(--green)}
+.art .st.M{background:rgba(91,157,217,.2);color:var(--steel)}
+.art .st.D{background:rgba(224,107,107,.2);color:var(--red)}
+.art .pth{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--ink);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.art .pth .dir{color:var(--ink-faint)}
+.art .note{margin-left:auto;padding-left:12px;font-family:Inter,sans-serif;font-size:11px;
+  color:var(--ink-dim);font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}
+.showall{margin-top:6px;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--steel);
+  cursor:pointer;padding:4px 2px}
+.showall:hover{text-decoration:underline}
+.viewer{position:fixed;inset:0;background:rgba(6,11,18,.86);z-index:50;display:grid;
+  place-items:center;padding:40px}
+.viewer .box{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+  width:min(980px,100%);height:min(80vh,900px);display:flex;flex-direction:column;overflow:hidden}
+.viewer .top{display:flex;align-items:center;gap:12px;padding:13px 17px;
+  border-bottom:1px solid var(--line)}
+.viewer .top .f{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--ink)}
+.viewer .top button{margin-left:auto;cursor:pointer}
+/* flex:1 + min-height:0 is what actually lets the <pre> scroll inside a flex column */
+.viewer pre{margin:0;padding:18px 20px;overflow-y:auto;overflow-x:auto;flex:1;min-height:0;
+  font-family:'JetBrains Mono',monospace;
+  font-size:12px;line-height:1.65;color:var(--ink-dim);white-space:pre-wrap;word-break:break-word}
+.viewer pre::-webkit-scrollbar{width:8px;height:8px}
+.viewer pre::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
+.viewer pre::-webkit-scrollbar-thumb:hover{background:var(--ink-faint)}
+.summary-box{max-height:260px;overflow-y:auto;padding-right:8px;margin-bottom:4px}
+.summary-box::-webkit-scrollbar{width:5px}
+.summary-box::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.finished{border:1px solid var(--green);border-radius:var(--radius);padding:24px 26px;
+  background:linear-gradient(180deg,rgba(75,189,139,.09),transparent)}
+.finished.bad{border-color:var(--red);background:linear-gradient(180deg,rgba(224,107,107,.09),transparent)}
+.finished h2{font-family:'Space Grotesk',sans-serif;font-size:22px;margin:6px 0 8px}
+.costbar{display:flex;align-items:baseline;gap:11px;padding:13px 0 18px;
+  border-bottom:1px solid var(--line);margin-bottom:20px}
+.costbar .lbl{font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--ink-dim)}
+.costbar .val{font-family:'JetBrains Mono',monospace;font-size:25px;color:var(--ink);font-weight:500}
+.costbar .run{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--ink-faint)}
+.feed{max-height:400px;overflow-y:auto;padding-right:6px}
+.feed::-webkit-scrollbar{width:5px}
+.feed::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px}
+.ev{display:flex;gap:13px;padding:9px 0;border-bottom:1px solid rgba(38,57,77,.5);animation:slidein .3s ease-out}
+@keyframes slidein{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:none}}
+.ev time{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--ink-faint);
+  padding-top:2px;flex-shrink:0;width:52px}
+.ev .txt{font-size:13.5px;line-height:1.5;color:var(--ink-dim)}
+.ev .txt b{color:var(--ink);font-weight:500}
+.ev.hi .txt{color:var(--amber)}
+.ev.ok .txt b{color:var(--green)}
+.ev.bad .txt{color:var(--red)}
+.ev .tag{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--ink-faint);
+  border:1px solid var(--line);border-radius:2px;padding:0 4px;margin-left:6px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <div class="brand">Bheem<span>Bhai</span></div>
+      <div class="tagline">Agentic delivery, with a human in the loop where it counts.</div>
+    </div>
+    <div class="controls">
+      <input id="story" type="text" placeholder="Jira story (e.g. LEARN-21)"
+             title="Jira story ID — also names the run branch" autocomplete="off">
+      <input id="branch" type="text" placeholder="source branch"
+             title="Branch to clone / cut the run branch from" autocomplete="off">
+      <select id="policy" title="Governance policy">
+        <option value="strict">Policy: strict &mdash; humans approve</option>
+        <option value="governed">Policy: governed &mdash; humans on problems too</option>
+        <option value="fast">Policy: fast &mdash; fully autonomous</option>
+      </select>
+      <button class="primary" id="start">Start a run</button>
+    </div>
+  </header>
+  <div class="cols">
+    <aside>
+      <div class="track-head">Pipeline</div>
+      <div class="track" id="track">
+        <div class="stage"><div class="dot"></div><div class="name">Waiting to start</div>
+          <div class="meta">choose a policy and begin</div></div>
+      </div>
+    </aside>
+    <main>
+      <div class="stagearea" id="stagearea">
+        <div class="idle"><b>Nothing running yet.</b><br>
+          Start a run and each stage below will execute in its own container.
+          With the <b>strict</b> policy the run pauses and waits for your approval
+          before it goes further &mdash; that pause is the point.</div>
+      </div>
+      <div class="costbar">
+        <span class="lbl">Cost so far</span>
+        <span class="val" id="cost">$0.0000</span>
+        <span class="run" id="runid"></span>
+      </div>
+      <div class="feed-head">What's happening</div>
+      <div class="feed" id="feed"></div>
+    </main>
+  </div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const track = $('#track'), feed = $('#feed'), stagearea = $('#stagearea');
+let currentRun = null, stages = [], gatedSteps = new Set();
+const clock = () => new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+function say(text, cls='', tag=''){
+  const el = document.createElement('div');
+  el.className = 'ev ' + cls;
+  el.innerHTML = `<time>${clock()}</time><div class="txt">${text}${tag?`<span class="tag">${tag}</span>`:''}</div>`;
+  feed.prepend(el);
+  while (feed.children.length > 80) feed.lastChild.remove();
+}
+function drawTrack(){
+  track.innerHTML = stages.map(s => `
+    <div class="stage ${s.state||''}" data-id="${s.id}">
+      <div class="dot"></div>
+      <div class="name">${s.label}${gatedSteps.has(s.id)?'<span class="gate-tag">GATE</span>':''}</div>
+      <div class="meta">${s.meta||''}</div>
+    </div>`).join('');
+}
+function setStage(id, state, meta){
+  const s = stages.find(x => x.id === id); if (!s) return;
+  if (state) s.state = state;
+  if (meta !== undefined) s.meta = meta;
+  drawTrack();
+}
+function fileRow(f){
+  const p = f.path || '';
+  const i = p.lastIndexOf('/');
+  const dir = i >= 0 ? p.slice(0, i+1) : '';
+  const base = i >= 0 ? p.slice(i+1) : p;
+  const st = (f.status || 'M').charAt(0);
+  const note = f.note ? `<span class="note">${f.note}</span>` : '';
+  return `<div class="art" data-path="${encodeURIComponent(p)}">
+      <span class="st ${st}">${st}</span>
+      <span class="pth"><span class="dir">${dir}</span>${base}</span>${note}</div>`;
+}
+
+// Prefer the skill's curated review list; fall back to every changed file. The full list is
+// always one click away (curate, don't hide) so a wrong/short review list can't blind anyone.
+function artHTML(files, review){
+  const hasReview = review && review.length;
+  const shown = hasReview ? review : (files || []);
+  if (!shown.length) return '';
+  const rows = shown.slice(0, 40).map(fileRow).join('');
+  const hd = hasReview
+    ? 'The author asks you to review these &mdash; click to read'
+    : 'Files this step changed &mdash; click to read';
+  // toggle to reveal the full changed set when a curated list is shown and there's more
+  const extra = (hasReview && files && files.length > review.length)
+    ? `<div class="showall" data-files='${encodeURIComponent(JSON.stringify(files))}'>
+         Show all ${files.length} changed files</div>`
+    : '';
+  return `<div class="arts"><div class="hd">${hd}</div>${rows}${extra}</div>`;
+}
+
+function wireArtifacts(scope){
+  const root = scope || document;
+  root.querySelectorAll('.art').forEach(el => {
+    el.onclick = () => openArtifact(decodeURIComponent(el.dataset.path));
+  });
+  root.querySelectorAll('.showall').forEach(el => {
+    el.onclick = () => {
+      const files = JSON.parse(decodeURIComponent(el.dataset.files));
+      const arts = el.closest('.arts');
+      arts.innerHTML = `<div class="hd">All ${files.length} changed files &mdash; click to read</div>` +
+        files.slice(0,60).map(fileRow).join('');
+      wireArtifacts(arts);
+    };
+  });
+}
+
+async function openArtifact(path){
+  const box = document.createElement('div');
+  box.className = 'viewer';
+  box.innerHTML = `<div class="box">
+      <div class="top"><span class="f">${path}</span>
+        <button class="btn-changes" id="vclose">Close</button></div>
+      <pre id="vbody">Loading&hellip;</pre></div>`;
+  document.body.appendChild(box);
+  const close = () => box.remove();
+  box.querySelector('#vclose').onclick = close;
+  box.onclick = e => { if (e.target === box) close(); };
+  document.addEventListener('keydown', function esc(e){
+    if (e.key === 'Escape'){ close(); document.removeEventListener('keydown', esc); }
+  });
+  try{
+    const r = await fetch(`/api/runs/${currentRun}/file?path=${encodeURIComponent(path)}`);
+    if (!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+    box.querySelector('#vbody').textContent = j.content;
+  }catch(e){
+    box.querySelector('#vbody').textContent = 'Could not open this file.\n\n' + e.message;
+  }
+}
+
+let lastGate = null;
+function showGate(ev){
+  lastGate = ev;
+  const label = (stages.find(s => s.id === ev.step_id)||{}).label || ev.step_id;
+  stagearea.innerHTML = `
+    <div class="gate">
+      <div class="eyebrow">Paused &mdash; your decision</div>
+      <h2>${label} is done. Approve it to continue?</h2>
+      <div class="summary-box"><p>${ev.summary ? ev.summary.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>') : 'The agent finished this stage and produced its artifact. Nothing further runs until you decide.'}</p></div>
+      ${artHTML(ev.files, ev.review_files)}
+      <div class="who">requires: ${ev.role || 'any'} &nbsp;&middot;&nbsp; stage: ${ev.step_id}${ev.result_status && ev.result_status !== 'completed' ? ' &nbsp;&middot;&nbsp; outcome: ' + ev.result_status : ''}</div>
+      <div class="actions">
+        <button class="btn-approve" id="ok">Approve and continue</button>
+        <button class="btn-changes" id="chg">Request changes</button>
+      </div>
+    </div>`;
+  wireArtifacts(stagearea);
+  $('#ok').onclick  = () => decide('approve');
+  $('#chg').onclick = () => decide('request_changes');
+}
+async function decide(d, comment){
+  // Requesting changes without saying why is useless to the next run — ask for it.
+  if (d === 'request_changes' && comment === undefined){
+    const card = stagearea.querySelector('.gate');
+    if (card){
+      const box = document.createElement('div');
+      box.style.marginTop = '14px';
+      box.innerHTML = `
+        <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.12em;
+             text-transform:uppercase;color:var(--amber);margin-bottom:7px">What needs changing?</div>
+        <textarea id="fb" rows="4" placeholder="Tell the agent what to revise — this is passed to the next attempt."
+          style="width:100%;background:var(--panel);color:var(--ink);border:1px solid var(--line);
+                 border-radius:var(--radius);padding:10px 12px;font-family:Inter,sans-serif;
+                 font-size:13.5px;line-height:1.5;resize:vertical"></textarea>
+        <div style="display:flex;gap:11px;margin-top:11px">
+          <button class="btn-approve" id="fbsend">Send back for revision</button>
+          <button class="btn-changes" id="fbcancel">Cancel</button>
+        </div>`;
+      card.querySelector('.actions').replaceWith(box);
+      const ta = box.querySelector('#fb'); ta.focus();
+      box.querySelector('#fbsend').onclick = () => decide('request_changes', ta.value.trim());
+      box.querySelector('#fbcancel').onclick = () => showGate(lastGate);
+      return;
+    }
+  }
+  stagearea.querySelectorAll('button,textarea').forEach(b => b.disabled = true);
+  clearStage('<div class="idle">Sending your decision&hellip;</div>');
+  // Resume polling BEFORE awaiting the response. Polling was stopped while parked at the
+  // gate, and the approval_resolved event that would restart it only arrives *via* polling
+  // — so waiting for it here would deadlock the UI in the paused state.
+  startPolling();
+  try{
+    const r = await fetch(`/api/runs/${currentRun}/decision`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({decision:d, comment: comment || ''})});
+    if (!r.ok) throw new Error(await r.text());
+  }catch(e){
+    say('Could not submit your decision: ' + e.message, 'bad');
+    showGate(lastGate);       // put the card back so it can be retried
+  }
+}
+function clearStage(html){ stagearea.innerHTML = html; }
+$('#start').onclick = async () => {
+  $('#start').disabled = true;
+  feed.innerHTML = ''; stages = []; gatedSteps.clear();
+  $('#cost').textContent = '$0.0000';
+  clearStage('<div class="idle">Starting&hellip;</div>');
+  try{
+    const story = $('#story').value.trim();
+    const r = await fetch('/api/runs', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({workflow:'story-delivery', policy:$('#policy').value, story_id:story, source_branch:$('#branch').value.trim()})});
+    if(!r.ok) throw new Error(await r.text());
+    const j = await r.json();
+    currentRun = j.run_id;
+    $('#runid').textContent = 'run ' + j.run_id;
+    say(`Run started under the <b>${j.policy}</b> policy${j.story_id?` for <b>${j.story_id}</b>`:''}.`);
+    if(j.run_branch) say(`Working on branch <b>${j.run_branch}</b> (from <b>${j.source_branch}</b>).`, 'hi');
+    startPolling();
+  }catch(e){
+    clearStage(`<div class="idle"><b>Could not start.</b><br>${e.message}</div>`);
+    $('#start').disabled = false;
+  }
+};
+
+function applyEvent(ev){
+  if (ev.type === 'plan'){
+    gatedSteps = new Set(ev.steps.filter(s=>s.gated).map(s=>s.id));
+    stages = ev.steps.map(s => ({id:s.id, label:s.label, state:'', meta:''}));
+    drawTrack();
+    clearStage(`<div class="idle"><b>Running.</b><br>Each stage runs in its own container.
+      ${gatedSteps.size ? 'Stages marked <b>GATE</b> will stop and wait for you.' : 'This policy has no gates &mdash; it runs straight through.'}</div>`);
+    return;
+  }
+
+  if (ev.type === 'progress'){
+    const secs = ev.elapsed_s != null ? `${ev.elapsed_s}s` : '';
+    setStage(ev.step_id, 'active', `${ev.note || ev.phase || 'working'} ${secs}`.trim());
+    const w = document.querySelector('.working p');
+    if (w) w.innerHTML = `${ev.note || 'Running in its own container.'} <b>${secs}</b> elapsed.`;
+    return;
+  }
+
+  if (ev.type === 'approval_required'){
+    showGate(ev); setStage(ev.step_id,'waiting','waiting for you');
+    stopPolling();          // parked: nothing moves until the reviewer decides
+    return;
+  }
+
+  if (ev.type === 'approval_resolved'){
+    if (ev.decision === 'approve'){
+      setStage(ev.step_id,'done','approved');
+      if (ev.result_status && ev.result_status !== 'completed'){
+        say(`You approved the <b>${ev.result_status}</b> verdict from <b>${ev.step_id}</b>. `+
+            `The workflow now routes back to address it.`, 'hi');
+      } else {
+        say(`You approved <b>${ev.step_id}</b>. Continuing.`, 'ok');
+      }
+    } else {
+      setStage(ev.step_id,'','changes requested');
+      say(`You requested changes on <b>${ev.step_id}</b>. Going back.`, 'hi');
+    }
+    clearStage('<div class="idle">Continuing&hellip;</div>');
+    startPolling();         // resumed: watch the next stage
+    return;
+  }
+
+  if (ev.type === 'run_finished'){
+    const ok = ev.state === 'completed';
+    clearStage(`<div class="finished ${ok?'':'bad'}">
+      <h2>${ok ? 'Run complete' : 'Run stopped'}</h2>
+      <p style="color:var(--ink-dim);margin:0">${ok
+        ? 'Every stage finished and the pull request is open.'
+        : 'Something needs a person. The feed below has the detail.'}
+        Total cost: <b style="font-family:JetBrains Mono,monospace">$${(ev.cost_usd||0).toFixed(4)}</b>.</p>
+    </div>`);
+    say(ok ? 'Run finished.' : 'Run stopped early.', ok ? 'ok' : 'bad');
+    stopPolling();
+    $('#start').disabled = false;
+    return;
+  }
+
+  if (ev.type === 'transition'){
+    if (ev.cost_usd !== undefined && ev.run_cost !== undefined)
+      $('#cost').textContent = '$' + Number(ev.run_cost).toFixed(4);
+    const label = (stages.find(s=>s.id===ev.step_id)||{}).label || ev.step_id;
+    if (ev.to === 'running'  && ev.step_id) {
+      setStage(ev.step_id,'active','running&hellip;');
+      say(`<b>${label}</b> &mdash; started.`);
+      const remaining = stages.filter(s=>gatedSteps.has(s.id) && s.state!=='done').length;
+      clearStage(`<div class="working">
+        <div class="eyebrow">Working &mdash; no input needed</div>
+        <h2>${label}</h2>
+        <p>Running in its own container. ${remaining
+          ? `${remaining} approval${remaining>1?'s':''} still ahead.`
+          : 'No approvals left &mdash; this will run to the end.'}</p></div>`);
+    }
+    else if (ev.to === 'awaiting_result')   { setStage(ev.step_id,'active','waiting for the container'); }
+    else if (ev.to === 'retrying')          { setStage(ev.step_id,'active','retrying'); say(`<b>${label}</b> hit a temporary problem &mdash; retrying in a fresh container.`, 'hi'); }
+    else if (ev.to === 'completed' && ev.step_id){
+      if (ev.result_status === 'completed'){
+        if (!gatedSteps.has(ev.step_id)) setStage(ev.step_id,'done', ev.cost_usd ? `$${Number(ev.cost_usd).toFixed(4)}` : 'done');
+        say(`<b>${label}</b> &mdash; finished.`, 'ok', ev.cost_usd ? `$${Number(ev.cost_usd).toFixed(4)}` : '');
+        // every completed step exposes what it wrote, gated or not
+        if (ev.files && ev.files.length){
+          const el = document.createElement('div');
+          el.className = 'ev';
+          el.innerHTML = `<time>${clock()}</time><div class="txt">
+            <b>${label}</b> produced ${ev.files.length} file${ev.files.length>1?'s':''}:
+            ${artHTML(ev.files, ev.review_files)}</div>`;
+          feed.prepend(el);
+          wireArtifacts(el);
+        }
+      } else {
+        setStage(ev.step_id,'', ev.result_status);
+        const detail = ev.reason && ev.reason !== 'ok' ? ev.reason : 'a human will decide, or the workflow will route it onward';
+        say(`<b>${label}</b> returned <b>${ev.result_status}</b> &mdash; ${detail}.`, 'hi');
+      }
+    }
+    else if (ev.to === 'failed'){
+      if (ev.step_id) setStage(ev.step_id,'failed', ev.result_status||'failed');
+      say(`<b>${label||'Run'}</b> &mdash; ${ev.reason || 'failed'}.`, 'bad', ev.result_status||'');
+    }
+  }
+}
+
+const seenEvents = new Set();
+
+function handleEvent(ev){
+  // The server replays history; ignore anything already applied.
+  const key = ev.type + '|' + (ev.run_id||'') + '|' + (ev.step_id||'') + '|' +
+              (ev.ts||ev.elapsed_s||'') + '|' + (ev.to||ev.phase||'') + '|' + (ev.decision||'');
+  if (ev.type !== 'progress' && seenEvents.has(key)) return;
+  seenEvents.add(key);
+  if (seenEvents.size > 800) seenEvents.clear();
+  applyEvent(ev);
+}
+
+// ---------------------------------------------------------------------------
+// Transport: POLLING, not SSE.
+// A long-lived EventSource can be closed by the browser, an extension, or anything
+// between it and the server — and once closed the UI freezes. Ordinary short requests
+// cannot be dropped that way: if one fails, the next one simply succeeds.
+// ---------------------------------------------------------------------------
+let cursor = 0, pollFails = 0, pollTimer = null, runActive = false;
+async function pollOnce(){
+  try{
+    const r = await fetch(`/api/poll?since=${cursor}`, {cache:'no-store'});
+    if (!r.ok) throw new Error('poll ' + r.status);
+    const j = await r.json();
+    cursor = j.cursor;
+    (j.events || []).forEach(handleEvent);
+    if (pollFails >= 2) say('Reconnected.', 'ok');
+    pollFails = 0;
+  }catch(e){
+    pollFails++;
+    if (pollFails === 3) say('Lost contact with the server &mdash; retrying&hellip;', 'bad');
+  }
+}
+// Poll only while a run is in flight. Idle polling is pointless load, and it keeps the
+// network tab noisy long after the pipeline has finished.
+function startPolling(){
+  runActive = true;
+  if (!pollTimer) pollTimer = setInterval(pollOnce, 1000);
+}
+function stopPolling(){
+  runActive = false;
+  if (pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+}
+pollOnce();   // one catch-up poll on load, in case a run is already going
+
+// Prefill the source-branch field from server config (env GIT_SOURCE_BRANCH); hide it in
+// copy mode where there's no git.
+fetch('/api/config', {cache:'no-store'}).then(r=>r.json()).then(cfg=>{
+  const b = document.querySelector('#branch');
+  if (!b) return;
+  if (cfg.git_mode === false) { b.style.display = 'none'; return; }
+  if (cfg.source_branch) b.value = cfg.source_branch;
+}).catch(()=>{});
+</script>
+</body>
+</html>

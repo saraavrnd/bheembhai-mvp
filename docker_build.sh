@@ -1,0 +1,1 @@
+docker build -t beembhai/agent:latest agent/

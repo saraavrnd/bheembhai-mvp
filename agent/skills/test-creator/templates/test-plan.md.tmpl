@@ -1,0 +1,30 @@
+# Test Plan — {{story_key}}: {{story_title}}
+
+**Epic:** {{epic_key}} · **Date:** {{date}} · **Runners:** {{runners}}
+
+## Scenario → test mapping
+Every Gherkin scenario must map to at least one test.
+
+| # | Acceptance scenario | Layer | Test file::test name | Type |
+|---|---------------------|-------|----------------------|------|
+| 1 | <happy path> | integration | | happy |
+| 2 | <unhappy path> | integration | | unhappy |
+| 3 | <validation/boundary> | unit | | unhappy |
+
+## Coverage check
+- [ ] Every acceptance scenario has at least one test.
+- [ ] Unhappy paths covered (invalid input, boundary, permissions where relevant).
+- [ ] Tests target the interfaces from the approved story-design note.
+
+## Red-phase verification
+<!-- Paste the run output showing the new tests FAIL for the right reason
+     (assertion/404/missing feature), not error out (import/fixture/syntax). -->
+```
+<test run output>
+```
+
+## Traceability
+**Requirements covered:** <!-- FR/NFR IDs -->
+
+---
+*Next: `implement` makes these tests pass without weakening them.*

@@ -1,0 +1,7 @@
+policy: strict
+version: 1
+applies_to: story-delivery
+gates:
+  story-design: {review: required, role: any}
+  code-review: {review: required, role: lead}
+  pr-create: {review: required, role: lead}
