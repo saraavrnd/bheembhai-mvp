@@ -24,7 +24,7 @@ provider "aws" {
   default_tags {
     tags = {
       Environment = var.environment
-      Project     = "bheembhai"
+      Project     = "bheembhai-mvp"
       ManagedBy   = "terraform"
     }
   }
@@ -32,7 +32,7 @@ provider "aws" {
 
 # ── Locals ─────────────────────────────────────────────────────────
 locals {
-  name_prefix = "bheembhai-${var.environment}"
+  name_prefix = "bheembhai-mvp-${var.environment}"
 
   # When to swap to Secrets Manager (prod): change this + flip docker-compose env
   secure_storage_backend = var.environment == "prod" ? "aws_secrets_manager" : "aws_ssm"

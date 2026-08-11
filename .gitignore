@@ -21,6 +21,7 @@ env/
 
 # Environment
 .env
+.env.bkup
 .env.*
 !.env.example
 
