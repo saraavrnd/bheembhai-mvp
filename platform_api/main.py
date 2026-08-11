@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from bheembhai.config import load_config
-from bheembhai.database import close_database, create_tables, init_database, seed_default_roles
+from bheembhai.database import close_database, init_database, run_migrations, seed_default_roles
 from bheembhai.providers.aws_secrets import AWSSecretsManager
 from bheembhai.providers.aws_ssm import AWSSSMParameterStore
 from bheembhai.providers.cognito import CognitoProvider
@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.config = config
 
     init_database(config.database)
-    await create_tables()
+    await run_migrations()
     await seed_default_roles()
 
     # ── Wire Cognito auth service (boto3 — login/refresh/signup) ──

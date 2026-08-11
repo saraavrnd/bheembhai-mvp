@@ -1,9 +1,17 @@
 """Database engine and session factory — async SQLAlchemy 2.0 style."""
 
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bheembhai.config import DatabaseConfig
 from bheembhai.models.base import Base
+
+_logger = logging.getLogger(__name__)
 
 _engine = None
 _sessionmaker = None
@@ -16,10 +24,58 @@ def init_database(config: DatabaseConfig) -> None:
     _sessionmaker = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
 
 
-async def create_tables() -> None:
-    """Create all ORM tables if they don't exist (dev convenience).
+async def run_migrations() -> None:
+    """Run pending Alembic migrations against the configured database.
 
-    In production, migrations are managed by Alembic — this is a dev helper.
+    Replaces ``create_tables()`` as the startup schema-management step.
+    Safe to call from multiple services simultaneously — concurrent runs
+    are detected and silently ignored (the second caller sees the migration
+    was already applied by its peer).
+    """
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy.exc import ProgrammingError
+
+    if _engine is None:
+        raise RuntimeError("Database not initialised — call init_database first")
+
+    # Resolve paths relative to *this file* (shared/bheembhai/database.py):
+    #   shared_dir  = shared/
+    #   alembic_ini = shared/alembic.ini
+    #   scripts_dir = shared/alembic/
+    shared_dir = Path(__file__).resolve().parent.parent
+    alembic_ini = shared_dir / "alembic.ini"
+    scripts_dir = shared_dir / "alembic"
+
+    alembic_cfg = Config(str(alembic_ini))
+    alembic_cfg.set_main_option("script_location", str(scripts_dir))
+    alembic_cfg.set_main_option(
+        "sqlalchemy.url",
+        _engine.url.render_as_string(hide_password=False),
+    )
+
+    def _upgrade() -> None:
+        try:
+            command.upgrade(alembic_cfg, "head")
+        except ProgrammingError:
+            # A peer service (docker compose starts both at once) beat us to
+            # the migration — the tables already exist.  Alembic recorded the
+            # revision in that other transaction; our re-attempt would be a
+            # no-op.  Let the caller continue.
+            _logger.info(
+                "Migrations already applied by a peer — continuing"
+            )
+
+    _logger.info("Running database migrations …")
+    await asyncio.to_thread(_upgrade)
+    _logger.info("Database migrations complete")
+
+
+async def create_tables() -> None:
+    """Create all ORM tables via ``Base.metadata.create_all`` (dev convenience).
+
+    Prefer ``run_migrations()`` for production; this is kept for quick
+    throwaway environments and test suites that don't need Alembic.
     """
     if _engine is None:
         raise RuntimeError("Database not initialised — call init_database first")

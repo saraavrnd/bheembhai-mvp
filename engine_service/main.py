@@ -7,7 +7,7 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 
 from bheembhai.config import AppConfig, load_config
-from bheembhai.database import close_database, create_tables, init_database, seed_default_roles
+from bheembhai.database import close_database, init_database, run_migrations, seed_default_roles
 
 from engine_service.routers import health, webhooks
 from engine_service.worker import worker_loop
@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     config = load_config()
     app.state.config = config
     init_database(config.database)
-    await create_tables()
+    await run_migrations()
     await seed_default_roles()
 
     # Crash recovery: re-enqueue stale work before starting the worker loop
