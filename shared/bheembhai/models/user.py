@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import UUID, Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import UUID, Boolean, CheckConstraint, DateTime, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bheembhai.models.base import Base
@@ -31,6 +31,10 @@ class User(Base):
 
     __table_args__ = (
         UniqueConstraint("external_id", "auth_provider", name="uq_users_external_provider"),
+        CheckConstraint(
+            "platform_role IN ('ADMIN', 'USER')",
+            name="ck_users_platform_role",
+        ),
     )
 
 

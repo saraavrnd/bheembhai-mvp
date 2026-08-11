@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BheemBhai Admin — {% block title %}Dashboard{% endblock %}</title>
+
+    <link rel="stylesheet" href="/static/eduadmin/css/vendors_css.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/assets/icons/font-awesome/css/all.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/assets/icons/themify-icons/themify-icons.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/assets/icons/icomoon/style.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/css/style.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/css/skin_color.css?v=4">
+    <style>
+        /* Logo text — white on dark navy logo-box */
+        .main-header .logo .light-logo {
+            color: #ffffff !important;
+        }
+        .main-header .logo .light-logo strong {
+            color: #ffffff !important;
+        }
+        /* Sidebar icomoon icons — base + menu-open state */
+        .light-skin .sidebar-menu > li > a > i {
+            color: #b5b5c3;
+        }
+        .light-skin .sidebar-menu > li:hover > a > i,
+        .light-skin .sidebar-menu > li.menu-open > a > i {
+            color: #ffffff;
+        }
+        /* Sidebar link text */
+        .light-skin .sidebar-menu > li > a {
+            color: #b5b5c3;
+        }
+        .light-skin .sidebar-menu > li:hover > a,
+        .light-skin .sidebar-menu > li.menu-open > a {
+            color: #ffffff;
+        }
+        /* Sidebar menu-open background */
+        .light-skin .sidebar-menu > li.menu-open > a {
+            background-color: #172b4c;
+        }
+    </style>
+</head>
+
+<body class="hold-transition light-skin sidebar-mini theme-primary fixed">
+
+<div class="wrapper">
+    <div id="loader"></div>
+
+    <!-- Header -->
+    <header class="main-header">
+        <div class="d-flex align-items-center logo-box justify-content-start">
+            <a href="#" class="waves-effect waves-light nav-link d-none d-md-inline-block mx-10 push-btn bg-transparent text-white" data-toggle="push-menu" role="button">
+                <span class="icon-Align-left"><span class="path1"></span><span class="path2"></span><span class="path3"></span></span>
+            </a>
+            <!-- Logo -->
+            <a href="/admin" class="logo">
+                <div class="logo-lg">
+                    <span class="light-logo"><span class="brand-icon">🐝</span> <strong>Bheem</strong>Bhai</span>
+                    <span class="dark-logo"><span class="brand-icon">🐝</span> <strong>Bheem</strong>Bhai</span>
+                </div>
+            </a>
+        </div>
+
+        <nav class="navbar navbar-static-top">
+            <div class="app-menu">
+                <ul class="header-megamenu nav">
+                    <li class="btn-group nav-item d-md-none">
+                        <a href="#" class="waves-effect waves-light nav-link push-btn" data-toggle="push-menu" role="button">
+                            <span class="icon-Align-left"><span class="path1"></span><span class="path2"></span><span class="path3"></span></span>
+                        </a>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="navbar-custom-menu r-side">
+                <ul class="nav navbar-nav">
+                    <!-- User Account -->
+                    <li class="dropdown user user-menu">
+                        <a href="#" class="waves-effect waves-light dropdown-toggle" data-bs-toggle="dropdown" title="User">
+                            <i class="icon-User"><span class="path1"></span><span class="path2"></span></i>
+                        </a>
+                        <ul class="dropdown-menu animated flipInX">
+                            <li class="user-body">
+                                <a class="dropdown-item" href="#">
+                                    <i class="ti-user text-muted me-2"></i>
+                                    <span id="admin-email">admin@bheembhai.local</span>
+                                </a>
+                                <a class="dropdown-item" href="#"><i class="ti-settings text-muted me-2"></i> Settings</a>
+                                <div class="dropdown-divider"></div>
+                                <a class="dropdown-item" href="#" onclick="signOut(); return false;">
+                                    <i class="ti-lock text-muted me-2"></i> Logout
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+    </header>
+
+    <!-- Sidebar -->
+    <aside class="main-sidebar">
+        <section class="sidebar position-relative">
+            <div class="multinav">
+                <div class="multinav-scroll" style="height: 100%;">
+                    <ul class="sidebar-menu" data-widget="tree">
+                        <li class="header">BheemBhai</li>
+                        <li class="treeview {% block nav_dashboard %}{% endblock %}">
+                            <a href="/admin">
+                                <i class="icon-Layout-4-blocks"><span class="path1"></span><span class="path2"></span></i>
+                                <span>Dashboard</span>
+                            </a>
+                        </li>
+                        <li class="treeview {% block nav_projects %}{% endblock %}">
+                            <a href="/admin/projects">
+                                <i class="icon-Folder"></i>
+                                <span>Projects</span>
+                            </a>
+                        </li>
+                        <li class="treeview {% block nav_users %}{% endblock %}">
+                            <a href="/admin/users">
+                                <i class="icon-User"><span class="path1"></span><span class="path2"></span></i>
+                                <span>Users</span>
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+    </aside>
+
+    <!-- Content Wrapper -->
+    <div class="content-wrapper">
+        <div class="container-full">
+            <div class="content-header">
+                <div class="d-flex align-items-center">
+                    <div class="me-auto">
+                        <h3 class="page-title">{% block page_title %}Dashboard{% endblock %}</h3>
+                        <div class="d-inline-block align-items-center">
+                            <nav>
+                                <ol class="breadcrumb">
+                                    {% block breadcrumb %}
+                                    <li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+                                    <li class="breadcrumb-item active" aria-current="page">Dashboard</li>
+                                    {% endblock %}
+                                </ol>
+                            </nav>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <section class="content">
+                {% block content %}{% endblock %}
+            </section>
+        </div>
+    </div>
+
+    <!-- Control Sidebar -->
+    <aside class="control-sidebar"></aside>
+    <div class="control-sidebar-bg"></div>
+
+</div>
+
+<script src="/static/eduadmin/js/vendors.min.js?v=4"></script>
+<script src="/static/eduadmin/assets/icons/feather-icons/feather.min.js?v=4"></script>
+<script src="/static/eduadmin/js/template.js?v=4"></script>
+<script>
+    // ── Auth guard ──
+    function authHeaders() {
+        const tok = sessionStorage.getItem('bb_id_token');
+        return tok ? { 'Authorization': 'Bearer ' + tok } : {};
+    }
+
+    fetch('/api/auth/me', { headers: authHeaders() })
+        .then(r => {
+            if (r.status === 401) { window.location = '/login'; return null; }
+            return r.json();
+        })
+        .then(data => {
+            if (!data || data.error) { window.location = '/login'; return; }
+            if (data.platform_role !== 'ADMIN') { window.location = '/dashboard'; return; }
+            document.getElementById('admin-email').textContent = data.email;
+        })
+        .catch(() => { window.location = '/login'; });
+
+    function signOut() {
+        fetch('/api/auth/logout', { method: 'POST' })
+            .then(() => { window.location = '/login'; })
+            .catch(() => { window.location = '/login'; });
+    }
+
+    // ── Sidebar menu-open toggle (runs AFTER template.js tree init on window.load) ──
+    window.addEventListener('load', function() {
+        var path = window.location.pathname;
+        var links = document.querySelectorAll('.sidebar-menu > li > a');
+        // Remove any stale active/menu-open classes set by template.js
+        document.querySelectorAll('.sidebar-menu > li').forEach(function(li) {
+            li.classList.remove('active', 'menu-open');
+        });
+        // Find the link matching the current URL and mark it menu-open
+        for (var i = 0; i < links.length; i++) {
+            var href = links[i].getAttribute('href');
+            if (href && (path === href || path.startsWith(href + '/') || path.startsWith(href + '?'))) {
+                var li = links[i].parentElement;
+                li.classList.add('menu-open');
+                // Also mark ancestor treeview items
+                var parent = li.parentElement;
+                while (parent && parent.classList.contains('treeview-menu')) {
+                    var ancestor = parent.parentElement;
+                    if (ancestor && ancestor.classList.contains('treeview')) {
+                        ancestor.classList.add('menu-open');
+                    }
+                    parent = ancestor ? ancestor.parentElement : null;
+                }
+                break;
+            }
+        }
+    });
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -41,11 +41,15 @@ async def get_or_create_user(
     user = result.scalar_one_or_none()
 
     if user is None:
+        # First user in the system becomes ADMIN; subsequent users get USER
+        count_result = await db.execute(select(User).limit(1))
+        is_first = count_result.scalar_one_or_none() is None
         user = User(
             external_id=identity.external_id,
             email=identity.email,
             display_name=identity.display_name,
             auth_provider=identity.provider,
+            platform_role="ADMIN" if is_first else "USER",
         )
         db.add(user)
         await db.flush()

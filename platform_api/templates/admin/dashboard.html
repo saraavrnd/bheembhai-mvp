@@ -1,0 +1,89 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Dashboard{% endblock %}
+{% block nav_dashboard %}{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-xl-3 col-md-6">
+        <div class="box bg-primary-light">
+            <div class="box-body d-flex align-items-center px-0">
+                <div class="flex-grow-1 p-30">
+                    <div class="fw-500">Projects</div>
+                    <h3 class="mt-0 mb-0" id="stat-projects">—</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="box bg-info-light">
+            <div class="box-body d-flex align-items-center px-0">
+                <div class="flex-grow-1 p-30">
+                    <div class="fw-500">Users</div>
+                    <h3 class="mt-0 mb-0" id="stat-users">—</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="box bg-success-light">
+            <div class="box-body d-flex align-items-center px-0">
+                <div class="flex-grow-1 p-30">
+                    <div class="fw-500">Workflows</div>
+                    <h3 class="mt-0 mb-0" id="stat-workflows">—</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="box bg-warning-light">
+            <div class="box-body d-flex align-items-center px-0">
+                <div class="flex-grow-1 p-30">
+                    <div class="fw-500">Recent Runs</div>
+                    <h3 class="mt-0 mb-0" id="stat-runs">—</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Welcome to BheemBhai Admin</h4>
+            </div>
+            <div class="box-body">
+                <p>As a <strong>Platform Admin</strong>, you can:</p>
+                <ul>
+                    <li><strong>Manage Projects</strong> — create, edit, and delete projects. Assign project managers.</li>
+                    <li><strong>Manage Users</strong> — view platform users, promote to ADMIN, assign to projects with SDLC roles.</li>
+                    <li><strong>Configure Integrations</strong> — set up GitHub, Jira, and other integrations per project.</li>
+                </ul>
+                <p class="mb-0">Use the sidebar to navigate between sections.</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+fetch('/api/admin/projects')
+    .then(r => r.json())
+    .then(projects => {
+        document.getElementById('stat-projects').textContent = projects.length;
+    })
+    .catch(() => { document.getElementById('stat-projects').textContent = '!'; });
+
+fetch('/api/admin/users')
+    .then(r => r.json())
+    .then(users => {
+        document.getElementById('stat-users').textContent = users.length;
+    })
+    .catch(() => { document.getElementById('stat-users').textContent = '!'; });
+
+document.getElementById('stat-workflows').textContent = '—';
+document.getElementById('stat-runs').textContent = '—';
+</script>
+{% endblock %}

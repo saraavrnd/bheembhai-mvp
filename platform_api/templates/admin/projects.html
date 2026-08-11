@@ -1,0 +1,167 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Projects{% endblock %}
+{% block nav_projects %}{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item active" aria-current="page">Projects</li>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">All Projects</h4>
+                <div class="box-controls pull-right">
+                    <button class="btn btn-primary btn-sm" onclick="showCreateModal()">
+                        <i class="ti-plus"></i> Create Project
+                    </button>
+                </div>
+            </div>
+            <div class="box-body">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="projects-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Owner</th>
+                                <th>Members</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="projects-tbody">
+                            <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create/Edit Project Modal -->
+<div class="modal fade" id="projectModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="projectModalTitle">Create Project</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="projectForm">
+                    <input type="hidden" id="project-id">
+                    <div class="form-group">
+                        <label class="form-label">Project Name</label>
+                        <input type="text" class="form-control" id="project-name" placeholder="Enter project name" required>
+                    </div>
+                    <div class="form-group" id="pm-group">
+                        <label class="form-label">Project Manager (User ID — optional)</label>
+                        <input type="text" class="form-control" id="project-pm-id" placeholder="Leave blank to set yourself as PM">
+                        <small class="text-muted">Enter the user's UUID to assign them as Project Manager.</small>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveProject()">
+                    <i class="ti-save-alt"></i> Save
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function loadProjects() {
+    fetch('/api/admin/projects')
+        .then(r => r.json())
+        .then(projects => {
+            const tbody = document.getElementById('projects-tbody');
+            if (!projects.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No projects yet. Create one!</td></tr>';
+                return;
+            }
+            tbody.innerHTML = projects.map(p => `
+                <tr>
+                    <td><strong>${esc(p.name)}</strong></td>
+                    <td>${esc(p.owner_name || p.owner_id)}</td>
+                    <td><span class="badge badge-pill badge-info">${p.member_count}</span></td>
+                    <td>${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td>
+                    <td>
+                        <a href="/admin/projects/${p.id}/members" class="btn btn-info btn-sm" title="Manage Members">
+                            <i class="ti-user"></i> Members
+                        </a>
+                        <button class="btn btn-warning btn-sm" onclick="showEditModal('${p.id}', '${esc(p.name)}')" title="Edit">
+                            <i class="ti-pencil"></i>
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick="deleteProject('${p.id}', '${esc(p.name)}')" title="Delete">
+                            <i class="ti-trash"></i>
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        })
+        .catch(() => {
+            document.getElementById('projects-tbody').innerHTML = '<tr><td colspan="5" class="text-center text-danger">Failed to load projects.</td></tr>';
+        });
+}
+
+function showCreateModal() {
+    document.getElementById('projectModalTitle').textContent = 'Create Project';
+    document.getElementById('project-id').value = '';
+    document.getElementById('project-name').value = '';
+    document.getElementById('project-pm-id').value = '';
+    document.getElementById('pm-group').style.display = '';
+    new bootstrap.Modal(document.getElementById('projectModal')).show();
+}
+
+function showEditModal(id, name) {
+    document.getElementById('projectModalTitle').textContent = 'Edit Project';
+    document.getElementById('project-id').value = id;
+    document.getElementById('project-name').value = name;
+    document.getElementById('pm-group').style.display = 'none';
+    new bootstrap.Modal(document.getElementById('projectModal')).show();
+}
+
+function saveProject() {
+    const id = document.getElementById('project-id').value;
+    const name = document.getElementById('project-name').value.trim();
+    const pmId = document.getElementById('project-pm-id').value.trim();
+
+    if (!name) { alert('Project name is required.'); return; }
+
+    const isCreate = !id;
+    const url = isCreate ? '/api/admin/projects' : `/api/admin/projects/${id}`;
+    const method = isCreate ? 'POST' : 'PATCH';
+    const body = isCreate ? { name, project_manager_id: pmId || null } : { name };
+
+    fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    })
+    .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+    .then(() => {
+        bootstrap.Modal.getInstance(document.getElementById('projectModal')).hide();
+        loadProjects();
+    })
+    .catch(err => alert('Error: ' + err.message));
+}
+
+function deleteProject(id, name) {
+    if (!confirm(`Delete project "${name}"? This action cannot be undone.`)) return;
+    fetch(`/api/admin/projects/${id}`, { method: 'DELETE' })
+        .then(r => { if (!r.ok) throw new Error(r.statusText); loadProjects(); })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+loadProjects();
+</script>
+{% endblock %}

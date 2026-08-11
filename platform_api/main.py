@@ -2,12 +2,22 @@
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
+# Configure logging so app logs are visible in Docker output
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
+)
+# Also enable uvicorn access logs
+logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+logging.getLogger("uvicorn").setLevel(logging.DEBUG)
 
 from bheembhai.config import load_config
 from bheembhai.database import close_database, init_database, run_migrations, seed_default_roles
@@ -17,7 +27,7 @@ from bheembhai.providers.cognito import CognitoProvider
 from bheembhai.providers.cognito_auth import CognitoAuthService
 from bheembhai.providers.env_secrets import EnvSecureStorage
 
-from platform_api.routers import auth, health, integrations, projects, runs, workflows
+from platform_api.routers import admin, auth, health, integrations, projects, runs, workflows
 
 logger = logging.getLogger(__name__)
 
@@ -89,15 +99,57 @@ app = FastAPI(
 )
 
 
+# ── Request-logging middleware ─────────────────────────────────────────────
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    elapsed_ms = (time.time() - start) * 1000
+    # Use print so it definitely appears in Docker logs
+    print(f"  REQ  {request.method} {request.url.path} → {response.status_code} ({elapsed_ms:.0f} ms)", flush=True)
+    return response
+
+
 @app.get("/")
 async def root(request: Request):
-    """Root page — walking skeleton status page."""
-    return templates.TemplateResponse("index.html", {"request": request})
+    """Root page — user dashboard with project selector."""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+
+@app.get("/dashboard")
+async def dashboard(request: Request):
+    """User dashboard — project selector landing page."""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+
+@app.get("/admin", include_in_schema=False)
+async def admin_index(request: Request):
+    """Admin dashboard — overview page."""
+    return templates.TemplateResponse("admin/dashboard.html", {"request": request})
+
+
+@app.get("/admin/projects", include_in_schema=False)
+async def admin_projects(request: Request):
+    """Admin projects management page."""
+    return templates.TemplateResponse("admin/projects.html", {"request": request})
+
+
+@app.get("/admin/projects/{project_id}/members", include_in_schema=False)
+async def admin_project_members(project_id: str, request: Request):
+    """Admin project members management page."""
+    return templates.TemplateResponse("admin/project_members.html", {"request": request})
+
+
+@app.get("/admin/users", include_in_schema=False)
+async def admin_users(request: Request):
+    """Admin users management page."""
+    return templates.TemplateResponse("admin/users.html", {"request": request})
 
 
 # Routers
 app.include_router(auth.router)
 app.include_router(health.router)
+app.include_router(admin.router)
 app.include_router(integrations.router)
 app.include_router(projects.router)
 app.include_router(workflows.router)

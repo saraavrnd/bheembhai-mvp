@@ -1,0 +1,100 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Users{% endblock %}
+{% block nav_users %}{% endblock %}
+
+{% block page_title %}Users{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item active" aria-current="page">Users</li>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Platform Users</h4>
+            </div>
+            <div class="box-body">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="users-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Email</th>
+                                <th>Platform Role</th>
+                                <th>Projects</th>
+                                <th>Joined</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="users-tbody">
+                            <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function loadUsers() {
+    fetch('/api/admin/users')
+        .then(r => r.json())
+        .then(users => {
+            const tbody = document.getElementById('users-tbody');
+            if (!users.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No users found.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = users.map(u => `
+                <tr>
+                    <td><strong>${esc(u.display_name)}</strong></td>
+                    <td>${esc(u.email)}</td>
+                    <td>
+                        <span class="badge badge-pill ${u.platform_role === 'ADMIN' ? 'badge-danger' : 'badge-secondary'}">${esc(u.platform_role)}</span>
+                    </td>
+                    <td>
+                        ${u.memberships.length
+                            ? u.memberships.map(m => `<span class="badge badge-pill badge-info me-1">${esc(m.project_name)}: ${esc(m.role)}</span>`).join('<br>')
+                            : '<span class="text-muted">None</span>'}
+                    </td>
+                    <td>${u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}</td>
+                    <td>
+                        <button class="btn btn-${u.platform_role === 'ADMIN' ? 'warning' : 'success'} btn-sm" onclick="toggleRole('${u.id}', '${esc(u.display_name)}', '${u.platform_role}')">
+                            <i class="${u.platform_role === 'ADMIN' ? 'ti-arrow-down' : 'ti-arrow-up'}"></i>
+                            ${u.platform_role === 'ADMIN' ? 'Demote to USER' : 'Promote to ADMIN'}
+                        </button>
+                    </td>
+                </tr>
+            `).join('');
+        })
+        .catch(() => {
+            document.getElementById('users-tbody').innerHTML = '<tr><td colspan="6" class="text-center text-danger">Failed to load users.</td></tr>';
+        });
+}
+
+function toggleRole(userId, name, currentRole) {
+    const newRole = currentRole === 'ADMIN' ? 'USER' : 'ADMIN';
+    const action = newRole === 'ADMIN' ? 'promote' : 'demote';
+    if (!confirm(`${action.charAt(0).toUpperCase() + action.slice(1)} "${name}" to ${newRole}?`)) return;
+
+    fetch(`/api/admin/users/${userId}/role`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform_role: newRole })
+    })
+    .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+    .then(() => loadUsers())
+    .catch(err => alert('Error: ' + err.message));
+}
+
+function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+loadUsers();
+</script>
+{% endblock %}

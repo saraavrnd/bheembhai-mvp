@@ -93,8 +93,13 @@ async def seed_default_roles() -> None:
     from bheembhai.models.user import ProjectRole
 
     defaults = [
-        ProjectRole(key="admin", label="Admin", is_system_default=True),
-        ProjectRole(key="member", label="Member", is_system_default=True),
+        ProjectRole(key="project_manager", label="Project Manager", is_system_default=True),
+        ProjectRole(key="developer", label="Developer", is_system_default=True),
+        ProjectRole(key="qa", label="QA Engineer", is_system_default=True),
+        ProjectRole(key="devops", label="DevOps Engineer", is_system_default=True),
+        ProjectRole(key="ba", label="Business Analyst", is_system_default=True),
+        ProjectRole(key="tech_lead", label="Tech Lead", is_system_default=True),
+        ProjectRole(key="product_owner", label="Product Owner", is_system_default=True),
         ProjectRole(key="viewer", label="Viewer", is_system_default=True),
     ]
 
@@ -107,11 +112,20 @@ async def seed_default_roles() -> None:
 
 
 async def get_session() -> AsyncSession:  # type: ignore[empty-body]
-    """Yield an async session. Used as a FastAPI dependency."""
+    """Yield an async session. Used as a FastAPI dependency.
+
+    Commits on success, rolls back on exception — so callers only need to
+    ``db.add()`` + ``await db.flush()`` and let the dependency handle the rest.
+    """
     if _sessionmaker is None:
         raise RuntimeError("Database not initialised — call init_database first")
     async with _sessionmaker() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def close_database() -> None:

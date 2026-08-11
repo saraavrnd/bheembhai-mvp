@@ -10,13 +10,18 @@ Login flow (AWS SDK, no redirect):
 import os
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from bheembhai.database import get_session
+from bheembhai.models.user import Membership
 from bheembhai.protocols.auth import Identity
 from bheembhai.providers.cognito_auth import AuthError, AuthTokens, CognitoAuthService
 
 from platform_api.dependencies import get_current_user
+from platform_api.users import get_or_create_user
 
 router = APIRouter(tags=["auth"])
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -31,6 +36,8 @@ def _auth_service(request: Request) -> CognitoAuthService | None:
 
 def _make_token_response(tokens: AuthTokens) -> JSONResponse:
     """Build a JSON response with tokens in body + id_token in httpOnly cookie."""
+    id_len = len(tokens.id_token) if tokens.id_token else 0
+    print(f"  AUTH  _make_token_response: id_token len={id_len}, setting bb_id_token cookie (httponly, samesite=lax, max_age={tokens.expires_in})", flush=True)
     response = JSONResponse(
         content={
             "id_token": tokens.id_token,
@@ -65,7 +72,11 @@ async def login_page(request: Request):
     """Serve the custom login page."""
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="platform_api/templates")
-    return templates.TemplateResponse("login.html", {"request": request})
+    response = templates.TemplateResponse("login.html", {"request": request})
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 # ── POST /api/auth/login ─────────────────────────────────────
@@ -108,8 +119,10 @@ async def login(request: Request) -> JSONResponse:
 
     if isinstance(result, AuthError):
         status = 401 if result.code == "InvalidCredentials" else 400
+        print(f"  AUTH  login FAILED: code={result.code} status={status}", flush=True)
         return _error_response(status, result.code, result.message)
 
+    print(f"  AUTH  login OK: id_token len={len(result.id_token)}, access_token len={len(result.access_token)}", flush=True)
     return _make_token_response(result)
 
 
@@ -169,18 +182,40 @@ async def logout() -> JSONResponse:
 
 
 @router.get("/api/auth/me")
-async def whoami(user: Identity | None = Depends(get_current_user)) -> dict:
-    """Return the current authenticated user's identity, or 401."""
+async def whoami(
+    request: Request,
+    user: Identity | None = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """Return the current authenticated user's identity, platform role, and memberships."""
     if user is None:
-        return JSONResponse(
-            status_code=401,
-            content={"error": "Unauthenticated", "message": "Not logged in."},
-        )
+        raise HTTPException(status_code=401, detail="Not logged in.")
+
+    db_user = await get_or_create_user(user, db)
+
+    # Fetch memberships with project names
+    from bheembhai.models.project import Project
+    memberships_result = await db.execute(
+        select(Membership, Project.name)
+        .join(Project, Membership.project_id == Project.id)
+        .where(Membership.user_id == db_user.id)
+    )
+    memberships = [
+        {
+            "project_id": str(m.project_id),
+            "project_name": project_name,
+            "role": m.role,
+        }
+        for m, project_name in memberships_result.all()
+    ]
+
     return {
         "external_id": user.external_id,
         "email": user.email,
         "display_name": user.display_name,
         "provider": user.provider,
+        "platform_role": db_user.platform_role,
+        "memberships": memberships,
     }
 
 

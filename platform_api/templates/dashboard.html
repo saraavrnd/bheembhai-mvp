@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard — BheemBhai{% endblock %}
+
+{% block content %}
+<div class="container mt-5" style="max-width: 700px;">
+    <div class="box">
+        <div class="box-header with-border">
+            <h4 class="box-title">Welcome, <span id="user-name">...</span></h4>
+        </div>
+        <div class="box-body">
+            <div class="form-group">
+                <label class="form-label"><strong>Select a Project</strong></label>
+                <select class="form-select" id="project-selector" onchange="navigateToProject(this.value)">
+                    <option value="">— Choose a project —</option>
+                </select>
+                <small class="text-muted">You'll be taken to the project's pipeline dashboard.</small>
+            </div>
+
+            <div id="no-projects-message" style="display:none;" class="alert alert-info mt-3">
+                <i class="ti-info-alt"></i> You are not assigned to any projects yet. Contact your platform admin.
+            </div>
+
+            <hr class="my-15">
+
+            <h5 class="box-title text-info">Your Project Memberships</h5>
+            <div id="memberships-list" class="mt-2">
+                <p class="text-muted">Loading...</p>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function authHeaders() {
+    const tok = sessionStorage.getItem('bb_id_token');
+    return tok ? { 'Authorization': 'Bearer ' + tok } : {};
+}
+
+fetch('/api/auth/me', { headers: authHeaders() })
+    .then(r => {
+        if (r.status === 401) { window.location = '/login'; return; }
+        return r.json();
+    })
+    .then(data => {
+        if (!data || data.error) { window.location = '/login'; return; }
+
+        document.getElementById('user-name').textContent = data.display_name;
+
+        const selector = document.getElementById('project-selector');
+        const membershipsDiv = document.getElementById('memberships-list');
+        const noProjectsMsg = document.getElementById('no-projects-message');
+
+        if (!data.memberships || data.memberships.length === 0) {
+            noProjectsMsg.style.display = '';
+            membershipsDiv.innerHTML = '';
+            return;
+        }
+
+        noProjectsMsg.style.display = 'none';
+
+        data.memberships.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.project_id;
+            opt.textContent = `${m.project_name}  —  Your Role: ${m.role}`;
+            selector.appendChild(opt);
+        });
+
+        membershipsDiv.innerHTML = data.memberships.map(m => `
+            <div class="d-flex justify-content-between align-items-center mb-2 p-2 bg-light rounded">
+                <span><strong>${esc(m.project_name)}</strong></span>
+                <span class="badge badge-pill badge-info">${esc(m.role.replace(/_/g, ' '))}</span>
+            </div>
+        `).join('');
+    })
+    .catch(() => { window.location = '/login'; });
+
+function navigateToProject(projectId) {
+    if (!projectId) return;
+    // Future: navigate to project pipeline page
+    // window.location = `/projects/${projectId}`;
+    alert('Project pipeline page coming soon! Project ID: ' + projectId);
+}
+
+function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+</script>
+{% endblock %}

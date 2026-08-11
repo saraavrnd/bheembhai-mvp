@@ -29,7 +29,7 @@ services:
       # ── Defaults when .env doesn't have a value ──────────────
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://bheembhai:bheembhai@postgres:5432/bheembhai}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key}
-      DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-true}
+      DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-false}
       AUTH_PROVIDER: ${AUTH_PROVIDER:-cognito}
       COGNITO_REGION: ${COGNITO_REGION:-us-east-1}
       STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
@@ -42,7 +42,7 @@ services:
         condition: service_healthy
     volumes:
       - ./:/app  # live-reload source during dev
-    command: uvicorn platform_api.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn platform_api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
 
   engine-service:
     build:

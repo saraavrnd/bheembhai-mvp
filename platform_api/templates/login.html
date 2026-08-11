@@ -109,9 +109,45 @@
             });
 
             const data = await resp.json();
+            console.log('LOGIN response status:', resp.status, 'ok:', resp.ok);
+            console.log('LOGIN response data keys:', Object.keys(data));
+            console.log('LOGIN id_token present:', !!data.id_token, 'length:', data.id_token ? data.id_token.length : 0);
 
             if (resp.ok) {
-                window.location.href = '/';
+                // Store token so downstream pages can use it
+                const idToken = data.id_token;
+                console.log('LOGIN idToken value type:', typeof idToken, 'truthy:', !!idToken);
+                if (idToken) {
+                    sessionStorage.setItem('bb_id_token', idToken);
+                    console.log('LOGIN saved token to sessionStorage');
+                } else {
+                    console.log('LOGIN idToken is FALSY — not saving or sending');
+                }
+                // Use the token directly to learn platform_role
+                const headers = idToken ? { 'Authorization': 'Bearer ' + idToken } : {};
+                console.log('LOGIN calling /api/auth/me with headers:', JSON.stringify(Object.keys(headers)));
+                fetch('/api/auth/me', { headers })
+                    .then(r => {
+                        if (!r.ok) {
+                            console.error('/api/auth/me returned', r.status);
+                            window.location.href = '/dashboard';
+                            return;
+                        }
+                        return r.json();
+                    })
+                    .then(me => {
+                        if (!me) return;
+                        console.log('Logged in as', me.platform_role, '— redirecting...');
+                        if (me.platform_role === 'ADMIN') {
+                            window.location.href = '/admin';
+                        } else {
+                            window.location.href = '/dashboard';
+                        }
+                    })
+                    .catch(err => {
+                        console.error('/api/auth/me failed:', err);
+                        window.location.href = '/dashboard';
+                    });
             } else {
                 error.textContent = data.message || data.error || 'Login failed';
                 error.classList.add('visible');

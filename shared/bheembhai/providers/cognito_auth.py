@@ -4,6 +4,7 @@ Separate from CognitoProvider (which validates JWTs locally).
 This class talks to Cognito over the wire via boto3.
 """
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -88,11 +89,47 @@ class CognitoAuthService:
         except ClientError as exc:
             return self._map_client_error(exc)
 
+        # ── Debug: log all top-level keys in the Cognito response ─
+        print(f"  AUTH  Cognito response keys: {list(resp.keys())}", flush=True)
+        for key in resp.keys():
+            val = resp[key]
+            if isinstance(val, dict):
+                print(f"  AUTH    {key}: {json.dumps(val, default=str)[:200]}", flush=True)
+            else:
+                print(f"  AUTH    {key}: {str(val)[:200]}", flush=True)
+
+        # ── Check for challenge (NEW_PASSWORD_REQUIRED, MFA, etc.) ─
+        challenge = resp.get("ChallengeName")
+        if challenge:
+            logger.warning(
+                "Cognito challenge: %s (user=%s)", challenge, email,
+            )
+            return AuthError(
+                code=challenge,
+                message=f"Cognito requires additional action: {challenge}. "
+                        "Use /api/auth/respond-to-challenge to complete authentication.",
+            )
+
         result = resp.get("AuthenticationResult", {})
+        id_token = result.get("IdToken", "")
+        access_token = result.get("AccessToken", "")
+        refresh_token = result.get("RefreshToken", "")
+
+        if not id_token:
+            logger.warning(
+                "Cognito returned empty IdToken. Response keys: %s",
+                list(resp.keys()),
+            )
+            return AuthError(
+                code="EmptyToken",
+                message="Cognito did not return an IdToken. The credentials may be correct "
+                        "but the authentication flow requires additional steps.",
+            )
+
         return AuthTokens(
-            id_token=result.get("IdToken", ""),
-            access_token=result.get("AccessToken", ""),
-            refresh_token=result.get("RefreshToken", ""),
+            id_token=id_token,
+            access_token=access_token,
+            refresh_token=refresh_token,
             expires_in=result.get("ExpiresIn", 3600),
         )
 

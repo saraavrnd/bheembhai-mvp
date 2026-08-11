@@ -77,7 +77,7 @@ async def create_project(
     membership = Membership(
         user_id=current_user.id,
         project_id=project.id,
-        role="admin",
+        role="project_manager",
     )
     db.add(membership)
     await db.commit()

@@ -25,7 +25,9 @@ class CognitoProvider:
 
     async def validate(self, token: str) -> Identity | None:
         try:
+            print(f"  AUTH  CognitoProvider.validate: fetching JWKS from {self._jwks_url}", flush=True)
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+            print(f"  AUTH  CognitoProvider.validate: JWKS key obtained, decoding JWT...", flush=True)
             claims = jwt.decode(
                 token,
                 signing_key.key,
@@ -34,6 +36,7 @@ class CognitoProvider:
                 audience=self.client_id,
                 options={"verify_exp": True},
             )
+            print(f"  AUTH  CognitoProvider.validate: JWT valid — sub={claims.get('sub','?')} email={claims.get('email','?')}", flush=True)
             return Identity(
                 external_id=claims["sub"],
                 email=claims.get("email", ""),
@@ -41,7 +44,14 @@ class CognitoProvider:
                 provider="cognito",
                 raw_claims=claims,
             )
-        except (jwt.PyJWTError, Exception):
+        except jwt.ExpiredSignatureError:
+            print(f"  AUTH  CognitoProvider.validate: TOKEN EXPIRED", flush=True)
+            return None
+        except jwt.InvalidTokenError as e:
+            print(f"  AUTH  CognitoProvider.validate: INVALID TOKEN — {e}", flush=True)
+            return None
+        except Exception as e:
+            print(f"  AUTH  CognitoProvider.validate: UNEXPECTED ERROR — {type(e).__name__}: {e}", flush=True)
             return None
 
     async def jwks(self) -> dict[str, Any]:
