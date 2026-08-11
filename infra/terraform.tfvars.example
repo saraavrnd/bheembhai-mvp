@@ -1,0 +1,38 @@
+# ── Example Terraform variables ─────────────────────────────────────
+# Copy this to terraform.tfvars, fill in your values, and NEVER commit it.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#   # edit terraform.tfvars
+#   terraform apply
+
+aws_region      = "us-east-1"
+environment     = "dev"
+instance_type   = "t3.micro"
+ebs_volume_size_gb = 30
+
+# SSH key pair name (must already exist in AWS)
+ssh_key_name    = "your-key-pair-name"
+
+# Restrict SSH to your IP (get it: curl ifconfig.me)
+ssh_allowed_cidr = "203.0.113.42/32"
+
+# Application
+git_remote_url    = "https://github.com/you/your-repo.git"
+git_source_branch = "main"
+
+# Generate: openssl rand -hex 32
+app_secret_key = "replace-with-openssl-rand-hex-32-output"
+
+# Cognito — EC2 public IP will be added after first apply
+# (localhost is fine for the boto3 SDK auth flow)
+cognito_callback_urls = ["http://localhost:8000"]
+
+# Secrets — values stored in SSM SecureString
+# Use placeholder for first apply, then update in AWS console or via CLI
+github_token    = "ghp_xxxxxxxxxxxxxxxxxxxx"
+jira_api_token  = "your-jira-api-token"
+jira_url        = "https://your-org.atlassian.net"
+jira_email      = "you@example.com"
+
+# Anthropic
+anthropic_api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

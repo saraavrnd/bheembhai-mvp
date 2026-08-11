@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bheembhai
+          POSTGRES_PASSWORD: bheembhai
+          POSTGRES_DB: bheembhai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e shared/[dev]
+          pip install fastapi uvicorn httpx jinja2 python-multipart
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check shared/ platform_api/ engine_service/ tests/
+
+      - name: Unit tests
+        run: pytest tests/unit/ -v
+
+      - name: Integration tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://bheembhai:bheembhai@localhost:5432/bheembhai_test
+        run: pytest tests/integration/ -v

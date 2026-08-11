@@ -1,0 +1,786 @@
+openapi: "3.1.0"
+info:
+  title: BheemBhai Platform API
+  description: |
+    Public API for the BheemBhai UI. Serves the HTML frontend and all user-facing operations:
+    auth verification, project management, workflow/policy CRUD, execution history, and
+    approval decisions. Runs behind an edge proxy (ALB, Azure App Gateway, etc.) that handles
+    the OAuth login flow with the configured identity provider.
+
+    Auth is pluggable (ADR-010): the backend validates JWTs via a config-driven provider plugin
+    (Cognito, Azure AD, Okta, etc.). Claims are normalized to email + external_id regardless of
+    provider.
+  version: "1.0.0"
+
+servers:
+  - url: https://bheembhai.example.com/api
+    description: Production (behind edge proxy + IdP)
+
+security:
+  - bearer_jwt: []
+
+paths:
+  # ── Config ──────────────────────────────────────────────────────────────
+  /config:
+    get:
+      summary: Get UI configuration
+      description: |
+        Returns available workflows, policies, git mode status, source branch,
+        and the active model profile. Used by the UI to populate dropdowns and
+        show/hide features (e.g. hide branch field in copy mode).
+      responses:
+        "200":
+          description: Config object
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UIConfig"
+
+  # ── Projects ────────────────────────────────────────────────────────────
+  /projects:
+    get:
+      summary: List projects for the authenticated user
+      responses:
+        "200":
+          description: Project list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectSummary"
+    post:
+      summary: Create a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: "My Project"
+      responses:
+        "201":
+          description: Project created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+
+  /projects/{project_id}:
+    get:
+      summary: Get project detail
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Project with integrations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Project"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  # ── Integrations ────────────────────────────────────────────────────────
+  /projects/{project_id}/integrations:
+    post:
+      summary: Add or update a project integration (GitHub or Jira)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, label, config]
+              properties:
+                type:
+                  type: string
+                  enum: [github, jira]
+                label:
+                  type: string
+                  description: Human-readable label to distinguish integrations of the same type (e.g., "Backend Board", "Frontend Repo")
+                  example: "main-repo"
+                config:
+                  type: object
+                  description: |
+                    GitHub: {repo_url, repo_owner, repo_name, default_branch}
+                    Jira: {jira_url, project_key}
+                credential:
+                  type: string
+                  description: Raw token (GitHub PAT or Jira API token) — stored via the configured SecureStorage backend (ADR-012), never persisted in DB
+              example:
+                type: github
+                label: "main-repo"
+                config:
+                  repo_url: "https://github.com/owner/repo"
+                  repo_owner: "owner"
+                  repo_name: "repo"
+                  default_branch: "main"
+                credential: "ghp_xxxxxxxxxxxx"
+      responses:
+        "201":
+          description: Integration saved (credential stored via SecureStorage backend, credential_ref in DB)
+        "409":
+          description: Integration with this type and label already exists
+        "422":
+          description: Validation error (e.g. repo not found, token invalid)
+
+  # ── Workflows ───────────────────────────────────────────────────────────
+  /projects/{project_id}/workflows:
+    get:
+      summary: List workflows for a project (active versions only)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Workflow list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkflowSummary"
+    post:
+      summary: Create a new workflow
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, yaml_content]
+              properties:
+                name: { type: string }
+                yaml_content: { type: string, description: "Workflow YAML (validated)" }
+      responses:
+        "201":
+          description: Workflow created (version 1, active)
+        "422":
+          description: Validation error (invalid YAML, unknown model, broken routing)
+
+  /projects/{project_id}/workflows/{workflow_id}:
+    get:
+      summary: Get a specific workflow version
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: workflow_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Workflow with YAML content
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+    put:
+      summary: Update a workflow (creates a new version)
+      description: |
+        Increments version, sets is_active on the new version, deactivates the old.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                yaml_content: { type: string }
+      responses:
+        "200":
+          description: New version created
+        "422":
+          description: Validation error
+
+  # ── Policies ────────────────────────────────────────────────────────────
+  /projects/{project_id}/policies:
+    get:
+      summary: List policies for a project (active versions only)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: workflow_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: Filter by workflow
+      responses:
+        "200":
+          description: Policy list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PolicySummary"
+    post:
+      summary: Create a new policy (must be tied to a workflow)
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, workflow_id, yaml_content]
+              properties:
+                name: { type: string }
+                workflow_id: { type: string, format: uuid, description: "Workflow this policy gates" }
+                yaml_content: { type: string, description: "Policy YAML (validated against workflow steps/routing)" }
+      responses:
+        "201":
+          description: Policy created (version 1, active)
+        "422":
+          description: |
+            Validation error. Includes pairing validation: every gated step must exist in the
+            workflow, every gated status must have a routing target in the workflow's on: map.
+
+  # ── Runs ────────────────────────────────────────────────────────────────
+  /runs:
+    get:
+      summary: List runs for the authenticated user's projects
+      parameters:
+        - name: project_id
+          in: query
+          schema: { type: string, format: uuid }
+          description: Filter by project
+        - name: state
+          in: query
+          schema: { type: string }
+          description: Filter by run state
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Paginated run list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RunSummary"
+                  total:
+                    type: integer
+    post:
+      summary: Start a new run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_id, workflow_id, policy_id]
+              properties:
+                project_id: { type: string, format: uuid }
+                workflow_id: { type: string, format: uuid }
+                policy_id:
+                  type: string
+                  format: uuid
+                  description: Must reference a policy whose workflow_id matches workflow_id
+                story_id:
+                  type: string
+                  description: Jira story key (e.g. BEEM-24)
+                source_branch:
+                  type: string
+                  description: Override GIT_SOURCE_BRANCH (blank = env default)
+      responses:
+        "201":
+          description: Run created and started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+        "422":
+          description: Validation error (unknown workflow, policy not tied to workflow, etc.)
+
+  /runs/{run_id}:
+    get:
+      summary: Get run detail with step history
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Run with steps
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Run"
+
+  /runs/{run_id}/file:
+    get:
+      summary: Get a pre-signed URL for a run artifact file
+      description: |
+        Returns a temporary (5-minute) pre-signed URL for the file viewer. The URL format
+        depends on the configured ObjectStorage backend (ADR-011): S3 pre-signed URL, Azure
+        Blob SAS URL, MinIO pre-signed URL, or local filesystem path.
+        Guarded: text files only (by extension), max 2 MB, path-traversal guarded by storage
+        key validation.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+          description: Storage key suffix (e.g. "story-design/1/bb_step_result.json")
+      responses:
+        "200":
+          description: Pre-signed URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri }
+                  expires_in: { type: integer, example: 300 }
+
+  /runs/{run_id}/decision:
+    post:
+      summary: Submit an approval decision at a gate
+      description: |
+        Approve or request changes at a paused gate. Requires 'lead' role if the
+        policy gate specifies role: lead.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [approve, request_changes]
+                comment:
+                  type: string
+                  description: Feedback for the next step attempt
+      responses:
+        "200":
+          description: Decision recorded, engine notified
+        "403":
+          description: User role not sufficient for this gate
+        "409":
+          description: Run is not awaiting approval
+
+  # ── Roles (project role catalog) ────────────────────────────────────────
+  /roles:
+    get:
+      summary: List all project roles in the catalog
+      description: |
+        Returns the full project-role catalog. Used by role-picker UIs
+        (project member management, policy gate role selector) to populate
+        dynamically. Platform-wide — all projects share the same catalog (ADR-008).
+      responses:
+        "200":
+          description: Role list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProjectRole"
+    post:
+      summary: Add a new project role to the catalog
+      description: |
+        Requires platform_role = PLATFORM_ADMIN. Adding a role type is a
+        platform-wide governance action (ADR-008). Idempotent-safe: returns
+        409 Conflict if the key already exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key, label]
+              properties:
+                key:
+                  type: string
+                  description: Stable identifier (e.g., "SECURITY_AUDITOR")
+                  pattern: "^[A-Z][A-Z0-9_]*$"
+                label:
+                  type: string
+                  description: Human-readable display name
+                  example: "Security Auditor"
+      responses:
+        "201":
+          description: Role added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectRole"
+        "403":
+          description: User is not PLATFORM_ADMIN
+        "409":
+          description: Role key already exists
+
+  # ── Memberships ─────────────────────────────────────────────────────────
+  /projects/{project_id}/members:
+    get:
+      summary: List members of a project with their roles
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Member list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Member"
+    post:
+      summary: Add a member to a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, role]
+              properties:
+                user_id: { type: string, format: uuid }
+                role:
+                  type: string
+                  description: Must match a key in the project_roles catalog
+                  example: "DEVELOPER"
+      responses:
+        "201":
+          description: Member added
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+        "422":
+          description: Role key not found in catalog
+
+  /projects/{project_id}/members/{user_id}:
+    put:
+      summary: Update a member's role
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string }
+      responses:
+        "200":
+          description: Role updated
+    delete:
+      summary: Remove a member from a project
+      parameters:
+        - name: project_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204":
+          description: Member removed
+
+  # ── Polling ─────────────────────────────────────────────────────────────
+  /poll:
+    get:
+      summary: Poll the event stream (cursor-based)
+      description: |
+        Primary transport for real-time UI updates. Pass the cursor from the
+        previous response to get only new events. First call omits the cursor.
+      parameters:
+        - name: since
+          in: query
+          schema: { type: integer }
+          description: Cursor from previous poll response
+      responses:
+        "200":
+          description: Events since cursor + new cursor
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Event"
+                  cursor:
+                    type: integer
+
+  # ── HTML UI (not REST — documented for completeness) ─────────────────────
+  /:
+    get:
+      summary: Serve the main UI (HTML)
+      description: |
+        Server-rendered Jinja2 template. Requires auth (edge proxy enforced).
+        Redirects to IdP hosted UI if no valid JWT.
+      responses:
+        "200":
+          description: HTML page
+
+components:
+  securitySchemes:
+    bearer_jwt:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT validated by the configured AuthProvider plugin (ADR-010). The edge proxy
+        (ALB, Azure App Gateway, etc.) handles the OAuth login flow. The backend receives
+        a validated token and verifies it via the provider plugin (JWKS signature + expiry
+        check). Claims are normalized to email + external_id regardless of provider.
+        In production the token may arrive via x-amzn-oidc-* headers (ALB) or the
+        Authorization header (other proxies).
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Not authorized for this project
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+        detail: { type: string }
+        request_id: { type: string }
+
+    UIConfig:
+      type: object
+      properties:
+        workflows:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowSummary"
+        policies:
+          type: array
+          items:
+            $ref: "#/components/schemas/PolicySummary"
+        git_mode: { type: boolean }
+        source_branch: { type: string }
+        model_profile: { type: string }
+
+    ProjectRole:
+      type: object
+      properties:
+        key: { type: string, example: "PROJECT_MANAGER" }
+        label: { type: string, example: "Project Manager" }
+        is_system_default: { type: boolean }
+
+    Member:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        email: { type: string }
+        display_name: { type: string }
+        role: { type: string, example: "DEVELOPER" }
+        created_at: { type: string, format: date-time }
+
+    ProjectSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        owner_email: { type: string }
+        integration_count: { type: integer }
+        run_count: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    Project:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        owner_id: { type: string, format: uuid }
+        integrations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Integration"
+        created_at: { type: string, format: date-time }
+
+    Integration:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [github, jira] }
+        label: { type: string, description: "Human-readable label (e.g. 'Backend Board', 'main-repo')" }
+        config: { type: object }
+        verified_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    WorkflowSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: integer }
+        steps: { type: integer, description: "Number of steps in the workflow" }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    Workflow:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: integer }
+        yaml_content: { type: string }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    PolicySummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: integer }
+        workflow_id: { type: string, format: uuid }
+        workflow_name: { type: string }
+        gates: { type: integer, description: "Number of gates" }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    Policy:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: integer }
+        yaml_content: { type: string }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    RunSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        project_name: { type: string }
+        workflow_name: { type: string }
+        story_id: { type: string }
+        state: { type: string }
+        current_step: { type: string }
+        cost_usd: { type: number }
+        created_at: { type: string, format: date-time }
+
+    Run:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        project_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        policy_id: { type: string, format: uuid }
+        story_id: { type: string }
+        source_branch: { type: string }
+        run_branch: { type: string }
+        state: { type: string }
+        current_step: { type: string }
+        cost_usd: { type: number }
+        created_at: { type: string, format: date-time }
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/Step"
+
+    Step:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        step_id: { type: string }
+        skill: { type: string }
+        exec_state: { type: string }
+        result_status: { type: string }
+        model_requested: { type: string }
+        models_used: { type: string }
+        cost_usd: { type: number }
+        attempt_no: { type: integer }
+        started_at: { type: string, format: date-time }
+        ended_at: { type: string, format: date-time }
+        artifact_files:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+              size_bytes: { type: integer }
+
+    Event:
+      type: object
+      properties:
+        type: { type: string, enum: [transition, approval_required, run_finished] }
+        run_id: { type: string, format: uuid }
+        step_id: { type: string }
+        data: { type: object }
+        ts: { type: number }

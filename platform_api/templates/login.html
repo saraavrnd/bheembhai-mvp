@@ -1,0 +1,128 @@
+{% extends "auth_base.html" %}
+{% block title %}Sign in{% endblock %}
+
+{% block auth_heading %}Let us run Business under one roof...{% endblock %}
+
+{% block auth_caption %}
+<p class="caption">Signin to BheemBhai...</p>
+{% endblock %}
+
+{% block head %}
+<style>
+    .field { margin-bottom: 20px; }
+    .field label {
+        display: block; font-size: 13px; font-weight: 600;
+        color: #2c3e50; margin-bottom: 6px;
+    }
+    .field input {
+        width: 100%; padding: 10px 14px;
+        border: 1px solid #dcdfe3;
+        border-radius: 4px; color: #2c3e50;
+        font-size: 14px; font-family: inherit;
+        background: #f8f9fa;
+        transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .field input:focus {
+        outline: none; border-color: #3869d4;
+        box-shadow: 0 0 0 3px rgba(56, 105, 212, 0.12);
+        background: #fff;
+    }
+
+    .btn {
+        width: 100%; padding: 11px;
+        background: #3869d4; color: #fff;
+        border: none; border-radius: 4px;
+        font-size: 14px; font-weight: 600;
+        font-family: inherit; cursor: pointer;
+        transition: background 0.15s; margin-top: 4px;
+    }
+    .btn:hover { background: #2b54b5; }
+    .btn:disabled { background: #b0bec5; cursor: not-allowed; }
+
+    .error {
+        background: #fff5f5; border: 1px solid #fed7d7;
+        color: #c53030; border-radius: 4px;
+        padding: 10px 14px; font-size: 13px;
+        margin-bottom: 20px; display: none;
+    }
+    .error.visible { display: block; }
+
+    .dev-badge {
+        text-align: center; margin-top: 20px;
+        font-size: 11px; color: #b7791f;
+        background: #fffaf0; border: 1px solid #fbd38d;
+        border-radius: 4px; padding: 6px 12px; display: none;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="error" class="error"></div>
+
+<form id="login-form">
+    <div class="field">
+        <label for="email">Email</label>
+        <input id="email" type="email" name="email"
+               placeholder="dev@bheembhai.local" autocomplete="email" autofocus>
+    </div>
+    <div class="field">
+        <label for="password">Password</label>
+        <input id="password" type="password" name="password"
+               placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <button id="submit-btn" class="btn" type="submit">Sign in</button>
+</form>
+
+<div class="dev-badge" id="dev-badge">⚡ DEV MODE — any credentials accepted</div>
+
+<script>
+    const form = document.getElementById('login-form');
+    const error = document.getElementById('error');
+    const btn = document.getElementById('submit-btn');
+    const devBadge = document.getElementById('dev-badge');
+
+    // Detect dev bypass mode
+    fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: '', password: '' })
+    }).then(r => r.json()).then(data => {
+        if (data.id_token === 'dev-id-token') {
+            devBadge.style.display = 'block';
+        }
+    }).catch(() => {});
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        error.classList.remove('visible');
+        btn.disabled = true;
+        btn.textContent = 'Signing in…';
+
+        const email = document.getElementById('email').value;
+        const password = document.getElementById('password').value;
+
+        try {
+            const resp = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password }),
+            });
+
+            const data = await resp.json();
+
+            if (resp.ok) {
+                window.location.href = '/';
+            } else {
+                error.textContent = data.message || data.error || 'Login failed';
+                error.classList.add('visible');
+            }
+        } catch (err) {
+            error.textContent = 'Network error — is the server running?';
+            error.classList.add('visible');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Sign in';
+        }
+    });
+</script>
+{% endblock %}

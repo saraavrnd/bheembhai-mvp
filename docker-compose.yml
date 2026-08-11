@@ -1,0 +1,74 @@
+services:
+  # ── Data layer ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bheembhai
+      POSTGRES_PASSWORD: bheembhai
+      POSTGRES_DB: bheembhai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bheembhai"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Application layer ──────────────────────────────────────
+  platform-api:
+    build:
+      context: .
+      dockerfile: platform_api/Dockerfile
+    ports:
+      - "8000:8000"
+    environment: &app-env
+      DATABASE_URL: postgresql+asyncpg://bheembhai:bheembhai@postgres:5432/bheembhai
+      SECRET_KEY: dev-secret-key
+
+      # ── Auth — AWS Cognito ───────────────────────────────────
+      # DEV_AUTH_BYPASS=true  → skips Cognito, any login accepted
+      # DEV_AUTH_BYPASS=false → validates against real Cognito pool
+      DEV_AUTH_BYPASS: "true"
+      AUTH_PROVIDER: cognito
+      COGNITO_REGION: us-east-1
+      COGNITO_USER_POOL_ID: us-east-1_xxxxxxxxx
+      COGNITO_CLIENT_ID: xxxxxxxxxxxxxxxxxxxxxxxxxx
+
+      # ── Storage — AWS S3 ─────────────────────────────────────
+      # Bucket tagged DEV in AWS; SDK resolves credentials via env/instance-profile
+      STORAGE_BACKEND: s3
+      S3_BUCKET: bheembhai-artifacts-dev
+      S3_REGION: us-east-1
+
+      # ── Secrets — in-memory (dev) / SSM (AWS) ───────────────────
+      # Dev: "env" stores secrets in-process (lost on restart — fine for dev).
+      # AWS: "aws_ssm" (free) or "aws_secrets_manager" (rotation).
+      SECURE_STORAGE_BACKEND: env
+      AWS_DEFAULT_REGION: us-east-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./:/app  # live-reload source during dev
+    command: uvicorn platform_api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  engine-service:
+    build:
+      context: .
+      dockerfile: engine_service/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      <<: *app-env
+      ENGINE_ID: engine-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./:/app
+    command: uvicorn engine_service.main:app --host 0.0.0.0 --port 8001 --reload
+
+volumes:
+  pgdata:

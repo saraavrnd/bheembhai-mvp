@@ -1,0 +1,109 @@
+openapi: "3.1.0"
+info:
+  title: BheemBhai Engine Service
+  description: |
+    Internal API for the workflow execution engine. The Engine does NOT expose
+    endpoints for Platform API to call — instead, the Platform API writes work items
+    to the `work_queue` table in Postgres, and the Engine pulls them via
+    `SELECT ... FOR UPDATE SKIP LOCKED` (ADR-003).
+
+    The only endpoints exposed here are health checks (for ALB target groups and
+    systemd) and the webhook contract (Engine → Platform, documented here for
+    completeness). The Engine is authenticated via shared secret header token.
+  version: "1.0.0"
+
+servers:
+  - url: http://engine:8001
+    description: Internal (same EC2 or internal ALB)
+
+security:
+  - shared_secret: []
+
+paths:
+  # ── Webhook (Engine → Platform) ─────────────────────────────────────────
+  # The Engine calls the Platform API, not the other way around.
+  # Documented here for the contract, but the endpoint lives on the Platform API.
+  /webhooks/engine:
+    post:
+      summary: Receive events from Engine Service
+      description: |
+        Called by the Engine, NOT by the Platform API. Listed here to document
+        the full engine→platform contract. Implemented on the Platform API.
+
+        Events are pushed at step boundaries and gate transitions. The Platform API
+        writes them to the event table; browsers pick them up via `/api/poll`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, run_id]
+              properties:
+                type:
+                  type: string
+                  enum: [approval_required, run_completed, run_failed, step_completed]
+                run_id: { type: string, format: uuid }
+                step_id: { type: string }
+                data: { type: object }
+      responses:
+        "200":
+          description: Event processed (published to event bus)
+
+  # ── Health ───────────────────────────────────────────────────────────────
+  /engine/health:
+    get:
+      summary: Health check
+      description: |
+        Returns engine status, in-flight run count, Fargate task count, and
+        orphaned work item count (stale claims detected). Used by ALB target
+        group and systemd for liveness checks.
+      security: []
+      responses:
+        "200":
+          description: Engine is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: "ok" }
+                  engine_id: { type: string, description: "Unique instance ID (hostname or ENGINE_ID env var)" }
+                  in_flight_runs: { type: integer, description: "Runs currently being processed by this engine" }
+                  fargate_tasks: { type: integer, description: "Active Fargate tasks this engine is polling" }
+                  orphaned_items: { type: integer, description: "Stale work_queue claims detected on last recovery (0 = clean)" }
+                  queue_depth: { type: integer, description: "Pending work_queue items not yet claimed by any engine" }
+
+components:
+  securitySchemes:
+    shared_secret:
+      type: apiKey
+      in: header
+      name: X-Engine-Token
+      description: Shared secret known to Platform API and Engine Service
+
+  schemas:
+    EngineRunStatus:
+      type: object
+      description: |
+        Current run state as seen by the Engine. Used internally for debugging;
+        not called by Platform API in the normal flow. Run state is surfaced
+        through the events table + `/api/poll` on the Platform API.
+      properties:
+        run_id: { type: string, format: uuid }
+        state: { type: string }
+        current_step: { type: string }
+        claimed_by: { type: string, description: "Engine ID that owns this run's in-flight work" }
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              step_id: { type: string }
+              exec_state: { type: string }
+              result_status: { type: string }
+              attempt_no: { type: integer }
+              fargate_task_arn: { type: string }
+              artifact_storage_key: { type: string }
+              started_at: { type: string, format: date-time }
+              ended_at: { type: string, format: date-time }

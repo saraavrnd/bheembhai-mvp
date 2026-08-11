@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="semidark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BheemBhai — {% block title %}Platform{% endblock %}</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐝</text></svg>">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0f1117; color: #e1e4e8;
+            min-height: 100vh;
+        }
+        .topbar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 24px;
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+        }
+        .topbar .brand { font-family: 'Space Grotesk', sans-serif; font-size: 18px; font-weight: 600; }
+        .topbar .brand a { color: #e1e4e8; text-decoration: none; }
+        .topbar .user {
+            display: flex; align-items: center; gap: 12px;
+            font-size: 13px; color: #8b949e;
+        }
+        .topbar .user a { color: #58a6ff; text-decoration: none; }
+        .topbar .user a:hover { text-decoration: underline; }
+        .content { max-width: 900px; margin: 40px auto; padding: 0 24px; }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="topbar">
+        <span class="brand"><a href="/">🐝 BheemBhai</a></span>
+        <span class="user" id="user-info">
+            <a href="/login">Sign in</a>
+        </span>
+    </nav>
+    <div class="content">
+        {% block content %}{% endblock %}
+    </div>
+
+    <script>
+        // Check auth state on page load
+        fetch('/api/auth/me')
+            .then(r => r.json())
+            .then(data => {
+                const el = document.getElementById('user-info');
+                if (data.email) {
+                    el.innerHTML = data.display_name + ' · ' +
+                        '<a href="#" onclick="logout();return false;">Sign out</a>';
+                }
+            })
+            .catch(() => {});
+
+        async function logout() {
+            await fetch('/api/auth/logout', { method: 'POST' });
+            window.location.href = '/login';
+        }
+    </script>
+</body>
+</html>
