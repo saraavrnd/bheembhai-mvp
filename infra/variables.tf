@@ -18,6 +18,12 @@ variable "environment" {
 }
 
 # ── EC2 ────────────────────────────────────────────────────────────
+variable "enable_ec2" {
+  description = "Provision EC2 + IAM + SG (default false — set to true when ready to deploy the box)"
+  type        = bool
+  default     = false
+}
+
 variable "instance_type" {
   description = "EC2 instance type"
   type        = string
@@ -37,14 +43,15 @@ variable "ebs_volume_size_gb" {
 }
 
 variable "ssh_key_name" {
-  description = "Existing EC2 key-pair name for SSH access"
+  description = "Existing EC2 key-pair name for SSH access (only needed when enable_ec2 = true)"
   type        = string
+  default     = ""
 }
 
 variable "ssh_allowed_cidr" {
-  description = "CIDR allowed to SSH into the instance"
+  description = "CIDR allowed to SSH into the instance (only needed when enable_ec2 = true)"
   type        = string
-  default     = "0.0.0.0/0" # restrict this to your IP in tfvars
+  default     = "0.0.0.0/0"
 
   validation {
     condition     = can(cidrnetmask(var.ssh_allowed_cidr))
@@ -54,8 +61,9 @@ variable "ssh_allowed_cidr" {
 
 # ── Application ────────────────────────────────────────────────────
 variable "git_remote_url" {
-  description = "Git remote URL to clone the app from"
+  description = "Git remote URL to clone the app from (only needed when enable_ec2 = true)"
   type        = string
+  default     = ""
 }
 
 variable "git_source_branch" {
@@ -65,9 +73,10 @@ variable "git_source_branch" {
 }
 
 variable "app_secret_key" {
-  description = "Secret key for session signing (generate: openssl rand -hex 32)"
+  description = "Secret key for session signing — only needed when enable_ec2 = true (generate: openssl rand -hex 32)"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # ── Auth (Cognito) ─────────────────────────────────────────────────
@@ -75,38 +84,4 @@ variable "cognito_callback_urls" {
   description = "Allowed callback URLs for the Cognito app client"
   type        = list(string)
   default     = ["http://localhost:8000"]
-}
-
-# ── Secrets (SSM — keep these out of version control) ──────────────
-variable "github_token" {
-  description = "GitHub personal access token for agent integrations"
-  type        = string
-  sensitive   = true
-  default     = "" # set in tfvars
-}
-
-variable "jira_api_token" {
-  description = "Jira API token for agent integrations"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
-variable "jira_url" {
-  description = "Jira instance URL"
-  type        = string
-  default     = ""
-}
-
-variable "jira_email" {
-  description = "Jira user email for API access"
-  type        = string
-  default     = ""
-}
-
-variable "anthropic_api_key" {
-  description = "Anthropic API key for Claude Code agent"
-  type        = string
-  sensitive   = true
-  default     = ""
 }

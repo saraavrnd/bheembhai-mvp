@@ -1,4 +1,4 @@
-# ── Amazon Linux 2023 AMI ──────────────────────────────────────────
+# ── Amazon Linux 2023 AMI (data source — always available) ──────────
 data "aws_ami" "al2023" {
   most_recent = true
   owners      = ["amazon"]
@@ -13,11 +13,15 @@ data "aws_ami" "al2023" {
   }
 }
 
+# ═══════════════════════════════════════════════════════════════════════
+# Everything below is gated behind enable_ec2.
+# Set enable_ec2 = true in terraform.tfvars when you're ready to deploy.
+# ═══════════════════════════════════════════════════════════════════════
+
 # ── IAM Role + Instance Profile ────────────────────────────────────
-# The EC2 box gets an IAM role so it never needs hardcoded AWS creds.
-# Apps resolve permissions via the instance metadata service automatically.
 resource "aws_iam_role" "app" {
-  name = "${local.name_prefix}-ec2-role"
+  count = var.enable_ec2 ? 1 : 0
+  name  = "${local.name_prefix}-ec2-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -31,6 +35,7 @@ resource "aws_iam_role" "app" {
 
 # Policy: read SSM secrets the app needs at boot
 resource "aws_iam_policy" "ssm_read" {
+  count       = var.enable_ec2 ? 1 : 0
   name        = "${local.name_prefix}-ssm-read"
   description = "Allow EC2 to read app secrets from SSM Parameter Store"
 
@@ -46,6 +51,7 @@ resource "aws_iam_policy" "ssm_read" {
 
 # Policy: S3 read/write for the artifacts bucket
 resource "aws_iam_policy" "s3_artifacts" {
+  count       = var.enable_ec2 ? 1 : 0
   name        = "${local.name_prefix}-s3-artifacts"
   description = "Allow EC2 to read/write the artifacts S3 bucket"
 
@@ -67,6 +73,7 @@ resource "aws_iam_policy" "s3_artifacts" {
 
 # Policy: Cognito admin actions (for user management from the app)
 resource "aws_iam_policy" "cognito_admin" {
+  count       = var.enable_ec2 ? 1 : 0
   name        = "${local.name_prefix}-cognito-admin"
   description = "Allow EC2 to call Cognito admin APIs"
 
@@ -88,31 +95,35 @@ resource "aws_iam_policy" "cognito_admin" {
 }
 
 resource "aws_iam_role_policy_attachment" "ssm" {
-  role       = aws_iam_role.app.name
-  policy_arn = aws_iam_policy.ssm_read.arn
+  count      = var.enable_ec2 ? 1 : 0
+  role       = aws_iam_role.app[0].name
+  policy_arn = aws_iam_policy.ssm_read[0].arn
 }
 
 resource "aws_iam_role_policy_attachment" "s3" {
-  role       = aws_iam_role.app.name
-  policy_arn = aws_iam_policy.s3_artifacts.arn
+  count      = var.enable_ec2 ? 1 : 0
+  role       = aws_iam_role.app[0].name
+  policy_arn = aws_iam_policy.s3_artifacts[0].arn
 }
 
 resource "aws_iam_role_policy_attachment" "cognito" {
-  role       = aws_iam_role.app.name
-  policy_arn = aws_iam_policy.cognito_admin.arn
+  count      = var.enable_ec2 ? 1 : 0
+  role       = aws_iam_role.app[0].name
+  policy_arn = aws_iam_policy.cognito_admin[0].arn
 }
 
 resource "aws_iam_instance_profile" "app" {
-  name = "${local.name_prefix}-ec2-profile"
-  role = aws_iam_role.app.name
+  count = var.enable_ec2 ? 1 : 0
+  name  = "${local.name_prefix}-ec2-profile"
+  role  = aws_iam_role.app[0].name
 }
 
 # ── Security Group ─────────────────────────────────────────────────
 resource "aws_security_group" "app" {
+  count       = var.enable_ec2 ? 1 : 0
   name        = "${local.name_prefix}-sg"
   description = "BheemBhai app — HTTP + SSH"
 
-  # Platform API
   ingress {
     description = "Platform API"
     from_port   = 8000
@@ -121,7 +132,6 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Engine Service
   ingress {
     description = "Engine Service"
     from_port   = 8001
@@ -130,7 +140,6 @@ resource "aws_security_group" "app" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # SSH — restrict to your IP in tfvars
   ingress {
     description = "SSH"
     from_port   = 22
@@ -151,11 +160,12 @@ resource "aws_security_group" "app" {
 
 # ── EC2 Instance ───────────────────────────────────────────────────
 resource "aws_instance" "app" {
+  count                = var.enable_ec2 ? 1 : 0
   ami                  = var.instance_ami != "" ? var.instance_ami : data.aws_ami.al2023.id
   instance_type        = var.instance_type
   key_name             = var.ssh_key_name
-  iam_instance_profile = aws_iam_instance_profile.app.name
-  security_groups      = [aws_security_group.app.name]
+  iam_instance_profile = aws_iam_instance_profile.app[0].name
+  security_groups      = [aws_security_group.app[0].name]
 
   root_block_device {
     volume_type = "gp3"
@@ -174,11 +184,6 @@ resource "aws_instance" "app" {
     cognito_client_id      = aws_cognito_user_pool_client.bheembhai.id
     s3_bucket              = aws_s3_bucket.artifacts.bucket
     secure_storage_backend = local.secure_storage_backend
-    github_token_ssm       = aws_ssm_parameter.github_token.name
-    jira_token_ssm         = aws_ssm_parameter.jira_token.name
-    jira_url               = var.jira_url
-    jira_email             = var.jira_email
-    anthropic_api_key      = var.anthropic_api_key
   })
 
   tags = { Name = "${local.name_prefix}-app" }
@@ -186,8 +191,7 @@ resource "aws_instance" "app" {
 
 # ── Elastic IP (optional — uncomment for a stable IP) ──────────────
 # resource "aws_eip" "app" {
-#   instance = aws_instance.app.id
+#   count    = var.enable_ec2 ? 1 : 0
+#   instance = aws_instance.app[0].id
 #   tags     = { Name = "${local.name_prefix}-eip" }
 # }
-
-data "aws_caller_identity" "current" {}

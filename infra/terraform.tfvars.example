@@ -3,11 +3,17 @@
 #
 #   cp terraform.tfvars.example terraform.tfvars
 #   # edit terraform.tfvars
+#
+#   # Phase 1 (now):     terraform apply           # Cognito + S3 only
+#   # Phase 2 (later):   enable_ec2 = true         # then terraform apply again
 #   terraform apply
 
 aws_region      = "us-east-1"
 environment     = "dev"
-instance_type   = "t3.micro"
+
+# ── EC2 (set enable_ec2 = true when ready to deploy the box) ───────
+enable_ec2        = false
+instance_type     = "t3.micro"
 ebs_volume_size_gb = 30
 
 # SSH key pair name (must already exist in AWS)
@@ -26,13 +32,3 @@ app_secret_key = "replace-with-openssl-rand-hex-32-output"
 # Cognito — EC2 public IP will be added after first apply
 # (localhost is fine for the boto3 SDK auth flow)
 cognito_callback_urls = ["http://localhost:8000"]
-
-# Secrets — values stored in SSM SecureString
-# Use placeholder for first apply, then update in AWS console or via CLI
-github_token    = "ghp_xxxxxxxxxxxxxxxxxxxx"
-jira_api_token  = "your-jira-api-token"
-jira_url        = "https://your-org.atlassian.net"
-jira_email      = "you@example.com"
-
-# Anthropic
-anthropic_api_key = "sk-ant-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

@@ -37,3 +37,7 @@ locals {
   # When to swap to Secrets Manager (prod): change this + flip docker-compose env
   secure_storage_backend = var.environment == "prod" ? "aws_secrets_manager" : "aws_ssm"
 }
+
+# Used by both S3 (bucket name) and IAM policies (ARN construction).
+# Always needed regardless of whether EC2 is enabled.
+data "aws_caller_identity" "current" {}

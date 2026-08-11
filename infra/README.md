@@ -1,37 +1,54 @@
 # BheemBhai — Terraform (Pattern A: EC2 + Docker Compose)
 
 Provisions everything the app needs in AWS. The app itself runs via
-`docker compose` on a single EC2 instance.
+`docker compose` on a single EC2 instance (added in Phase 2).
 
-## Resources created
+## Two-phase deployment
 
-| Resource | File | Notes |
-|----------|------|-------|
-| EC2 instance | `ec2.tf` | Amazon Linux 2023, t3.micro default |
-| Security group | `ec2.tf` | Ports 8000, 8001, 22 (CIDR-restricted) |
-| IAM role + policies | `ec2.tf` | SSM read, S3 read/write, Cognito admin |
-| Cognito User Pool | `cognito.tf` | Email alias, `USER_PASSWORD_AUTH` enabled |
-| Cognito App Client | `cognito.tf` | Public (no secret), 1h access / 30d refresh |
-| S3 bucket | `s3.tf` | Versioned, encrypted, public access blocked |
-| SSM parameters | `ssm.tf` | GitHub token + Jira token (SecureString) |
+### Phase 1 (now) — foundational AWS resources
 
-## Quick start
+`enable_ec2 = false` (the default). Creates Cognito, S3, and SSM only —
+no EC2, no IAM roles, no security groups.
 
 ```bash
-# 1. One-time: initialise
 cd infra/
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
+# Edit: set aws_region, github_token, jira_api_token
+# Leave enable_ec2 = false
 
-# 2. See what will be created
-terraform plan
-
-# 3. Apply
+terraform init
+terraform plan    # should show 9 resources: Cognito ×2, S3 ×4, SSM ×2 + caller-identity
 terraform apply
 
-# 4. Wait ~3 min for user-data to finish, then open:
-#    http://<ec2_public_ip>:8000
+# Copy the env_snippet output into your local .env / docker-compose env
+terraform output env_snippet
 ```
+
+### Phase 2 (later) — add the EC2 box
+
+When features are ready to deploy:
+
+```bash
+# 1. Set enable_ec2 = true in terraform.tfvars
+# 2. Fill in ssh_key_name, git_remote_url, ssh_allowed_cidr
+
+terraform plan    # should show 11 new resources (EC2 + IAM + SG)
+terraform apply
+
+# 3. Wait ~3 min, then open http://<ec2_public_ip>:8000
+```
+
+## Resources (full set after Phase 2)
+
+| Resource | Phase | File | Notes |
+|----------|-------|------|-------|
+| Cognito User Pool | 1 | `cognito.tf` | Email alias, `USER_PASSWORD_AUTH` enabled |
+| Cognito App Client | 1 | `cognito.tf` | Public (no secret), 1h access / 30d refresh |
+| S3 bucket | 1 | `s3.tf` | Versioned, encrypted, public access blocked |
+| SSM parameters | 1 | `ssm.tf` | GitHub token + Jira token (SecureString) |
+| EC2 instance | 2 | `ec2.tf` | Amazon Linux 2023, t3.micro default |
+| Security group | 2 | `ec2.tf` | Ports 8000, 8001, 22 (CIDR-restricted) |
+| IAM role + policies | 2 | `ec2.tf` | SSM read, S3 read/write, Cognito admin |
 
 ## How the app lands on the box
 

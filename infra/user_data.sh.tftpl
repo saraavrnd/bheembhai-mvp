@@ -67,13 +67,9 @@ ENGINE_ID=${environment}-engine-1
 GIT_REMOTE_URL=${git_remote_url}
 GIT_SOURCE_BRANCH=${git_source_branch}
 
-# Jira (non-secret parts; token lives in SSM)
-JIRA_URL=${jira_url}
-JIRA_EMAIL=${jira_email}
+# Jira / GitHub / AI vendor credentials are managed per-project via the
+# integration API and resolved at runtime — not provisioned here.
 DOTENV
-
-# Anthropic API key goes in .env too (passed as a sensitive var)
-echo "ANTHROPIC_API_KEY=${anthropic_api_key}" >> "$APP_DIR/.env"
 
 # ── Build and start ────────────────────────────────────────────────
 cd "$APP_DIR"
