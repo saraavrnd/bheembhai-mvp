@@ -1,7 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block title %}Project Members{% endblock %}
-{% block nav_projects %}active{% endblock %}
+{% block nav_projects %}active menu-open{% endblock %}
 
 {% block page_title %}Project Members{% endblock %}
 {% block breadcrumb %}
@@ -46,9 +46,10 @@
             <div class="box-body">
                 <form id="add-member-form" onsubmit="addMember(event)">
                     <div class="form-group">
-                        <label class="form-label">User ID</label>
-                        <input type="text" class="form-control" id="new-member-user-id" placeholder="Paste user UUID" required>
-                        <small class="text-muted">Copy the user's UUID from the Users page.</small>
+                        <label class="form-label">User <span class="text-danger">*</span></label>
+                        <select class="form-select" id="new-member-user-id" required>
+                            <option value="">— Select a user —</option>
+                        </select>
                     </div>
                     <div class="form-group">
                         <label class="form-label">Project Role</label>
@@ -76,14 +77,14 @@
             </div>
             <div class="box-body">
                 <ul class="list-unstyled mb-0">
-                    <li><span class="badge badge-pill badge-danger me-1">PM</span> Project Manager</li>
-                    <li><span class="badge badge-pill badge-info me-1">TL</span> Tech Lead</li>
-                    <li><span class="badge badge-pill badge-success me-1">DEV</span> Developer</li>
-                    <li><span class="badge badge-pill badge-warning me-1">QA</span> QA Engineer</li>
-                    <li><span class="badge badge-pill badge-primary me-1">DO</span> DevOps Engineer</li>
-                    <li><span class="badge badge-pill badge-secondary me-1">BA</span> Business Analyst</li>
-                    <li><span class="badge badge-pill badge-dark me-1">PO</span> Product Owner</li>
-                    <li><span class="badge badge-pill badge-light me-1">V</span> Viewer</li>
+                    <li><span class="badge rounded-pill bg-danger me-1">PM</span> Project Manager</li>
+                    <li><span class="badge rounded-pill bg-info me-1">TL</span> Tech Lead</li>
+                    <li><span class="badge rounded-pill bg-success me-1">DEV</span> Developer</li>
+                    <li><span class="badge rounded-pill bg-warning me-1">QA</span> QA Engineer</li>
+                    <li><span class="badge rounded-pill bg-primary me-1">DO</span> DevOps Engineer</li>
+                    <li><span class="badge rounded-pill bg-secondary me-1">BA</span> Business Analyst</li>
+                    <li><span class="badge rounded-pill bg-dark me-1">PO</span> Product Owner</li>
+                    <li><span class="badge rounded-pill bg-light text-dark me-1">V</span> Viewer</li>
                 </ul>
             </div>
         </div>
@@ -99,11 +100,50 @@ if (!projectId || projectId === 'undefined') {
     document.getElementById('members-tbody').innerHTML = '<tr><td colspan="5" class="text-center text-danger">No project ID in URL.</td></tr>';
 } else {
     loadMembers();
+    loadUsersIntoDropdown();
+}
+
+const ALL_ROLES = [
+    { key: 'project_manager', label: 'Project Manager' },
+    { key: 'developer', label: 'Developer' },
+    { key: 'qa', label: 'QA Engineer' },
+    { key: 'devops', label: 'DevOps Engineer' },
+    { key: 'ba', label: 'Business Analyst' },
+    { key: 'tech_lead', label: 'Tech Lead' },
+    { key: 'product_owner', label: 'Product Owner' },
+    { key: 'viewer', label: 'Viewer' },
+];
+
+function loadUsersIntoDropdown() {
+    const select = document.getElementById('new-member-user-id');
+    select.innerHTML = '<option value="">— Select a user —</option>';
+    fetch('/api/admin/users')
+        .then(r => r.json())
+        .then(users => {
+            users.forEach(u => {
+                const opt = document.createElement('option');
+                opt.value = u.id;
+                opt.textContent = `${u.display_name} (${u.email})`;
+                select.appendChild(opt);
+            });
+        })
+        .catch(() => {
+            select.innerHTML = '<option value="">— Failed to load users —</option>';
+        });
 }
 
 function loadMembers() {
-    document.getElementById('breadcrumb-project').textContent = 'Members';
-    document.getElementById('project-name-display').textContent = projectId.substring(0, 8) + '...';
+    // Fetch project name
+    fetch(`/api/admin/projects/${projectId}`)
+        .then(r => r.json())
+        .then(project => {
+            document.getElementById('breadcrumb-project').textContent = project.name;
+            document.getElementById('project-name-display').textContent = project.name;
+        })
+        .catch(() => {
+            document.getElementById('breadcrumb-project').textContent = 'Members';
+            document.getElementById('project-name-display').textContent = projectId.substring(0, 8) + '...';
+        });
 
     fetch(`/api/admin/projects/${projectId}/members`)
         .then(r => r.json())
@@ -117,7 +157,7 @@ function loadMembers() {
                 <tr>
                     <td><strong>${esc(m.user_name)}</strong></td>
                     <td>${esc(m.user_email)}</td>
-                    <td><span class="badge badge-pill badge-info">${esc(m.role)}</span></td>
+                    <td><span class="badge rounded-pill bg-info">${esc(m.role.replace(/_/g, ' '))}</span></td>
                     <td>${m.created_at ? new Date(m.created_at).toLocaleDateString() : ''}</td>
                     <td>
                         <select class="form-select form-select-sm d-inline-block w-auto" onchange="changeRole('${m.id}', this.value)" style="width:auto;">
@@ -145,10 +185,10 @@ function loadMembers() {
 
 function addMember(event) {
     event.preventDefault();
-    const userId = document.getElementById('new-member-user-id').value.trim();
+    const userId = document.getElementById('new-member-user-id').value;
     const role = document.getElementById('new-member-role').value;
 
-    if (!userId) { alert('User ID is required.'); return; }
+    if (!userId) { alert('Please select a user.'); return; }
 
     fetch(`/api/admin/projects/${projectId}/members`, {
         method: 'POST',

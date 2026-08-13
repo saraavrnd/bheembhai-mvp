@@ -63,7 +63,7 @@ class ProjectIntegration(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "type IN ('github', 'jira')",
+            "type IN ('github', 'jira', 'openai', 'claude', 'deepseek', 'kimi')",
             name="ck_integration_type",
         ),
         UniqueConstraint(

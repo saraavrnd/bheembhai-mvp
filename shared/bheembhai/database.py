@@ -111,6 +111,274 @@ async def seed_default_roles() -> None:
         await session.commit()
 
 
+async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
+    """Import skills from disk into the database (idempotent).
+
+    Reads every skill directory under *skills_dir* (default: ``.agents/skills/``
+    relative to the project root), parses the YAML frontmatter from each
+    ``SKILL.md``, and upserts the skill + all its files (``SKILL.md``,
+    ``references/*``, ``templates/*``, ``examples/*``).
+
+    Directories named ``.local``, ``_tooling``, or starting with ``_SHARED``
+    are skipped, as are regular files (``README.md``, etc.).
+    """
+    import re
+
+    import yaml
+
+    from bheembhai.models.skill import Skill, SkillFile
+
+    if skills_dir is None:
+        # Resolve relative to project root: database.py is at shared/bheembhai/
+        project_root = Path(__file__).resolve().parent.parent.parent
+        skills_dir = project_root / ".agents" / "skills"
+
+    skills_path = Path(skills_dir)
+    if not skills_path.is_dir():
+        _logger.warning("Skills directory not found: %s — skipping seed", skills_path)
+        return
+
+    _logger.info("Seeding skills from %s …", skills_path)
+    count = 0
+
+    for entry in sorted(skills_path.iterdir()):
+        if not entry.is_dir():
+            continue
+        name = entry.name
+        if name in (".local", "_tooling") or name.startswith("_SHARED"):
+            continue
+
+        skill_md = entry / "SKILL.md"
+        if not skill_md.is_file():
+            _logger.debug("Skipping %s — no SKILL.md", name)
+            continue
+
+        # Parse YAML frontmatter from SKILL.md
+        content = skill_md.read_text()
+        frontmatter: dict[str, str] = {}
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    fm = yaml.safe_load(parts[1])
+                    if isinstance(fm, dict):
+                        frontmatter = fm
+                except yaml.YAMLError:
+                    _logger.debug("Bad frontmatter in %s/SKILL.md — skipping", name)
+                    continue
+
+        skill_name = frontmatter.get("name", name)
+        description = frontmatter.get("description", "")
+        model = frontmatter.get("model", "sonnet")
+        if model not in ("haiku", "sonnet", "opus"):
+            model = "sonnet"
+        compatibility = frontmatter.get("compatibility")
+
+        async with _sessionmaker() as session:
+            from sqlalchemy import select
+
+            # Upsert skill
+            result = await session.execute(
+                select(Skill).where(Skill.name == skill_name)
+            )
+            skill = result.scalar_one_or_none()
+            if skill is None:
+                skill = Skill(
+                    name=skill_name,
+                    description=description,
+                    model=model,
+                    compatibility=compatibility,
+                )
+                session.add(skill)
+                await session.flush()
+                _logger.info("  Created skill: %s", skill_name)
+            else:
+                skill.description = description
+                skill.model = model
+                skill.compatibility = compatibility
+                _logger.info("  Updated skill: %s", skill_name)
+
+            # Collect all files
+            file_entries: list[tuple[str, str]] = []
+            # SKILL.md always included
+            file_entries.append(("SKILL.md", content))
+            for subdir_name in ("references", "templates", "examples"):
+                subdir = entry / subdir_name
+                if subdir.is_dir():
+                    for sf in sorted(subdir.iterdir()):
+                        if sf.is_file():
+                            rel = f"{subdir_name}/{sf.name}"
+                            file_entries.append((rel, sf.read_text()))
+
+            # Upsert each file
+            existing_files_result = await session.execute(
+                select(SkillFile).where(SkillFile.skill_id == skill.id)
+            )
+            existing_by_path: dict[str, SkillFile] = {
+                f.path: f for f in existing_files_result.scalars().all()
+            }
+
+            for fpath, fcontent in file_entries:
+                ef = existing_by_path.pop(fpath, None)
+                if ef is None:
+                    session.add(SkillFile(
+                        skill_id=skill.id,
+                        path=fpath,
+                        content=fcontent,
+                    ))
+                else:
+                    ef.content = fcontent
+
+            # Remove files that no longer exist on disk
+            for stale in existing_by_path.values():
+                await session.delete(stale)
+
+            await session.commit()
+            count += 1
+
+    _logger.info("Skills seed complete — %d skills processed", count)
+
+
+async def seed_default_workflows() -> None:
+    """Import workflows and policies from disk config YAMLs into the database (idempotent).
+
+    Reads every ``.yaml`` file under the project-root ``config/`` directory,
+    detects whether each is a workflow (contains a ``workflow:`` key) or a
+    policy (contains a ``policy:`` key), and upserts by (project_id, name,
+    version).
+
+    If no projects exist yet, a default "BheemBhai Platform" project is
+    created first so the FK constraints are satisfied.
+    """
+    from sqlalchemy import select
+
+    import yaml as _yaml
+
+    from bheembhai.models.workflow import Policy, Workflow
+
+    # Resolve relative to project root
+    project_root = Path(__file__).resolve().parent.parent.parent
+    config_dir = project_root / "config"
+    if not config_dir.is_dir():
+        _logger.warning("Config directory not found: %s — skipping workflow seed", config_dir)
+        return
+
+    _logger.info("Seeding workflows & policies from %s …", config_dir)
+
+    async with _sessionmaker() as session:
+        # Workflows are now project-independent templates, so no project is needed.
+
+        # Collect YAML files and classify them
+        workflows_seen: dict[str, Workflow] = {}  # name → Workflow for policy linking
+        wf_count = 0
+        pol_count = 0
+
+        for yaml_file in sorted(config_dir.glob("*.yaml")):
+            try:
+                raw = _yaml.safe_load(yaml_file.read_text())
+            except _yaml.YAMLError:
+                _logger.debug("Skipping unparseable YAML: %s", yaml_file.name)
+                continue
+            if not isinstance(raw, dict):
+                continue
+
+            if "workflow" in raw:
+                # ── Workflow ──
+                name = str(raw.get("workflow", yaml_file.stem))
+                version = int(raw.get("version", 1))
+                yaml_content = yaml_file.read_text()
+
+                # Upsert — look up the *platform* template (project_id IS NULL) only.
+                # Project clones share the same (name, version) via partial unique indexes,
+                # so we must filter to the platform row to avoid MultipleResultsFound.
+                existing_result = await session.execute(
+                    select(Workflow).where(
+                        Workflow.project_id.is_(None),
+                        Workflow.name == name,
+                        Workflow.version == version,
+                    )
+                )
+                wf = existing_result.scalar_one_or_none()
+                if wf is None:
+                    wf = Workflow(
+                        name=name,
+                        version=version,
+                        yaml_content=yaml_content,
+                        is_active=True,
+                    )
+                    session.add(wf)
+                    await session.flush()
+                    _logger.info("  Created workflow: %s v%d", name, version)
+                else:
+                    wf.yaml_content = yaml_content
+                    _logger.info("  Updated workflow: %s v%d", name, version)
+
+                workflows_seen[name] = wf
+                wf_count += 1
+
+            elif "policy" in raw:
+                # ── Policy ──
+                name = str(raw.get("policy", yaml_file.stem))
+                version = int(raw.get("version", 1))
+                applies_to = str(raw.get("applies_to", ""))
+                yaml_content = yaml_file.read_text()
+
+                # We can only link to a policy's target workflow if it was already seeded
+                target_wf = workflows_seen.get(applies_to)
+                if target_wf is None and applies_to:
+                    # Look up the platform template by name (project_id IS NULL) only,
+                    # to avoid matching a project-specific clone.
+                    wf_result = await session.execute(
+                        select(Workflow).where(
+                            Workflow.project_id.is_(None),
+                            Workflow.name == applies_to,
+                        )
+                    )
+                    target_wf = wf_result.scalar_one_or_none()
+
+                if target_wf is None:
+                    _logger.warning(
+                        "  Skipping policy '%s' — workflow '%s' not found",
+                        name, applies_to,
+                    )
+                    continue
+
+                # Policies are also project-independent templates now.
+                # Project-policy linking will be handled in project management later.
+
+                existing_result = await session.execute(
+                    select(Policy).where(
+                        Policy.workflow_id == target_wf.id,
+                        Policy.name == name,
+                        Policy.version == version,
+                    )
+                )
+                pol = existing_result.scalar_one_or_none()
+                if pol is None:
+                    pol = Policy(
+                        project_id=None,
+                        workflow_id=target_wf.id,
+                        name=name,
+                        version=version,
+                        yaml_content=yaml_content,
+                        is_active=True,
+                    )
+                    session.add(pol)
+                    _logger.info("  Created policy: %s v%d → %s", name, version, applies_to)
+                else:
+                    pol.yaml_content = yaml_content
+                    _logger.info("  Updated policy: %s v%d → %s", name, version, applies_to)
+
+                pol_count += 1
+
+        await session.commit()
+
+    _logger.info(
+        "Workflow seed complete — %d workflows, %d policies processed",
+        wf_count, pol_count,
+    )
+
+
 async def get_session() -> AsyncSession:  # type: ignore[empty-body]
     """Yield an async session. Used as a FastAPI dependency.
 

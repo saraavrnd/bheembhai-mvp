@@ -46,3 +46,6 @@ playwright-report/
 .claude/
 .mcp.json
 .agents/
+
+# Terraform — local variables (the file itself says never commit)
+infra/terraform.tfvars

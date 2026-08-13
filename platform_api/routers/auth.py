@@ -72,7 +72,7 @@ async def login_page(request: Request):
     """Serve the custom login page."""
     from fastapi.templating import Jinja2Templates
     templates = Jinja2Templates(directory="platform_api/templates")
-    response = templates.TemplateResponse("login.html", {"request": request})
+    response = templates.TemplateResponse(request, "login.html", {"request": request})
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
@@ -121,6 +121,29 @@ async def login(request: Request) -> JSONResponse:
         status = 401 if result.code == "InvalidCredentials" else 400
         print(f"  AUTH  login FAILED: code={result.code} status={status}", flush=True)
         return _error_response(status, result.code, result.message)
+
+    # ── Check if the user is enabled ──────────────────────────
+    from sqlalchemy import select
+    from bheembhai.models.user import User
+    from bheembhai.database import _sessionmaker as db_sessionmaker
+
+    provider_obj: CognitoProvider | None = getattr(
+        request.app.state, "cognito_provider", None
+    )
+    if provider_obj is not None and db_sessionmaker is not None:
+        identity = await provider_obj.validate(result.id_token)
+        if identity is not None:
+            async with db_sessionmaker() as session:
+                db_user_result = await session.execute(
+                    select(User).where(
+                        User.external_id == identity.external_id,
+                        User.auth_provider == identity.provider,
+                    )
+                )
+                db_user = db_user_result.scalar_one_or_none()
+                if db_user is not None and not db_user.is_enabled:
+                    print(f"  AUTH  login BLOCKED: user {db_user.id} is disabled", flush=True)
+                    return _error_response(403, "AccountDisabled", "Account is disabled. Contact an administrator.")
 
     print(f"  AUTH  login OK: id_token len={len(result.id_token)}, access_token len={len(result.access_token)}", flush=True)
     return _make_token_response(result)
@@ -192,6 +215,9 @@ async def whoami(
         raise HTTPException(status_code=401, detail="Not logged in.")
 
     db_user = await get_or_create_user(user, db)
+
+    if not db_user.is_enabled:
+        raise HTTPException(status_code=403, detail="Account is disabled. Contact an administrator.")
 
     # Fetch memberships with project names
     from bheembhai.models.project import Project

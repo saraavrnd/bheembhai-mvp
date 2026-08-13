@@ -1,7 +1,15 @@
-"""Project Integration CRUD endpoints.
+"""Project-scoped integration endpoints (member read / project-manager write).
 
 Every endpoint that accepts a credential_VALUE immediately hands it to
 SecureStorage and discards it — only the opaque credential_ref is persisted.
+
+Permissions:
+- GET list / single: any project member
+- POST / PATCH / DELETE / test: project_manager only
+
+POST is upsert-by-type: saving the same integration type again updates the
+existing row in place (mirrors the admin form behaviour), so repeated saves
+never 409.
 """
 
 from __future__ import annotations
@@ -14,14 +22,22 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 
 from bheembhai.database import get_session
-from bheembhai.models.project import Project, ProjectIntegration
+from bheembhai.models.project import ProjectIntegration
+from bheembhai.models.user import User
 from bheembhai.protocols.auth import Identity
 
-from platform_api.dependencies import get_current_user
-from platform_api.schemas.integrations import (
-    IntegrationCreate,
-    IntegrationResponse,
-    IntegrationUpdate,
+from platform_api.dependencies import require_project_member, require_project_manager
+from platform_api.routers._integration_shared import (
+    INTEGRATION_TYPE_REGISTRY,
+    _integration_to_response,
+    _secure_storage,
+    _test_integration_connection,
+)
+from platform_api.schemas.admin import (
+    IntegrationAdminCreate,
+    IntegrationAdminResponse,
+    IntegrationAdminUpdate,
+    TestConnectionResult,
 )
 
 if TYPE_CHECKING:
@@ -35,82 +51,107 @@ router = APIRouter(prefix="/api/projects/{project_id}/integrations", tags=["inte
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _secure_storage(request: Request):
-    """Return the SecureStorage provider wired at startup."""
-    ss = getattr(request.app.state, "secure_storage", None)
-    if ss is None:
-        raise HTTPException(500, "Secure storage backend is not configured")
-    return ss
-
-
-async def _get_project_or_404(project_id: str, db: "AsyncSession") -> Project:
-    project = await db.get(Project, project_id)
-    if project is None:
-        raise HTTPException(404, f"Project {project_id} not found")
-    return project
-
-
-def _to_response(integ: ProjectIntegration) -> IntegrationResponse:
-    return IntegrationResponse(
-        id=str(integ.id),
-        project_id=str(integ.project_id),
-        type=integ.type,
-        label=integ.label,
-        credential_ref=integ.credential_ref,
-        config=integ.config or {},
-        verified_at=integ.verified_at,
-        created_at=integ.created_at,
-    )
+async def _get_integration_or_404(
+    project_id: str, integration_id: str, db: "AsyncSession"
+) -> ProjectIntegration:
+    integration = await db.get(ProjectIntegration, integration_id)
+    if integration is None or str(integration.project_id) != project_id:
+        raise HTTPException(404, f"Integration {integration_id} not found")
+    return integration
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
+@router.get("")
+async def list_integrations(
+    project_id: str,
+    db: "AsyncSession" = Depends(get_session),
+    _member: tuple[User, Identity] = Depends(require_project_member),
+) -> list[IntegrationAdminResponse]:
+    """List all integrations for a project. Credential values are NEVER returned."""
+    result = await db.execute(
+        select(ProjectIntegration)
+        .where(ProjectIntegration.project_id == project_id)
+        .order_by(ProjectIntegration.created_at)
+    )
+    return [_integration_to_response(row) for row in result.scalars().all()]
+
+
+@router.get("/{integration_id}")
+async def get_integration(
+    project_id: str,
+    integration_id: str,
+    db: "AsyncSession" = Depends(get_session),
+    _member: tuple[User, Identity] = Depends(require_project_member),
+) -> IntegrationAdminResponse:
+    """Get a single integration by ID. Credential value is NEVER returned."""
+    integration = await _get_integration_or_404(project_id, integration_id, db)
+    return _integration_to_response(integration)
+
+
 @router.post("", status_code=201)
 async def create_integration(
     project_id: str,
-    body: IntegrationCreate,
+    body: IntegrationAdminCreate,
     request: Request,
     db: "AsyncSession" = Depends(get_session),
-    user: Identity | None = Depends(get_current_user),
-) -> IntegrationResponse:
-    """Create a new integration for a project.
+    _pm: tuple[User, Identity] = Depends(require_project_manager),
+) -> IntegrationAdminResponse:
+    """Create or overwrite an integration for a project.
 
-    The raw ``credential_value`` is written to SecureStorage immediately;
-    only an opaque reference is stored in the database.
+    If an integration of the same type already exists it is updated in-place
+    (upsert-by-type) — the raw ``credential_value`` goes to SecureStorage
+    immediately and only an opaque reference is persisted.
     """
-    project = await _get_project_or_404(project_id, db)
-    secure = _secure_storage(request)
+    if body.type not in INTEGRATION_TYPE_REGISTRY:
+        raise HTTPException(400, f"Unknown integration type: {body.type}")
 
-    # ── Check for duplicate type+label ────────────────────────────
+    # Check for existing integration of this type
     existing = (
         await db.execute(
             select(ProjectIntegration).where(
-                ProjectIntegration.project_id == project.id,
+                ProjectIntegration.project_id == project_id,
                 ProjectIntegration.type == body.type,
-                ProjectIntegration.label == body.label,
             )
         )
     ).scalar_one_or_none()
 
     if existing is not None:
-        raise HTTPException(
-            409,
-            f"Integration '{body.label}' of type '{body.type}' already exists on this project",
+        # Update in-place
+        if body.label:
+            existing.label = body.label
+        if body.config:
+            existing.config = body.config
+        if body.credential_value:
+            secure = _secure_storage(request)
+            ref = existing.credential_ref or f"/bheembhai/{project_id}/{body.type}/default"
+            await secure.put(
+                ref=ref,
+                value=body.credential_value,
+                metadata={"project_id": project_id, "type": body.type, "label": existing.label},
+            )
+            existing.credential_ref = ref
+        await db.commit()
+        await db.refresh(existing)
+        logger.info("Integration updated: %s type=%s", existing.id, body.type)
+        return _integration_to_response(existing)
+
+    # Create new — only touch SecureStorage if a credential was provided
+    credential_value = body.credential_value or ""
+    ref = ""
+    if credential_value:
+        secure = _secure_storage(request)
+        ref = await secure.put(
+            ref=f"/bheembhai/{project_id}/{body.type}/default",
+            value=credential_value,
+            metadata={"project_id": project_id, "type": body.type, "label": body.label},
         )
 
-    # ── Store secret → get ref → discard value ────────────────────
-    ref = await secure.put(
-        ref=f"/bheembhai/{project_id}/{body.type}/{body.label}",
-        value=body.credential_value,
-        metadata={"project_id": project_id, "type": body.type, "label": body.label},
-    )
-
-    # ── Persist only the pointer ──────────────────────────────────
     integration = ProjectIntegration(
-        project_id=project.id,
+        project_id=project_id,
         type=body.type,
-        label=body.label,
+        label=body.label or body.type,
         credential_ref=ref,
         config=body.config,
     )
@@ -118,73 +159,32 @@ async def create_integration(
     await db.commit()
     await db.refresh(integration)
 
-    logger.info(
-        "Integration created: %s type=%s label=%s ref=%s",
-        integration.id, body.type, body.label, ref,
-    )
-    return _to_response(integration)
-
-
-@router.get("")
-async def list_integrations(
-    project_id: str,
-    request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    user: Identity | None = Depends(get_current_user),
-) -> list[IntegrationResponse]:
-    """List all integrations for a project. Credential values are NEVER returned."""
-    await _get_project_or_404(project_id, db)
-
-    result = await db.execute(
-        select(ProjectIntegration)
-        .where(ProjectIntegration.project_id == project_id)
-        .order_by(ProjectIntegration.created_at)
-    )
-    return [_to_response(row) for row in result.scalars().all()]
-
-
-@router.get("/{integration_id}")
-async def get_integration(
-    project_id: str,
-    integration_id: str,
-    request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    user: Identity | None = Depends(get_current_user),
-) -> IntegrationResponse:
-    """Get a single integration by ID. Credential value is NEVER returned."""
-    await _get_project_or_404(project_id, db)
-
-    integration = await db.get(ProjectIntegration, integration_id)
-    if integration is None or str(integration.project_id) != project_id:
-        raise HTTPException(404, f"Integration {integration_id} not found")
-
-    return _to_response(integration)
+    logger.info("Integration created: %s type=%s label=%s", integration.id, body.type, integration.label)
+    return _integration_to_response(integration)
 
 
 @router.patch("/{integration_id}")
 async def update_integration(
     project_id: str,
     integration_id: str,
-    body: IntegrationUpdate,
+    body: IntegrationAdminUpdate,
     request: Request,
     db: "AsyncSession" = Depends(get_session),
-    user: Identity | None = Depends(get_current_user),
-) -> IntegrationResponse:
+    _pm: tuple[User, Identity] = Depends(require_project_manager),
+) -> IntegrationAdminResponse:
     """Update an integration's label, config, or rotate its credential."""
-    await _get_project_or_404(project_id, db)
-
-    integration = await db.get(ProjectIntegration, integration_id)
-    if integration is None or str(integration.project_id) != project_id:
-        raise HTTPException(404, f"Integration {integration_id} not found")
+    integration = await _get_integration_or_404(project_id, integration_id, db)
 
     # ── Rotate credential if a new value was provided ─────────────
-    if body.credential_value is not None:
+    if body.credential_value:
         secure = _secure_storage(request)
+        ref = integration.credential_ref or f"/bheembhai/{project_id}/{integration.type}/default"
         await secure.put(
-            ref=integration.credential_ref,
+            ref=ref,
             value=body.credential_value,
             metadata={"project_id": project_id, "type": integration.type, "label": integration.label},
         )
+        integration.credential_ref = ref
         logger.info("Credential rotated for integration %s", integration_id)
 
     if body.label is not None:
@@ -194,7 +194,7 @@ async def update_integration(
 
     await db.commit()
     await db.refresh(integration)
-    return _to_response(integration)
+    return _integration_to_response(integration)
 
 
 @router.delete("/{integration_id}")
@@ -203,21 +203,56 @@ async def delete_integration(
     integration_id: str,
     request: Request,
     db: "AsyncSession" = Depends(get_session),
-    user: Identity | None = Depends(get_current_user),
+    _pm: tuple[User, Identity] = Depends(require_project_manager),
 ):
     """Delete an integration and its stored credential."""
-    await _get_project_or_404(project_id, db)
-
-    integration = await db.get(ProjectIntegration, integration_id)
-    if integration is None or str(integration.project_id) != project_id:
-        raise HTTPException(404, f"Integration {integration_id} not found")
+    integration = await _get_integration_or_404(project_id, integration_id, db)
 
     # ── Wipe the secret from SecureStorage ────────────────────────
-    secure = _secure_storage(request)
-    await secure.delete(integration.credential_ref)
+    if integration.credential_ref:
+        secure = _secure_storage(request)
+        await secure.delete(integration.credential_ref)
 
     await db.delete(integration)
     await db.commit()
 
-    logger.info("Integration deleted: %s ref=%s", integration_id, integration.credential_ref)
+    logger.info("Integration deleted: %s type=%s", integration_id, integration.type)
     return Response(status_code=204)
+
+
+@router.post("/{integration_id}/test")
+async def test_integration(
+    project_id: str,
+    integration_id: str,
+    request: Request,
+    db: "AsyncSession" = Depends(get_session),
+    _pm: tuple[User, Identity] = Depends(require_project_manager),
+) -> TestConnectionResult:
+    """Test connectivity for an integration (project manager only).
+
+    Attempts a lightweight authenticated API call based on integration type
+    and updates ``verified_at`` on success.
+    """
+    integration = await _get_integration_or_404(project_id, integration_id, db)
+
+    # Fetch the credential from SecureStorage
+    credential_value = ""
+    if integration.credential_ref:
+        try:
+            secure = _secure_storage(request)
+            cred = await secure.get(integration.credential_ref)
+            credential_value = cred.value if cred else ""
+        except Exception:
+            credential_value = ""
+
+    if not credential_value:
+        return TestConnectionResult(ok=False, message="No credential stored — please save an API token first.")
+
+    result = await _test_integration_connection(integration, credential_value)
+
+    # On successful test, update verified_at
+    if result.ok:
+        integration.verified_at = datetime.now(timezone.utc)
+        await db.commit()
+
+    return result

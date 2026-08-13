@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BheemBhai — {% block title %}Dashboard{% endblock %}</title>
+
+    <link rel="stylesheet" href="/static/eduadmin/css/vendors_css.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/assets/icons/font-awesome/css/all.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/assets/icons/themify-icons/themify-icons.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/assets/icons/icomoon/style.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/css/style.css?v=4">
+    <link rel="stylesheet" href="/static/eduadmin/css/skin_color.css?v=4">
+    <style>
+        /* ── No-sidebar override ── */
+        .content-wrapper { margin-left: 0 !important; }
+        .main-header .logo { width: 230px; }
+        .main-header .navbar { margin-left: 230px; }
+
+        /* ── Project selector dropdown in navbar ── */
+        .navbar-project-dropdown {
+            display: flex; align-items: center; gap: 8px;
+            color: #e1e4e8; text-decoration: none;
+            padding: 6px 12px; border: 1px solid #3a4a5c; border-radius: 6px;
+            font-size: 13px; font-weight: 500;
+            transition: all 0.15s;
+        }
+        .navbar-project-dropdown:hover,
+        .navbar-project-dropdown.show { color: #ffffff; border-color: #5b9bd5; background: rgba(255,255,255,0.04); }
+        .navbar-project-dropdown .caret { font-size: 11px; opacity: 0.7; }
+        #navbar-project-role {
+            font-size: 10px; font-weight: 600; text-transform: uppercase;
+            padding: 2px 6px; vertical-align: middle;
+        }
+        #navbar-project-menu { min-width: 250px; }
+        #navbar-project-menu .dropdown-item {
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; font-size: 13px;
+        }
+        #navbar-project-menu .dropdown-item .badge {
+            font-size: 10px; text-transform: uppercase; flex-shrink: 0;
+        }
+
+        /* ── Nav links ── */
+        .navbar-nav-links {
+            display: flex; align-items: center; gap: 4px; margin-left: 16px;
+        }
+        .navbar-nav-links .nav-pill {
+            color: #b5b5c3; text-decoration: none; padding: 6px 14px;
+            border-radius: 6px; font-size: 13px; font-weight: 500;
+            transition: all 0.15s;
+        }
+        .navbar-nav-links .nav-pill:hover { color: #ffffff; background: rgba(255,255,255,0.06); }
+        .navbar-nav-links .nav-pill.active { color: #ffffff; background: #2a62d5; }
+        .navbar-nav-links .nav-pill .badge { margin-left: 4px; }
+
+        /* ── Logo text ── */
+        .main-header .logo .light-logo { color: #ffffff !important; }
+        .main-header .logo .light-logo strong { color: #ffffff !important; }
+
+        /* ── Responsive ── */
+        @media (max-width: 767px) {
+            .main-header .logo { width: 160px; }
+            .main-header .navbar { margin-left: 160px; }
+            .navbar-nav-links { display: none; }
+            #navbar-project-name { display: none; }
+        }
+    </style>
+    {% block head %}{% endblock %}
+</head>
+
+<body class="hold-transition light-skin theme-primary fixed">
+
+<div class="wrapper">
+    <div id="loader"></div>
+
+    <!-- Header -->
+    <header class="main-header">
+        <div class="d-flex align-items-center logo-box justify-content-start">
+            <!-- Logo -->
+            <a href="/dashboard" class="logo">
+                <div class="logo-lg">
+                    <span class="light-logo"><span class="brand-icon">🐝</span> <strong>Bheem</strong>Bhai</span>
+                    <span class="dark-logo"><span class="brand-icon">🐝</span> <strong>Bheem</strong>Bhai</span>
+                </div>
+            </a>
+        </div>
+
+        <nav class="navbar navbar-static-top">
+            <div class="app-menu">
+                <ul class="header-megamenu nav">
+                    <!-- Project selector (dropdown with role badge) -->
+                    <li class="nav-item dropdown d-flex align-items-center">
+                        <a href="#" class="navbar-project-dropdown waves-effect waves-light dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="fa fa-folder-open" style="color:#5b9bd5;font-size:14px;"></i>
+                            <span id="navbar-project-name">Select project</span>
+                            <span class="badge badge-secondary" id="navbar-project-role" style="display:none;"></span>
+                            <i class="fa fa-caret-down caret"></i>
+                        </a>
+                        <ul class="dropdown-menu animated flipInX" id="navbar-project-menu">
+                            <li><h6 class="dropdown-header">Your projects</h6></li>
+                            <!-- one item per membership, appended by populateProjectSelector() -->
+                        </ul>
+                    </li>
+                    <!-- Nav links (shown when project selected) -->
+                    <li class="nav-item" id="navbar-links" style="display:none;">
+                        <div class="navbar-nav-links">
+                            <a href="#" class="nav-pill active" id="nav-dashboard" data-tab="dashboard">
+                                <i class="fa fa-tachometer-alt"></i> Dashboard
+                            </a>
+                            <a href="#" class="nav-pill" id="nav-runs" data-tab="runs">
+                                <i class="fa fa-play-circle"></i> Runs
+                            </a>
+                            <a href="#" class="nav-pill" id="nav-config" data-tab="config" style="display:none;">
+                                <i class="fa fa-cog"></i> Configuration
+                            </a>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+
+            <div class="navbar-custom-menu r-side">
+                <ul class="nav navbar-nav">
+                    <!-- User Account -->
+                    <li class="dropdown user user-menu">
+                        <a href="#" class="waves-effect waves-light dropdown-toggle" data-bs-toggle="dropdown" title="User">
+                            <i class="icon-User"><span class="path1"></span><span class="path2"></span></i>
+                        </a>
+                        <ul class="dropdown-menu animated flipInX">
+                            <li class="user-body">
+                                <a class="dropdown-item" href="#">
+                                    <i class="ti-user text-muted me-2"></i>
+                                    <span id="user-email">user@bheembhai.local</span>
+                                </a>
+                                <a class="dropdown-item" href="/dashboard">
+                                    <i class="ti-layout-grid2 text-muted me-2"></i> Dashboard
+                                </a>
+                                <div class="dropdown-divider"></div>
+                                <a class="dropdown-item" href="#" onclick="signOut(); return false;">
+                                    <i class="ti-lock text-muted me-2"></i> Logout
+                                </a>
+                            </li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </nav>
+    </header>
+
+    <!-- Content Wrapper (no sidebar) -->
+    <div class="content-wrapper">
+        <div class="container-full">
+            <div class="content-header">
+                <div class="d-flex align-items-center">
+                    <div class="me-auto">
+                        <h3 class="page-title">{% block page_title %}Dashboard{% endblock %}</h3>
+                        <div class="d-inline-block align-items-center">
+                            <nav>
+                                <ol class="breadcrumb">
+                                    {% block breadcrumb %}
+                                    <li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
+                                    <li class="breadcrumb-item active" aria-current="page">Dashboard</li>
+                                    {% endblock %}
+                                </ol>
+                            </nav>
+                        </div>
+                    </div>
+                    {% block content_header_actions %}{% endblock %}
+                </div>
+            </div>
+
+            <section class="content">
+                {% block content %}{% endblock %}
+            </section>
+        </div>
+    </div>
+
+    <!-- Control Sidebar -->
+    <aside class="control-sidebar"></aside>
+    <div class="control-sidebar-bg"></div>
+
+</div>
+
+<script src="/static/eduadmin/js/vendors.min.js?v=4"></script>
+<script src="/static/eduadmin/assets/icons/feather-icons/feather.min.js?v=4"></script>
+<script src="/static/eduadmin/js/template.js?v=4"></script>
+<script>
+    // ── Shared state ──
+    window.BB = {
+        user: null,           // { email, display_name, platform_role, memberships: [...] }
+        currentProjectId: null,
+        currentProjectRole: null,
+    };
+
+    function authHeaders() {
+        const tok = sessionStorage.getItem('bb_id_token');
+        return tok ? { 'Authorization': 'Bearer ' + tok } : {};
+    }
+
+    function esc(s) {
+        if (!s) return '';
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ── Auth guard + init ──
+    fetch('/api/auth/me', { headers: authHeaders() })
+        .then(r => {
+            if (r.status === 401 || r.status === 403) { window.location = '/login'; return null; }
+            return r.json();
+        })
+        .then(data => {
+            if (!data || data.error) { window.location = '/login'; return; }
+            // Admins get redirected to the admin panel
+            if (data.platform_role === 'ADMIN' && window.location.pathname.startsWith('/dashboard')) {
+                // They can stay on /dashboard, but we note it
+            }
+            window.BB.user = data;
+            document.getElementById('user-email').textContent = data.email;
+
+            // Populate project selector
+            populateProjectSelector(data.memberships || []);
+
+            // If we're on a project page, initialise project context
+            if (typeof window.BB_PROJECT_ID !== 'undefined' && window.BB_PROJECT_ID) {
+                selectProject(window.BB_PROJECT_ID);
+            }
+
+            // Dispatch so page scripts can react
+            window.dispatchEvent(new CustomEvent('bb:userReady', { detail: data }));
+        })
+        .catch(() => { window.location = '/login'; });
+
+    function signOut() {
+        fetch('/api/auth/logout', { method: 'POST' })
+            .then(() => { window.location = '/login'; })
+            .catch(() => { window.location = '/login'; });
+    }
+
+    // ── Project selector ──
+    // Role labels for all seeded ProjectRole keys
+    const ROLE_LABELS = {
+        project_manager: { label: 'Project Manager', short: 'PM' },
+        developer:       { label: 'Developer',       short: 'Dev' },
+        qa:              { label: 'QA Engineer',     short: 'QA' },
+        devops:          { label: 'DevOps',          short: 'DevOps' },
+        ba:              { label: 'Business Analyst', short: 'BA' },
+        tech_lead:       { label: 'Tech Lead',       short: 'Lead' },
+        product_owner:   { label: 'Product Owner',   short: 'PO' },
+        viewer:          { label: 'Viewer',          short: 'View' },
+    };
+
+    function roleLabelFor(role) {
+        return ROLE_LABELS[role] || { label: role || 'Member', short: role || '—' };
+    }
+
+    function populateProjectSelector(memberships) {
+        window.BB.memberships = memberships || [];
+        const menu = document.getElementById('navbar-project-menu');
+        menu.querySelectorAll('.bb-project-item').forEach(el => el.remove());
+
+        if (!window.BB.memberships.length) {
+            const li = document.createElement('li');
+            li.className = 'bb-project-item';
+            const a = document.createElement('a');
+            a.className = 'dropdown-item text-muted';
+            a.href = '#';
+            a.textContent = 'No projects yet';
+            li.appendChild(a);
+            menu.appendChild(li);
+            return;
+        }
+
+        window.BB.memberships.forEach(m => {
+            const li = document.createElement('li');
+            li.className = 'bb-project-item';
+
+            const a = document.createElement('a');
+            a.className = 'dropdown-item';
+            a.href = '#';
+            a.onclick = function (ev) {
+                ev.preventDefault();
+                onProjectSwitch(m.project_id);
+            };
+
+            const nameSpan = document.createElement('span');
+            nameSpan.textContent = m.project_name;
+
+            const badge = document.createElement('span');
+            badge.className = 'badge badge-secondary';
+            badge.textContent = roleLabelFor(m.role).short;
+
+            a.appendChild(nameSpan);
+            a.appendChild(badge);
+            li.appendChild(a);
+            menu.appendChild(li);
+        });
+    }
+
+    function roleFor(projectId) {
+        const m = (window.BB.memberships || []).find(x => x.project_id === projectId);
+        return m ? m.role : null;
+    }
+
+    function onProjectSwitch(projectId) {
+        if (!projectId) return;
+        window.location.href = '/projects/' + projectId;
+    }
+
+    function selectProject(projectId) {
+        window.BB.currentProjectId = projectId;
+        window.BB.currentProjectRole = roleFor(projectId);
+
+        // Update dropdown trigger (name + role badge)
+        const m = (window.BB.memberships || []).find(x => x.project_id === projectId);
+        document.getElementById('navbar-project-name').textContent = m ? m.project_name : projectId;
+
+        const roleEl = document.getElementById('navbar-project-role');
+        if (window.BB.currentProjectRole) {
+            roleEl.textContent = roleLabelFor(window.BB.currentProjectRole).short;
+            roleEl.title = roleLabelFor(window.BB.currentProjectRole).label;
+            roleEl.style.display = '';
+        } else {
+            roleEl.style.display = 'none';
+        }
+
+        // Show nav links
+        document.getElementById('navbar-links').style.display = '';
+
+        // Show/hide Configuration tab for project_manager
+        const isPM = window.BB.currentProjectRole === 'project_manager';
+        document.getElementById('nav-config').style.display = isPM ? '' : 'none';
+
+        // Update nav pill hrefs
+        document.getElementById('nav-dashboard').href = '/projects/' + projectId + '?tab=dashboard';
+        document.getElementById('nav-runs').href = '/projects/' + projectId + '?tab=runs';
+        document.getElementById('nav-config').href = '/projects/' + projectId + '?tab=config';
+
+        // Highlight active tab from URL (default dashboard)
+        const params = new URLSearchParams(window.location.search);
+        const activeTab = params.get('tab') || 'dashboard';
+        document.querySelectorAll('#navbar-links .nav-pill').forEach(p => p.classList.remove('active'));
+        const activePill = document.querySelector('#navbar-links [data-tab="' + activeTab + '"]');
+        if (activePill) activePill.classList.add('active');
+    }
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>

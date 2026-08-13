@@ -1,0 +1,210 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Skills{% endblock %}
+{% block nav_skills %}active menu-open{% endblock %}
+{% block page_title %}Skills{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item active" aria-current="page">Skills</li>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Agent Skills Library</h4>
+                <div class="box-controls pull-right">
+                    <input type="text" class="form-control form-control-sm d-inline-block w-auto me-2" id="search-input" placeholder="Search skills..." oninput="filterSkills()" style="width: 200px;">
+                    <button class="btn btn-primary btn-sm" onclick="showCreateModal()">
+                        <i class="ti-plus"></i> Create Skill
+                    </button>
+                </div>
+            </div>
+            <div class="box-body">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="skills-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Model Tier</th>
+                                <th>Files</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="skills-tbody">
+                            <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="no-results" class="text-center text-muted mt-3" style="display:none;">No skills match your search.</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Create/Edit Skill Modal -->
+<div class="modal fade" id="skillModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="skillModalTitle">Create Skill</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="skillForm">
+                    <input type="hidden" id="skill-id">
+                    <div class="form-group">
+                        <label class="form-label">Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="skill-name" placeholder="e.g. code-review" required>
+                        <small class="text-muted">Lowercase kebab-case, unique</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Description <span class="text-danger">*</span></label>
+                        <textarea class="form-control" id="skill-description" rows="3" placeholder="What the skill does and when to use it..." required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Model Tier</label>
+                        <select class="form-select" id="skill-model">
+                            <option value="haiku">Haiku (cheap)</option>
+                            <option value="sonnet" selected>Sonnet (standard)</option>
+                            <option value="opus">Opus (strong)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Compatibility</label>
+                        <textarea class="form-control" id="skill-compatibility" rows="2" placeholder="Tool compatibility notes..."></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveSkill()">
+                    <i class="ti-save-alt"></i> Save
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allSkills = [];
+
+function loadSkills() {
+    fetch('/api/admin/skills')
+        .then(r => r.json())
+        .then(skills => {
+            allSkills = skills;
+            renderTable(skills);
+        })
+        .catch(() => {
+            document.getElementById('skills-tbody').innerHTML = '<tr><td colspan="5" class="text-center text-danger">Failed to load skills.</td></tr>';
+        });
+}
+
+function renderTable(skills) {
+    const tbody = document.getElementById('skills-tbody');
+    document.getElementById('no-results').style.display = skills.length ? 'none' : '';
+    if (!skills.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No skills found. Create one!</td></tr>';
+        return;
+    }
+    tbody.innerHTML = skills.map(s => {
+        const modelBadge = s.model === 'opus'
+            ? '<span class="badge rounded-pill bg-danger">Opus</span>'
+            : s.model === 'haiku'
+                ? '<span class="badge rounded-pill bg-success">Haiku</span>'
+                : '<span class="badge rounded-pill bg-warning">Sonnet</span>';
+        return `
+            <tr>
+                <td><strong>${esc(s.name)}</strong></td>
+                <td>${modelBadge}</td>
+                <td><span class="badge rounded-pill bg-info">${s.files.length}</span></td>
+                <td>${s.created_at ? new Date(s.created_at).toLocaleDateString() : ''}</td>
+                <td>
+                    <a href="/admin/skills/${s.id}" class="btn btn-info btn-sm" title="Edit">
+                        <i class="ti-pencil"></i> Edit
+                    </a>
+                    <button class="btn btn-danger btn-sm" onclick="deleteSkill('${s.id}', '${esc(s.name)}')" title="Delete">
+                        <i class="ti-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function filterSkills() {
+    const q = document.getElementById('search-input').value.toLowerCase();
+    const filtered = allSkills.filter(s => s.name.toLowerCase().includes(q));
+    renderTable(filtered);
+}
+
+function showCreateModal() {
+    document.getElementById('skillModalTitle').textContent = 'Create Skill';
+    document.getElementById('skill-id').value = '';
+    document.getElementById('skill-name').value = '';
+    document.getElementById('skill-name').disabled = false;
+    document.getElementById('skill-description').value = '';
+    document.getElementById('skill-model').value = 'sonnet';
+    document.getElementById('skill-compatibility').value = '';
+    new bootstrap.Modal(document.getElementById('skillModal')).show();
+}
+
+function showEditModal(id, name, description, model, compatibility) {
+    document.getElementById('skillModalTitle').textContent = 'Edit Skill';
+    document.getElementById('skill-id').value = id;
+    document.getElementById('skill-name').value = name;
+    document.getElementById('skill-name').disabled = true;
+    document.getElementById('skill-description').value = description;
+    document.getElementById('skill-model').value = model || 'sonnet';
+    document.getElementById('skill-compatibility').value = compatibility || '';
+    new bootstrap.Modal(document.getElementById('skillModal')).show();
+}
+
+function saveSkill() {
+    const id = document.getElementById('skill-id').value;
+    const name = document.getElementById('skill-name').value.trim();
+    const description = document.getElementById('skill-description').value.trim();
+    const model = document.getElementById('skill-model').value;
+    const compatibility = document.getElementById('skill-compatibility').value.trim();
+
+    if (!name) { alert('Name is required.'); return; }
+    if (!description) { alert('Description is required.'); return; }
+
+    const isCreate = !id;
+    const url = isCreate ? '/api/admin/skills' : `/api/admin/skills/${id}`;
+    const method = isCreate ? 'POST' : 'PATCH';
+    const body = isCreate
+        ? { name, description, model, compatibility: compatibility || null }
+        : { description, model, compatibility: compatibility || null };
+
+    fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    })
+    .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+    .then(() => {
+        bootstrap.Modal.getInstance(document.getElementById('skillModal')).hide();
+        loadSkills();
+    })
+    .catch(err => alert('Error: ' + err.message));
+}
+
+function deleteSkill(id, name) {
+    if (!confirm(`Delete skill "${name}" and all its files? This cannot be undone.`)) return;
+    fetch(`/api/admin/skills/${id}`, { method: 'DELETE' })
+        .then(r => { if (!r.ok) throw new Error(r.statusText); loadSkills(); })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+loadSkills();
+</script>
+{% endblock %}

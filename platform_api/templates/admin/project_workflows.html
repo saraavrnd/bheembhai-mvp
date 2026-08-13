@@ -1,0 +1,195 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Project Workflows{% endblock %}
+{% block nav_projects %}active menu-open{% endblock %}
+
+{% block page_title %}Project Workflows{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a href="/admin/projects">Projects</a></li>
+<li class="breadcrumb-item active" id="breadcrumb-project">Workflows</li>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <!-- Left: Mapped workflows -->
+    <div class="col-md-7">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Mapped Workflows — <span id="project-name-display">...</span></h4>
+            </div>
+            <div class="box-body">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Version</th>
+                                <th>Steps</th>
+                                <th>Policies</th>
+                                <th>Active</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mapped-tbody">
+                            <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right: Available platform workflows to map -->
+    <div class="col-md-5">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Map a Platform Workflow</h4>
+            </div>
+            <div class="box-body">
+                <p class="small text-muted">Platform workflows are shared templates. Mapping one creates a project‑specific copy that can be customised independently.</p>
+                <div id="platform-list">
+                    <p class="text-center text-muted">Loading...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectId = window.location.pathname.split('/')[3]; // /admin/projects/{id}/workflows
+let mappedWorkflows = [];
+let platformWorkflows = [];
+
+if (!projectId || projectId === 'undefined') {
+    document.getElementById('mapped-tbody').innerHTML = '<tr><td colspan="6" class="text-center text-danger">No project ID in URL.</td></tr>';
+    document.getElementById('platform-list').innerHTML = '<p class="text-center text-danger">No project ID in URL.</p>';
+} else {
+    loadAll();
+}
+
+function loadAll() {
+    // Fetch project name
+    fetch(`/api/admin/projects/${projectId}`)
+        .then(r => r.json())
+        .then(project => {
+            document.getElementById('breadcrumb-project').textContent = project.name;
+            document.getElementById('project-name-display').textContent = project.name;
+        })
+        .catch(() => {
+            document.getElementById('breadcrumb-project').textContent = 'Workflows';
+            document.getElementById('project-name-display').textContent = projectId.substring(0, 8) + '...';
+        });
+
+    // Fetch mapped (project-scoped) workflows
+    fetch(`/api/admin/workflows?project_id=${projectId}`)
+        .then(r => r.json())
+        .then(data => {
+            mappedWorkflows = data;
+            renderMapped();
+        })
+        .catch(() => {
+            document.getElementById('mapped-tbody').innerHTML = '<tr><td colspan="6" class="text-center text-danger">Failed to load.</td></tr>';
+        });
+
+    // Fetch available platform workflows
+    fetch('/api/admin/workflows?project_id=__platform__')
+        .then(r => r.json())
+        .then(data => {
+            // Exclude workflows whose (name, version) already exist in the project
+            const mappedKeys = new Set(mappedWorkflows.map(w => `${w.name}::${w.version}`));
+            platformWorkflows = data.filter(w => !mappedKeys.has(`${w.name}::${w.version}`));
+            renderPlatform();
+        })
+        .catch(() => {
+            document.getElementById('platform-list').innerHTML = '<p class="text-center text-danger">Failed to load.</p>';
+        });
+}
+
+function renderMapped() {
+    const tbody = document.getElementById('mapped-tbody');
+    if (!mappedWorkflows.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No workflows mapped yet. Map one from the right panel.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = mappedWorkflows.map(w => {
+        const parsed = w.parsed;
+        const stepCount = parsed ? parsed.steps.length : '—';
+        const policyBadge = w.policy_count > 0
+            ? `<span class="badge rounded-pill bg-info">${w.policy_count}</span>`
+            : '<span class="badge rounded-pill bg-secondary">0</span>';
+        const activeBadge = w.is_active
+            ? '<span class="badge rounded-pill bg-success">active</span>'
+            : '<span class="badge rounded-pill bg-dark">inactive</span>';
+        return `
+            <tr>
+                <td>
+                    <a href="/admin/workflows/${w.id}" class="text-decoration-none fw-bold">${esc(w.name)}</a>
+                </td>
+                <td>v${w.version}</td>
+                <td>${stepCount}</td>
+                <td>${policyBadge}</td>
+                <td>${activeBadge}</td>
+                <td class="text-end">
+                    <a href="/admin/workflows/${w.id}" class="btn btn-info btn-sm" title="Edit"><i class="ti-pencil"></i></a>
+                    <button class="btn btn-danger btn-sm" onclick="unlinkWorkflow('${w.id}', '${esc(w.name)}')" title="Remove from project"><i class="ti-unlink"></i></button>
+                </td>
+            </tr>`;
+    }).join('');
+}
+
+function renderPlatform() {
+    const container = document.getElementById('platform-list');
+    if (!platformWorkflows.length) {
+        container.innerHTML = '<p class="text-center text-muted">All platform workflows are already mapped.</p>';
+        return;
+    }
+    container.innerHTML = platformWorkflows.map(w => {
+        const parsed = w.parsed;
+        const stepCount = parsed ? parsed.steps.length : '—';
+        return `
+            <div class="d-flex align-items-center justify-content-between mb-2 p-2 border rounded">
+                <div>
+                    <strong>${esc(w.name)}</strong>
+                    <span class="badge rounded-pill bg-primary ms-1">v${w.version}</span>
+                    <span class="badge rounded-pill bg-dark ms-1">${stepCount} steps</span>
+                    ${w.policy_count > 0 ? `<span class="badge rounded-pill bg-info ms-1">${w.policy_count} policies</span>` : ''}
+                </div>
+                <button class="btn btn-outline-primary btn-sm" onclick="mapWorkflow('${w.id}', '${esc(w.name)}')">
+                    <i class="ti-plus"></i> Map
+                </button>
+            </div>`;
+    }).join('');
+}
+
+function mapWorkflow(wfId, wfName) {
+    if (!confirm(`Map "${wfName}" to this project? A project-specific copy will be created.`)) return;
+
+    fetch(`/api/admin/workflows/${wfId}/copy-to-project`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId })
+    })
+    .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+    .then(() => {
+        loadAll();
+    })
+    .catch(err => alert('Error: ' + err.message));
+}
+
+function unlinkWorkflow(wfId, wfName) {
+    if (!confirm(`Remove "${wfName}" from this project? This deletes the project copy (not the platform template).`)) return;
+
+    fetch(`/api/admin/workflows/${wfId}`, { method: 'DELETE' })
+        .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); })
+        .then(() => {
+            loadAll();
+        })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+</script>
+{% endblock %}

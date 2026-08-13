@@ -6,6 +6,7 @@ from bheembhai.models.project import Project, ProjectIntegration
 from bheembhai.models.user import Membership, ProjectRole
 from bheembhai.models.workflow import Workflow, Policy
 from bheembhai.models.run import Run, Step, Transition
+from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.work_queue import WorkQueueItem
 
 __all__ = [
@@ -21,4 +22,6 @@ __all__ = [
     "Step",
     "Transition",
     "WorkQueueItem",
+    "Skill",
+    "SkillFile",
 ]

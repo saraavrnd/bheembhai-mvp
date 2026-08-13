@@ -1,0 +1,866 @@
+{% extends "user_base.html" %}
+
+{% block title %}Run Detail — BheemBhai{% endblock %}
+
+{% block page_title %}<span id="run-title">Run Detail</span>{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a id="bc-project" href="#">Project</a></li>
+<li class="breadcrumb-item active" aria-current="page" id="bc-run">Run</li>
+{% endblock %}
+
+{% block head %}
+<style>
+    :root {
+        --sage: #5a9e6f;
+        --sage-bg: #e8f5e9;
+        --terracotta: #e07b5a;
+        --terracotta-bg: #fef0eb;
+        --deep-brown: #8b3a2a;
+        --grey-stage: #7a7a8e;
+        --grey-bg: #eaeaef;
+        --sand: #f5f0e8;
+        --cream: #fefcf7;
+        --rail-width: 260px;
+    }
+
+    .run-layout {
+        display: flex; gap: 0; min-height: calc(100vh - 200px);
+    }
+
+    /* ── Stage rail (left) ── */
+    .stage-rail {
+        width: var(--rail-width); min-width: var(--rail-width);
+        background: #161b22; border-right: 1px solid #30363d;
+        padding: 20px 16px; overflow-y: auto;
+    }
+    .stage-rail .run-meta {
+        margin-bottom: 20px; padding-bottom: 16px;
+        border-bottom: 1px solid #30363d;
+    }
+    .stage-rail .run-meta .story-id {
+        font-family: 'JetBrains Mono', monospace; font-size: 13px;
+        color: #58a6ff; font-weight: 600;
+    }
+    .stage-rail .run-meta .story-title {
+        font-size: 13px; color: #b5b5c3; margin-top: 2px; line-height: 1.4;
+    }
+    .stage-rail .run-meta .run-state {
+        font-size: 12px; margin-top: 6px;
+    }
+    .stage-rail .run-meta .run-elapsed {
+        font-size: 11px; color: #6e7681; margin-top: 4px;
+    }
+
+    .stage-item {
+        display: flex; align-items: flex-start; gap: 10px;
+        padding: 8px 6px; cursor: pointer; border-radius: 6px;
+        transition: background 0.12s; position: relative;
+    }
+    .stage-item:hover { background: rgba(255,255,255,0.04); }
+    .stage-item.selected { background: rgba(255,255,255,0.07); }
+
+    /* Connector column */
+    .stage-connector {
+        display: flex; flex-direction: column; align-items: center;
+        width: 24px; flex-shrink: 0; position: relative;
+    }
+    .stage-circle {
+        width: 20px; height: 20px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 10px; font-weight: 700; z-index: 1;
+        flex-shrink: 0; position: relative;
+    }
+    .stage-circle.done { background: var(--sage); color: #fff; }
+    .stage-circle.current { background: var(--terracotta); color: #fff; }
+    .stage-circle.current.awaiting {
+        box-shadow: 0 0 0 3px rgba(224,123,90,0.35);
+        animation: pulse-ring 2s ease-in-out infinite;
+    }
+    @keyframes pulse-ring {
+        0%, 100% { box-shadow: 0 0 0 3px rgba(224,123,90,0.35); }
+        50% { box-shadow: 0 0 0 7px rgba(224,123,90,0.08); }
+    }
+    .stage-circle.failed { background: var(--deep-brown); color: #fff; }
+    .stage-circle.pending {
+        background: transparent; border: 2px solid var(--grey-stage);
+        color: var(--grey-stage);
+    }
+    .stage-line {
+        width: 2px; flex-grow: 1; min-height: 16px;
+        background: #30363d; margin: 2px 0;
+    }
+    .stage-line.done { background: var(--sage); }
+    .stage-line.current { background: var(--terracotta); }
+
+    .stage-info { flex: 1; min-width: 0; }
+    .stage-info .stage-label {
+        font-size: 12px; font-weight: 500; color: #c9cdd4; line-height: 1.3;
+    }
+    .stage-info .stage-meta {
+        font-size: 10px; color: #6e7681; margin-top: 1px;
+    }
+    .stage-info .stage-gate-tag {
+        display: inline-block; font-size: 9px; font-weight: 600;
+        background: rgba(224,123,90,0.18); color: var(--terracotta);
+        padding: 1px 6px; border-radius: 3px; margin-top: 3px;
+        text-transform: uppercase; letter-spacing: 0.04em;
+    }
+
+    /* ── Output panel (right) ── */
+    .output-panel {
+        flex: 1; background: var(--sand); padding: 20px 24px;
+        overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
+    }
+    .output-panel .panel-header {
+        display: flex; align-items: center; justify-content: space-between;
+    }
+    .output-panel .panel-header h4 {
+        font-size: 14px; color: #3a3a4a; margin: 0; font-weight: 600;
+    }
+    .output-panel .panel-header .panel-actions {
+        display: flex; gap: 8px;
+    }
+    .output-panel .panel-header .panel-actions .btn {
+        font-size: 11px; padding: 4px 10px;
+    }
+
+    /* File pills (tabs) */
+    .file-pills {
+        display: flex; gap: 6px; flex-wrap: wrap;
+    }
+    .file-pill {
+        font-size: 12px; padding: 5px 12px; border-radius: 16px;
+        background: #e8e0d6; color: #5a4a3a; cursor: pointer;
+        border: 2px solid transparent; transition: all 0.12s;
+        white-space: nowrap;
+    }
+    .file-pill:hover { background: #ddd5c9; }
+    .file-pill.active {
+        border-color: var(--terracotta); background: #fff;
+        color: var(--terracotta); font-weight: 600;
+    }
+    .file-pill .file-size { font-size: 10px; color: #8a7a6a; margin-left: 4px; }
+
+    /* Viewer card */
+    .viewer-card {
+        background: var(--cream); border-radius: 12px 12px 12px 12px;
+        padding: 24px; flex: 1; overflow-y: auto; min-height: 300px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        font-size: 14px; color: #3a3a4a; line-height: 1.65;
+        font-family: 'Inter', -apple-system, sans-serif;
+    }
+    .viewer-card h4 { font-size: 15px; font-weight: 600; margin: 16px 0 6px; color: #2a2a3a; }
+    .viewer-card h4:first-child { margin-top: 0; }
+    .viewer-card p { margin: 0 0 8px; }
+    .viewer-card ul { margin: 0 0 8px; padding-left: 18px; }
+    .viewer-card ul li { margin-bottom: 2px; }
+
+    /* Diff viewer */
+    .viewer-card.diff-view {
+        font-family: 'JetBrains Mono', 'Fira Code', monospace;
+        font-size: 12px; line-height: 1.7; padding: 16px; white-space: pre-wrap;
+    }
+    .diff-added { background: #e6f4ea; color: #1a5c2a; display: block; padding: 1px 8px; }
+    .diff-removed { background: #fce8e4; color: #8b2a1a; display: block; padding: 1px 8px; }
+    .diff-context { color: #6e7681; display: block; padding: 1px 8px; }
+    .diff-hunk { color: var(--terracotta); font-weight: 600; display: block; padding: 3px 8px; }
+
+    /* Table viewer */
+    .viewer-card table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .viewer-card table th {
+        text-align: left; padding: 8px 12px; font-weight: 600;
+        border-bottom: 2px solid #d5cdc0; color: #5a4a3a; font-size: 11px;
+        text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .viewer-card table td {
+        padding: 7px 12px; border-bottom: 1px solid #e8e0d6;
+    }
+    .tag-pass {
+        display: inline-block; font-size: 11px; font-weight: 600;
+        background: #e8f5e9; color: var(--sage); padding: 2px 8px;
+        border-radius: 4px;
+    }
+    .tag-fail {
+        display: inline-block; font-size: 11px; font-weight: 600;
+        background: #fef0eb; color: var(--terracotta); padding: 2px 8px;
+        border-radius: 4px;
+    }
+    .tag-planned {
+        display: inline-block; font-size: 11px; font-weight: 600;
+        background: #eaeaef; color: #7a7a8e; padding: 2px 8px;
+        border-radius: 4px;
+    }
+
+    /* Comments viewer */
+    .comment-item {
+        padding: 12px 0; border-bottom: 1px solid #e8e0d6;
+    }
+    .comment-item:first-child { padding-top: 0; }
+    .comment-severity {
+        display: inline-block; font-size: 10px; font-weight: 700;
+        padding: 2px 7px; border-radius: 4px; margin-right: 8px;
+        text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .sev-S1 { background: #fce8e4; color: #8b2a1a; }
+    .sev-S2 { background: #fef0eb; color: #c05030; }
+    .sev-S3 { background: #fff3e0; color: #b86020; }
+    .sev-nit { background: #eaeaef; color: #6e7681; }
+    .comment-location {
+        font-family: 'JetBrains Mono', monospace; font-size: 11px;
+        color: #58a6ff; font-weight: 500;
+    }
+    .comment-body { margin-top: 4px; font-size: 13px; color: #3a3a4a; }
+
+    /* State placeholders */
+    .viewer-placeholder {
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; padding: 48px 24px; text-align: center;
+        color: #8a7a6a;
+    }
+    .viewer-placeholder .spinner {
+        width: 28px; height: 28px; border: 3px solid #e8e0d6;
+        border-top-color: var(--terracotta); border-radius: 50%;
+        animation: spin 0.8s linear infinite; margin-bottom: 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Review footer */
+    .review-footer {
+        background: #fff; border: 1px solid #e8e0d6;
+        border-radius: 8px; padding: 16px;
+    }
+    .review-footer textarea {
+        width: 100%; border: 1px solid #d5cdc0; border-radius: 6px;
+        padding: 10px 12px; font-size: 13px; font-family: inherit;
+        resize: vertical; min-height: 70px; color: #3a3a4a;
+    }
+    .review-footer textarea:focus { outline: none; border-color: var(--terracotta); }
+    .review-actions {
+        display: flex; gap: 8px; margin-top: 10px; align-items: center;
+    }
+    .btn-approve {
+        background: var(--sage); color: #fff; border: none;
+        padding: 8px 18px; border-radius: 6px; font-size: 13px;
+        font-weight: 600; cursor: pointer; transition: background 0.15s;
+    }
+    .btn-approve:hover { background: #4a8a5e; }
+    .btn-send-back {
+        background: transparent; color: var(--terracotta);
+        border: 1px solid var(--terracotta); padding: 8px 18px;
+        border-radius: 6px; font-size: 13px; font-weight: 600;
+        cursor: pointer; transition: all 0.15s;
+    }
+    .btn-send-back:hover { background: rgba(224,123,90,0.08); }
+
+    /* Approved bar */
+    .approved-bar {
+        background: #e8f5e9; border: 1px solid var(--sage);
+        border-radius: 8px; padding: 12px 16px; font-size: 13px;
+        color: #2a5a3a; display: flex; align-items: center; gap: 8px;
+    }
+
+    /* ── Send-back modal ── */
+    .modal-backdrop {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 9999;
+    }
+    .modal-dialog {
+        background: #fff; border-radius: 10px; padding: 24px;
+        width: 400px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    .modal-dialog h5 { margin: 0 0 6px; font-size: 16px; color: #2a2a3a; }
+    .modal-dialog p { font-size: 13px; color: #6e7681; margin: 0 0 16px; }
+    .modal-stage-option {
+        display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+        border-radius: 6px; cursor: pointer; transition: background 0.1s;
+    }
+    .modal-stage-option:hover { background: #f5f0e8; }
+    .modal-stage-option input[type="radio"] { accent-color: var(--terracotta); }
+    .modal-actions {
+        display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end;
+    }
+    .modal-actions .btn-cancel {
+        background: #eaeaef; border: none; padding: 8px 16px;
+        border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    .modal-actions .btn-send {
+        background: var(--terracotta); color: #fff; border: none;
+        padding: 8px 16px; border-radius: 6px; font-size: 13px;
+        font-weight: 600; cursor: pointer;
+    }
+
+    /* Gate info card in rail */
+    .gate-info-card {
+        margin-top: 20px; padding: 10px 12px;
+        background: rgba(224,123,90,0.08); border: 1px solid rgba(224,123,90,0.2);
+        border-radius: 6px; font-size: 11px; color: #b5b5c3;
+    }
+    .gate-info-card strong { color: var(--terracotta); }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+        .run-layout { flex-direction: column; }
+        .stage-rail { width: 100%; min-width: 0; padding: 12px; }
+        .output-panel { padding: 12px; }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="run-layout">
+    <!-- ═══ LEFT: stage rail ═══ -->
+    <aside class="stage-rail" id="stage-rail">
+        <div class="run-meta">
+            <div class="story-id" id="meta-story-id">—</div>
+            <div class="story-title" id="meta-story-title">Loading…</div>
+            <div class="run-state" id="meta-state"></div>
+            <div class="run-elapsed" id="meta-elapsed"></div>
+        </div>
+        <div id="stage-list"></div>
+        <div class="gate-info-card" id="gate-info-card" style="display:none;">
+            <strong>⏸ Review Gates</strong><br>
+            <span id="gate-info-text"></span><br>
+            <a href="#" style="color:var(--terracotta);font-size:11px;" onclick="alert('Policy editing is on the roadmap.')">Change gates →</a>
+        </div>
+    </aside>
+
+    <!-- ═══ RIGHT: output panel ═══ -->
+    <div class="output-panel" id="output-panel">
+        <div class="panel-header">
+            <h4 id="panel-heading">OUTPUT OF <span id="panel-stage-name">—</span></h4>
+            <div class="panel-actions">
+                <button class="btn btn-outline-secondary btn-sm" onclick="alert('Download coming soon.')">
+                    <i class="fa fa-download"></i> Download all
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="alert('Stage log coming soon.')">
+                    <i class="fa fa-file-text-o"></i> Stage log
+                </button>
+            </div>
+        </div>
+
+        <!-- File pills -->
+        <div class="file-pills" id="file-pills"></div>
+
+        <!-- Viewer -->
+        <div class="viewer-card" id="viewer-content">
+            <div class="viewer-placeholder">
+                <p>Select a stage from the left to view its output.</p>
+            </div>
+        </div>
+
+        <!-- Review footer (for gate stages) -->
+        <div class="review-footer" id="review-footer" style="display:none;">
+            <textarea id="review-comment" placeholder="Your review comment (optional)…"></textarea>
+            <div class="review-actions">
+                <button class="btn-approve" onclick="submitDecision('approve')">
+                    <i class="fa fa-check"></i> Approve &amp; continue
+                </button>
+                <button class="btn-send-back" onclick="showSendBackModal()">
+                    <i class="fa fa-undo"></i> Send back…
+                </button>
+            </div>
+        </div>
+
+        <!-- Approved bar (shown after approval) -->
+        <div class="approved-bar" id="approved-bar" style="display:none;">
+            <i class="fa fa-check-circle" style="color:var(--sage);"></i>
+            <span id="approved-text">Approved. The pipeline is now advancing.</span>
+        </div>
+    </div>
+</div>
+
+<!-- ═══ Send-back modal ═══ -->
+<div class="modal-backdrop" id="send-back-modal" style="display:none;">
+    <div class="modal-dialog">
+        <h5>Send back for rework</h5>
+        <p>Pick the stage to re-run. Everything after it is discarded and re-executed with your comment.</p>
+        <div id="modal-stage-options"></div>
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="hideSendBackModal()">Cancel</button>
+            <button class="btn-send" onclick="confirmSendBack()">Send back</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.BB_PROJECT_ID = '{{ project_id }}';
+window.BB_RUN_ID = '{{ run_id }}';
+
+let runData = null;
+let selectedStageIdx = null;
+let selectedFilePath = null;
+let decisionSubmitted = false;
+
+window.addEventListener('bb:userReady', function(e) {
+    const data = e.detail;
+
+    // Verify membership
+    const membership = (data.memberships || []).find(m => m.project_id === window.BB_PROJECT_ID);
+    if (!membership) {
+        document.getElementById('stage-list').innerHTML =
+            '<p style="color:#f85149;font-size:13px;">You are not a member of this project.</p>';
+        return;
+    }
+
+    // Update breadcrumb
+    document.getElementById('bc-project').href = '/projects/' + window.BB_PROJECT_ID;
+    document.getElementById('bc-project').textContent = membership.project_name;
+
+    loadRunDetail();
+});
+
+function loadRunDetail() {
+    fetch('/api/runs/' + window.BB_RUN_ID, { headers: authHeaders() })
+        .then(r => { if (!r.ok) throw new Error('Run not found'); return r.json(); })
+        .then(run => {
+            runData = run;
+            renderStageRail(run);
+            document.getElementById('bc-run').textContent = run.story_id || run.id.substring(0,8);
+            document.getElementById('run-title').textContent = run.story_id || 'Run ' + run.id.substring(0,8);
+            document.title = (run.story_id || 'Run') + ' — BheemBhai';
+        })
+        .catch(err => {
+            document.getElementById('stage-list').innerHTML =
+                '<p style="color:#f85149;font-size:13px;">Failed to load: ' + esc(err.message) + '</p>';
+        });
+}
+
+function renderStageRail(run) {
+    // Meta
+    document.getElementById('meta-story-id').textContent = run.story_id || run.id.substring(0,8);
+    document.getElementById('meta-story-title').textContent = run.workflow_name || 'Pipeline Run';
+    document.getElementById('meta-elapsed').textContent = run.elapsed_total || '';
+
+    // State badge
+    const stateLabels = {
+        'pending': '⏳ Pending',
+        'running': '⚡ Running',
+        'paused': '⏸ Paused for review',
+        'completed': '✅ Completed',
+        'failed': '✕ Failed',
+        'cancelled': '⊘ Cancelled',
+    };
+    const stateEl = document.getElementById('meta-state');
+    const label = stateLabels[run.state] || run.state;
+    if (run.state === 'paused') {
+        stateEl.innerHTML = '<span style="color:var(--terracotta);font-weight:600;">' + label + '</span>';
+    } else if (run.state === 'running') {
+        stateEl.innerHTML = '<span style="color:#58a6ff;font-weight:600;">' + label + '</span>';
+    } else {
+        stateEl.innerHTML = '<span style="color:#b5b5c3;">' + label + '</span>';
+    }
+
+    // Build stage list
+    const stages = run.stages || [];
+    const listEl = document.getElementById('stage-list');
+    let html = '';
+
+    // Collect gate info
+    const gateSteps = stages.filter(s => s.has_gate).map(s => s.label || s.step_id);
+    if (gateSteps.length > 0) {
+        document.getElementById('gate-info-card').style.display = '';
+        document.getElementById('gate-info-text').textContent =
+            'Pauses at ' + gateSteps.join(' and ') + '.';
+    }
+
+    stages.forEach((st, i) => {
+        const isLast = i === stages.length - 1;
+        const vs = st.visual_state;
+
+        // Circle
+        let circleHtml = '';
+        if (vs === 'done') {
+            circleHtml = '<div class="stage-circle done">✓</div>';
+        } else if (vs === 'current') {
+            const pulseClass = st.is_awaiting_review ? ' awaiting' : '';
+            circleHtml = '<div class="stage-circle current' + pulseClass + '">●</div>';
+        } else if (vs === 'failed') {
+            circleHtml = '<div class="stage-circle failed">✕</div>';
+        } else {
+            circleHtml = '<div class="stage-circle pending">' + (i+1) + '</div>';
+        }
+
+        // Line
+        let lineClass = '';
+        if (vs === 'done') lineClass = ' done';
+        else if (vs === 'current') lineClass = ' current';
+
+        const lineHtml = isLast ? '' : '<div class="stage-line' + lineClass + '"></div>';
+
+        // Meta text
+        let metaText = '';
+        if (st.elapsed && vs === 'done') {
+            metaText = 'Completed ' + st.elapsed;
+        } else if (st.elapsed && vs === 'current') {
+            metaText = 'Running · ' + st.elapsed;
+        } else if (st.is_awaiting_review) {
+            metaText = 'Waiting on your review';
+        } else if (vs === 'failed') {
+            metaText = 'Container exited ' + (st.attempt_no || 1);
+        } else if (vs === 'pending') {
+            metaText = 'Not started';
+        }
+
+        // Gate tag
+        const gateTag = st.has_gate ? ' <span class="stage-gate-tag">review gate</span>' : '';
+
+        const selectedClass = (selectedStageIdx === i) ? ' selected' : '';
+
+        html += `
+            <div class="stage-item${selectedClass}" data-stage-idx="${i}" onclick="selectStage(${i})">
+                <div class="stage-connector">
+                    ${circleHtml}
+                    ${lineHtml}
+                </div>
+                <div class="stage-info">
+                    <div class="stage-label">${esc(st.label || st.step_id)}${gateTag}</div>
+                    <div class="stage-meta">${metaText}</div>
+                </div>
+            </div>`;
+    });
+
+    listEl.innerHTML = html;
+
+    // Auto-select the current stage
+    const currentIdx = run.current_stage_idx;
+    if (currentIdx !== null && currentIdx !== undefined) {
+        selectStage(currentIdx);
+    } else {
+        // Select first stage with files
+        const firstWithFiles = stages.findIndex(s => s.files && s.files.length > 0);
+        selectStage(firstWithFiles >= 0 ? firstWithFiles : 0);
+    }
+}
+
+function selectStage(idx) {
+    if (!runData) return;
+    const stages = runData.stages || [];
+    if (idx < 0 || idx >= stages.length) return;
+
+    selectedStageIdx = idx;
+    selectedFilePath = null;
+
+    // Update selection highlight
+    document.querySelectorAll('.stage-item').forEach((el, i) => {
+        el.classList.toggle('selected', i === idx);
+    });
+
+    const stage = stages[idx];
+    document.getElementById('panel-stage-name').textContent = stage.step_id || stage.skill;
+
+    // Render file pills
+    const files = stage.files || [];
+    const pillsEl = document.getElementById('file-pills');
+    if (files.length > 0) {
+        pillsEl.innerHTML = files.map((f, fi) => {
+            const activeClass = (fi === 0 && !selectedFilePath) ? ' active' : '';
+            return `<span class="file-pill${activeClass}" data-file-idx="${fi}" onclick="selectFile(${fi})">
+                ${esc(f.label)} <span class="file-size">${esc(f.size)}</span>
+            </span>`;
+        }).join('');
+        // Auto-select first file
+        if (!selectedFilePath) selectFile(0);
+    } else {
+        pillsEl.innerHTML = '';
+        renderViewerPlaceholder(stage);
+    }
+
+    // Review footer
+    const footer = document.getElementById('review-footer');
+    const approvedBar = document.getElementById('approved-bar');
+    if (stage.is_awaiting_review && !decisionSubmitted) {
+        footer.style.display = '';
+        approvedBar.style.display = 'none';
+    } else if (decisionSubmitted && stage.is_awaiting_review) {
+        footer.style.display = 'none';
+        approvedBar.style.display = '';
+    } else {
+        footer.style.display = 'none';
+        approvedBar.style.display = 'none';
+    }
+}
+
+function selectFile(idx) {
+    if (!runData || selectedStageIdx === null) return;
+    const stage = runData.stages[selectedStageIdx];
+    const files = stage.files || [];
+    if (idx < 0 || idx >= files.length) return;
+
+    selectedFilePath = files[idx].path;
+
+    // Update pill highlights
+    document.querySelectorAll('.file-pill').forEach((el, i) => {
+        el.classList.toggle('active', i === idx);
+    });
+
+    // Fetch and render file content
+    const path = selectedFilePath;
+    const viewerType = files[idx].viewer;
+
+    fetch('/api/runs/' + window.BB_RUN_ID + '/file?path=' + encodeURIComponent(path), { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            renderViewer(data.content, data.viewer || viewerType);
+        })
+        .catch(() => {
+            renderViewer('# Error\n\nFailed to load file content.', 'doc');
+        });
+}
+
+function renderViewerPlaceholder(stage) {
+    const el = document.getElementById('viewer-content');
+    const vs = stage.visual_state;
+
+    if (vs === 'running' || stage.exec_state === 'running') {
+        el.className = 'viewer-card';
+        el.innerHTML = `
+            <div class="viewer-placeholder">
+                <div class="spinner"></div>
+                <p>Container running — outputs appear when it completes.</p>
+            </div>`;
+    } else if (vs === 'pending') {
+        el.className = 'viewer-card';
+        el.innerHTML = `
+            <div class="viewer-placeholder">
+                <p>Not started. Waiting on the stages before it.</p>
+            </div>`;
+    } else if (vs === 'failed') {
+        el.className = 'viewer-card';
+        el.innerHTML = `
+            <div class="viewer-placeholder">
+                <p style="color:var(--deep-brown);">This stage failed. Check the stage log for details.</p>
+            </div>`;
+    } else {
+        el.className = 'viewer-card';
+        el.innerHTML = `
+            <div class="viewer-placeholder">
+                <p>No output files for this stage.</p>
+            </div>`;
+    }
+}
+
+function renderViewer(content, viewerType) {
+    const el = document.getElementById('viewer-content');
+
+    if (viewerType === 'diff') {
+        el.className = 'viewer-card diff-view';
+        el.innerHTML = content.split('\n').map(line => {
+            const escLine = esc(line);
+            if (line.startsWith('+')) return '<span class="diff-added">' + escLine + '</span>';
+            if (line.startsWith('-')) return '<span class="diff-removed">' + escLine + '</span>';
+            if (line.startsWith('@@')) return '<span class="diff-hunk">' + escLine + '</span>';
+            return '<span class="diff-context">' + escLine + '</span>';
+        }).join('\n');
+        return;
+    }
+
+    if (viewerType === 'table') {
+        el.className = 'viewer-card';
+        const lines = content.trim().split('\n');
+        if (lines.length < 2) { el.innerHTML = '<p>Empty table.</p>'; return; }
+        const headers = lines[0].split(',');
+        const rows = lines.slice(1).map(line => line.split(','));
+        el.innerHTML = `
+            <div class="table-responsive">
+                <table>
+                    <thead><tr>${headers.map(h => '<th>' + esc(h) + '</th>').join('')}</tr></thead>
+                    <tbody>
+                        ${rows.map(row => `
+                            <tr>${row.map((cell, ci) => {
+                                const c = cell.trim().toLowerCase();
+                                let tag = '';
+                                if (c === 'pass') tag = '<span class="tag-pass">pass</span>';
+                                else if (c === 'fail') tag = '<span class="tag-fail">fail</span>';
+                                else if (c === 'planned' || c === '—') tag = '<span class="tag-planned">' + esc(cell) + '</span>';
+                                else return '<td>' + esc(cell) + '</td>';
+                                return '<td>' + tag + '</td>';
+                            }).join('')}</tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>`;
+        return;
+    }
+
+    if (viewerType === 'comments') {
+        el.className = 'viewer-card';
+        el.innerHTML = parseCommentsMarkdown(content);
+        return;
+    }
+
+    // Default doc viewer — simple markdown rendering
+    el.className = 'viewer-card';
+    el.innerHTML = parseDocMarkdown(content);
+}
+
+function parseDocMarkdown(md) {
+    let html = '';
+    const lines = md.split('\n');
+    let inList = false;
+    let inCode = false;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        if (line.startsWith('```')) {
+            inCode = !inCode;
+            if (inCode) { html += '<pre style="background:#f5f0e8;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto;">'; }
+            else { html += '</pre>'; }
+            continue;
+        }
+        if (inCode) { html += esc(line) + '\n'; continue; }
+
+        if (line.startsWith('# ')) {
+            if (inList) { html += '</ul>'; inList = false; }
+            html += '<h4>' + esc(line.replace(/^# /, '')) + '</h4>';
+        } else if (line.startsWith('## ')) {
+            if (inList) { html += '</ul>'; inList = false; }
+            html += '<h4>' + esc(line.replace(/^## /, '')) + '</h4>';
+        } else if (line.startsWith('- ') || line.startsWith('  - ')) {
+            if (!inList) { html += '<ul>'; inList = true; }
+            html += '<li>' + esc(line.replace(/^  - |^- /, '')) + '</li>';
+        } else if (line.trim() === '') {
+            if (inList) { html += '</ul>'; inList = false; }
+            html += '<p></p>';
+        } else {
+            if (inList) { html += '</ul>'; inList = false; }
+            html += '<p>' + esc(line) + '</p>';
+        }
+    }
+    if (inList) html += '</ul>';
+    if (inCode) html += '</pre>';
+    return html;
+}
+
+function parseCommentsMarkdown(md) {
+    let html = '<div>';
+    const lines = md.split('\n');
+    let currentComment = null;
+
+    for (const line of lines) {
+        const sevMatch = line.match(/^## (S[123]|nit)\s+(.+)/);
+        if (sevMatch) {
+            if (currentComment) html += renderCommentItem(currentComment);
+            currentComment = { severity: sevMatch[1], location: sevMatch[2], body: '' };
+        } else if (line.startsWith('# ')) {
+            if (currentComment) html += renderCommentItem(currentComment);
+            currentComment = null;
+            html += '<h4>' + esc(line.replace(/^# /, '')) + '</h4>';
+        } else if (currentComment && line.trim()) {
+            currentComment.body += line.trim() + ' ';
+        } else if (currentComment && line.trim() === '') {
+            if (currentComment.body) {
+                html += renderCommentItem(currentComment);
+                currentComment = null;
+            }
+        }
+    }
+    if (currentComment) html += renderCommentItem(currentComment);
+    html += '</div>';
+    return html;
+}
+
+function renderCommentItem(c) {
+    return `
+        <div class="comment-item">
+            <span class="comment-severity sev-${esc(c.severity)}">${esc(c.severity)}</span>
+            <span class="comment-location">${esc(c.location)}</span>
+            <div class="comment-body">${esc(c.body.trim())}</div>
+        </div>`;
+}
+
+// ── Gate decisions ──────────────────────────────────────────────
+
+function submitDecision(action) {
+    if (!runData) return;
+    const comment = document.getElementById('review-comment').value.trim();
+
+    fetch('/api/runs/' + window.BB_RUN_ID + '/decision', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({ action: action, comment: comment || null }),
+    })
+    .then(r => { if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); }); return r.json(); })
+    .then(result => {
+        decisionSubmitted = true;
+        document.getElementById('review-footer').style.display = 'none';
+        const bar = document.getElementById('approved-bar');
+        bar.style.display = '';
+        document.getElementById('approved-text').textContent = result.message;
+        // Update the stage rail to reflect the new state
+        setTimeout(() => loadRunDetail(), 1500);
+    })
+    .catch(err => {
+        alert('Error: ' + err.message);
+    });
+}
+
+// ── Send-back modal ─────────────────────────────────────────────
+
+function showSendBackModal() {
+    if (!runData) return;
+    const stages = runData.stages || [];
+    const currentIdx = runData.current_stage_idx || 0;
+
+    // Show only stages before and including the current one (completed + current)
+    const options = stages.slice(0, currentIdx + 1).map((s, i) => ({
+        idx: i,
+        step_id: s.step_id,
+        label: s.label || s.step_id,
+        visual_state: s.visual_state,
+    }));
+
+    const optsEl = document.getElementById('modal-stage-options');
+    optsEl.innerHTML = options.map((opt, i) => {
+        const checked = i === options.length - 1 ? ' checked' : '';
+        const prefix = opt.visual_state === 'done' ? '✓' : opt.visual_state === 'current' ? '●' : '';
+        return `
+            <label class="modal-stage-option">
+                <input type="radio" name="send-back-to" value="${esc(opt.step_id)}"${checked}>
+                <span style="font-size:13px;">${prefix} ${esc(opt.label)}</span>
+            </label>`;
+    }).join('');
+
+    document.getElementById('send-back-modal').style.display = '';
+}
+
+function hideSendBackModal() {
+    document.getElementById('send-back-modal').style.display = 'none';
+}
+
+function confirmSendBack() {
+    const checked = document.querySelector('input[name="send-back-to"]:checked');
+    if (!checked) return;
+
+    const sendBackTo = checked.value;
+    const comment = document.getElementById('review-comment').value.trim();
+
+    fetch('/api/runs/' + window.BB_RUN_ID + '/decision', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({ action: 'send_back', send_back_to: sendBackTo, comment: comment || null }),
+    })
+    .then(r => { if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); }); return r.json(); })
+    .then(result => {
+        hideSendBackModal();
+        decisionSubmitted = true;
+        document.getElementById('review-footer').style.display = 'none';
+        const bar = document.getElementById('approved-bar');
+        bar.style.display = '';
+        bar.querySelector('#approved-text').textContent = result.message;
+        document.querySelector('.approved-bar').style.background = '#fef0eb';
+        document.querySelector('.approved-bar').style.borderColor = 'var(--terracotta)';
+        document.querySelector('.approved-bar').style.color = '#8b2a1a';
+        setTimeout(() => loadRunDetail(), 1500);
+    })
+    .catch(err => {
+        alert('Error: ' + err.message);
+    });
+}
+</script>
+{% endblock %}

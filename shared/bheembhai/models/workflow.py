@@ -16,8 +16,8 @@ class Workflow(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -35,7 +35,9 @@ class Workflow(Base):
     runs: Mapped[list["Run"]] = relationship(back_populates="workflow")
 
     __table_args__ = (
-        UniqueConstraint("project_id", "name", "version", name="uq_workflow_project_name_ver"),
+        # Platform workflows (project_id IS NULL): unique on (name, version)
+        # Project workflows (project_id IS NOT NULL): unique on (project_id, name, version)
+        # Implemented via partial unique indexes in migration 8f8a9b0c1d3e
     )
 
 
@@ -45,8 +47,8 @@ class Policy(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    project_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
     )
     workflow_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=False
@@ -66,5 +68,5 @@ class Policy(Base):
     runs: Mapped[list["Run"]] = relationship(back_populates="policy")
 
     __table_args__ = (
-        UniqueConstraint("project_id", "name", "version", name="uq_policy_project_name_ver"),
+        UniqueConstraint("workflow_id", "name", "version", name="uq_policy_workflow_name_ver"),
     )
