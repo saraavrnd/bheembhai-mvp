@@ -111,9 +111,9 @@ const INTEGRATION_TYPES = {
                     {name:'base_url', label:'Base URL', type:'text', required:true, placeholder:'https://api.openai.com/v1'},
                     {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
                     {name:'organisation', label:'Organisation', type:'text', required:false, placeholder:'org-...'},
-                    {name:'model_high', label:'High-end model', type:'select', required:false, options:[{v:'gpt-5-pro',l:'gpt-5-pro'},{v:'gpt-5',l:'gpt-5'}]},
-                    {name:'model_medium', label:'Medium model', type:'select', required:false, options:[{v:'gpt-5',l:'gpt-5'},{v:'gpt-5-mini',l:'gpt-5-mini'}]},
-                    {name:'model_small', label:'Small-task model', type:'select', required:false, options:[{v:'gpt-5-mini',l:'gpt-5-mini'}]},
+                    {name:'model_high', label:'High-end model', type:'select', required:true, options:[{v:'gpt-5-pro',l:'gpt-5-pro'},{v:'gpt-5',l:'gpt-5'}]},
+                    {name:'model_medium', label:'Medium model', type:'select', required:true, options:[{v:'gpt-5',l:'gpt-5'},{v:'gpt-5-mini',l:'gpt-5-mini'}]},
+                    {name:'model_low', label:'Low-tier model', type:'select', required:true, options:[{v:'gpt-5-mini',l:'gpt-5-mini'}]},
                     {name:'timeout', label:'Request timeout', type:'text', required:false, placeholder:'120s'}
                 ]},
     claude:   { icon: 'CL', label: 'Claude',  category: 'AI VENDORS',  description: 'Anthropic Claude model tiers',
@@ -121,9 +121,9 @@ const INTEGRATION_TYPES = {
                     {name:'base_url', label:'Base URL', type:'text', required:true, placeholder:'https://api.anthropic.com/v1'},
                     {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
                     {name:'organisation', label:'Organisation', type:'text', required:false, placeholder:''},
-                    {name:'model_high', label:'High-end model', type:'select', required:false, options:[{v:'claude-opus-5',l:'claude-opus-5'},{v:'claude-sonnet-5',l:'claude-sonnet-5'}]},
-                    {name:'model_medium', label:'Medium model', type:'select', required:false, options:[{v:'claude-sonnet-5',l:'claude-sonnet-5'},{v:'claude-haiku-4-5',l:'claude-haiku-4-5'}]},
-                    {name:'model_small', label:'Small-task model', type:'select', required:false, options:[{v:'claude-haiku-4-5',l:'claude-haiku-4-5'}]},
+                    {name:'model_high', label:'High-end model', type:'select', required:true, options:[{v:'claude-opus-5',l:'claude-opus-5'},{v:'claude-sonnet-5',l:'claude-sonnet-5'}]},
+                    {name:'model_medium', label:'Medium model', type:'select', required:true, options:[{v:'claude-sonnet-5',l:'claude-sonnet-5'},{v:'claude-haiku-4-5',l:'claude-haiku-4-5'}]},
+                    {name:'model_low', label:'Low-tier model', type:'select', required:true, options:[{v:'claude-haiku-4-5',l:'claude-haiku-4-5'}]},
                     {name:'timeout', label:'Request timeout', type:'text', required:false, placeholder:'120s'}
                 ]},
     kimi:     { icon: 'KM', label: 'Kimi',    category: 'AI VENDORS',  description: 'Moonshot Kimi model tiers',
@@ -131,9 +131,9 @@ const INTEGRATION_TYPES = {
                     {name:'base_url', label:'Base URL', type:'text', required:true, placeholder:'https://api.moonshot.cn/v1'},
                     {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
                     {name:'organisation', label:'Organisation', type:'text', required:false, placeholder:''},
-                    {name:'model_high', label:'High-end model', type:'select', required:false, options:[{v:'kimi-k2',l:'kimi-k2'}]},
-                    {name:'model_medium', label:'Medium model', type:'select', required:false, options:[{v:'kimi-k2',l:'kimi-k2'}]},
-                    {name:'model_small', label:'Small-task model', type:'select', required:false, options:[{v:'kimi-k2',l:'kimi-k2'}]},
+                    {name:'model_high', label:'High-end model', type:'select', required:true, options:[{v:'kimi-k2',l:'kimi-k2'}]},
+                    {name:'model_medium', label:'Medium model', type:'select', required:true, options:[{v:'kimi-k2',l:'kimi-k2'}]},
+                    {name:'model_low', label:'Low-tier model', type:'select', required:true, options:[{v:'kimi-k2',l:'kimi-k2'}]},
                     {name:'timeout', label:'Request timeout', type:'text', required:false, placeholder:'120s'}
                 ]},
     deepseek: { icon: 'DS', label: 'DeepSeek',category: 'AI VENDORS',  description: 'DeepSeek model tiers',
@@ -141,9 +141,9 @@ const INTEGRATION_TYPES = {
                     {name:'base_url', label:'Base URL', type:'text', required:true, placeholder:'https://api.deepseek.com/v1'},
                     {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
                     {name:'organisation', label:'Organisation', type:'text', required:false, placeholder:''},
-                    {name:'model_high', label:'High-end model', type:'select', required:false, options:[{v:'deepseek-v4-pro',l:'deepseek-v4-pro'},{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
-                    {name:'model_medium', label:'Medium model', type:'select', required:false, options:[{v:'deepseek-v4-pro',l:'deepseek-v4-pro'},{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
-                    {name:'model_small', label:'Small-task model', type:'select', required:false, options:[{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
+                    {name:'model_high', label:'High-end model', type:'select', required:true, options:[{v:'deepseek-v4-pro',l:'deepseek-v4-pro'},{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
+                    {name:'model_medium', label:'Medium model', type:'select', required:true, options:[{v:'deepseek-v4-pro',l:'deepseek-v4-pro'},{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
+                    {name:'model_low', label:'Low-tier model', type:'select', required:true, options:[{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
                     {name:'timeout', label:'Request timeout', type:'text', required:false, placeholder:'120s'}
                 ]}
 };

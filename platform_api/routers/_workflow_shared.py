@@ -61,7 +61,7 @@ def _parse_workflow_yaml(yaml_content: str) -> WorkflowParsed | None:
         steps.append(WorkflowStepSchema(
             id=str(s.get("id", "")),
             skill=str(s.get("skill", "")),
-            model=str(s.get("model", "sonnet")),
+            model=str(s.get("model", "medium")),
             label=str(s.get("label", "")),
             deadline=int(s.get("deadline", 900)),
             on=routing,

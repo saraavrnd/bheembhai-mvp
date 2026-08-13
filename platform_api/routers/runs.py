@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid as _uuid
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -11,12 +12,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from bheembhai.database import get_session
+from bheembhai.models.project import ProjectIntegration
 from bheembhai.models.run import Run, Step
 from bheembhai.models.user import Membership, User
+from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.protocols.auth import Identity
 
 from platform_api.dependencies import get_current_enabled_user
+from platform_api.routers._integration_shared import AI_VENDOR_TYPES
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +38,9 @@ class RunCreateRequest(BaseModel):
     workflow_id: str = Field(..., min_length=1)
     policy_id: str | None = None
     story_id: str = Field(..., min_length=1)
+    github_integration_id: str = Field(..., min_length=1)
+    jira_integration_id: str | None = None
+    ai_vendor_integration_id: str = Field(..., min_length=1)
 
 
 class DecisionRequest(BaseModel):
@@ -45,7 +52,18 @@ class DecisionRequest(BaseModel):
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 
-def _run_summary(run: Run) -> dict:
+def _user_dict(user: User | None) -> dict | None:
+    """Public identity of a run initiator — never expose internal user fields."""
+    if user is None:
+        return None
+    return {
+        "user_id": str(user.id),
+        "email": user.email,
+        "display_name": user.display_name,
+    }
+
+
+def _run_summary(run: Run, started_by: User | None = None) -> dict:
     """Lightweight run for list views."""
     return {
         "id": str(run.id),
@@ -57,7 +75,39 @@ def _run_summary(run: Run) -> dict:
         "current_step": run.current_step,
         "cost_usd": float(run.cost_usd),
         "created_at": run.created_at.isoformat() if run.created_at else "",
+        "source_branch": run.source_branch,
+        "run_branch": run.run_branch,
+        "started_by": _user_dict(started_by),
+        "github_integration_id": str(run.github_integration_id) if run.github_integration_id else None,
+        "jira_integration_id": str(run.jira_integration_id) if run.jira_integration_id else None,
+        "ai_vendor_integration_id": str(run.ai_vendor_integration_id) if run.ai_vendor_integration_id else None,
     }
+
+
+async def _require_verified_integration(
+    db: "AsyncSession",
+    project_id: str,
+    integration_id: str,
+    expected_types: set[str],
+    label: str,
+) -> ProjectIntegration:
+    """Validate an integration selected for a run.
+
+    The integration must belong to the project, be of an expected type, and
+    have passed its connection test (``verified_at`` set). The run modal only
+    offers verified integrations; this is the server-side enforcement.
+    """
+    try:
+        integ = await db.get(ProjectIntegration, _uuid.UUID(integration_id))
+    except ValueError:
+        raise HTTPException(422, f"Invalid {label} integration id: {integration_id}")
+    if integ is None or str(integ.project_id) != project_id:
+        raise HTTPException(422, f"Selected {label} integration does not belong to this project")
+    if integ.type not in expected_types:
+        raise HTTPException(422, f"Selected {label} integration is not of the expected type")
+    if integ.verified_at is None:
+        raise HTTPException(422, f"Selected {label} integration has not passed its connection test")
+    return integ
 
 
 def _parse_workflow_steps(workflow: Workflow | None) -> list[dict]:
@@ -124,7 +174,7 @@ def _step_to_dict(step: Step) -> dict:
     }
 
 
-def _build_run_detail(run: Run) -> dict:
+def _build_run_detail(run: Run, started_by: User | None = None) -> dict:
     """Full run detail with steps, workflow definition, and gate map."""
     workflow_def = _parse_workflow_steps(run.workflow) if run.workflow else []
     gates = _parse_policy_gates(run.policy) if run.policy else {}
@@ -194,7 +244,7 @@ def _build_run_detail(run: Run) -> dict:
 
     # Build the full detail response
     return {
-        **{k: _run_summary(run)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "state", "current_step", "cost_usd", "created_at"]},
+        **{k: _run_summary(run, started_by)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "state", "current_step", "cost_usd", "created_at", "started_by", "github_integration_id", "jira_integration_id", "ai_vendor_integration_id"]},
         "source_branch": run.source_branch,
         "run_branch": run.run_branch,
         "workflow_name": run.workflow.name if run.workflow else "",
@@ -434,9 +484,16 @@ async def list_runs(
     runs_result = await db.execute(stmt)
     runs = runs_result.scalars().unique().all()
 
+    # Resolve initiators in one query (runs reference users by id only)
+    starter_ids = {r.started_by_user_id for r in runs if r.started_by_user_id}
+    users_map: dict = {}
+    if starter_ids:
+        users_result = await db.execute(select(User).where(User.id.in_(starter_ids)))
+        users_map = {u.id: u for u in users_result.scalars().all()}
+
     results: list[dict] = []
     for run in runs:
-        summary = _run_summary(run)
+        summary = _run_summary(run, started_by=users_map.get(run.started_by_user_id))
         # Add progress info for the run list
         wf_def = _parse_workflow_steps(run.workflow) if run.workflow else []
         gates = _parse_policy_gates(run.policy) if run.policy else {}
@@ -527,7 +584,9 @@ async def create_run(
     workflow = await db.get(Workflow, body.workflow_id)
     if workflow is None:
         raise HTTPException(404, f"Workflow {body.workflow_id} not found")
-    if workflow.project_id is not None and str(workflow.project_id) != body.project_id:
+    # Runs are project-scoped: platform templates (project_id IS NULL) must be
+    # copied into the project first — they cannot back a run directly.
+    if workflow.project_id is None or str(workflow.project_id) != body.project_id:
         raise HTTPException(400, "Workflow does not belong to this project")
 
     policy_id = body.policy_id
@@ -549,28 +608,54 @@ async def create_run(
         if str(policy.workflow_id) != body.workflow_id:
             raise HTTPException(400, "Policy does not belong to the selected workflow")
 
-    import uuid as _uuid
-    from datetime import datetime, timezone
+    # ── Integrations: capture the user's verified selections ────────────────
+    github = await _require_verified_integration(
+        db, body.project_id, body.github_integration_id, {"github"}, "GitHub"
+    )
+    ai_vendor = await _require_verified_integration(
+        db, body.project_id, body.ai_vendor_integration_id, AI_VENDOR_TYPES, "AI vendor"
+    )
+    jira = None
+    if body.jira_integration_id:
+        jira = await _require_verified_integration(
+            db, body.project_id, body.jira_integration_id, {"jira"}, "Jira"
+        )
 
-    now = datetime.now(timezone.utc)
-    timestamp = now.strftime("%d%m%Y%H%M")
-    safe_story = body.story_id.replace("-", "").replace("/", "")
+    # Source branch resolves from the selected GitHub integration config
+    # (not user input); the engine cuts the run branch off it at init.
+    github_config = github.config or {}
+    source_branch = str(github_config.get("base_branch") or "main")
 
     run = Run(
-        id=_uuid.uuid4(),
         project_id=_uuid.UUID(body.project_id),
         workflow_id=_uuid.UUID(body.workflow_id),
         policy_id=_uuid.UUID(policy_id),
         story_id=body.story_id,
-        source_branch="main",
-        run_branch=f"feat/{safe_story}/{timestamp}",
-        state="running",
+        source_branch=source_branch,
+        run_branch=None,
+        github_integration_id=github.id,
+        jira_integration_id=jira.id if jira else None,
+        ai_vendor_integration_id=ai_vendor.id,
+        started_by_user_id=current_user.id,
+        state="pending",
     )
     db.add(run)
+    await db.flush()
+
+    # Hand the run to the engine (ADR-003 work queue). Everything else —
+    # branch creation, model resolution, env bundle — happens at engine init.
+    db.add(WorkQueueItem(
+        run_id=run.id,
+        action="start",
+        payload={"story_id": body.story_id},
+    ))
     await db.commit()
     await db.refresh(run)
 
-    logger.info("Run created: %s project=%s story=%s by=%s", run.id, body.project_id, body.story_id, current_user.id)
+    logger.info(
+        "Run created: %s project=%s story=%s github=%s ai=%s by=%s",
+        run.id, body.project_id, body.story_id, github.id, ai_vendor.id, current_user.id,
+    )
     return _run_summary(run)
 
 
@@ -598,7 +683,10 @@ async def get_run(
     if run is None:
         raise HTTPException(404, f"Run {run_id} not found")
 
-    return _build_run_detail(run)
+    starter = None
+    if run.started_by_user_id:
+        starter = await db.get(User, run.started_by_user_id)
+    return _build_run_detail(run, started_by=starter)
 
 
 @router.get("/{run_id}/file")

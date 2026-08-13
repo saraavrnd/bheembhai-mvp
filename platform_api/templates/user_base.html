@@ -28,7 +28,6 @@
         }
         .navbar-project-dropdown:hover,
         .navbar-project-dropdown.show { color: #ffffff; border-color: #5b9bd5; background: rgba(255,255,255,0.04); }
-        .navbar-project-dropdown .caret { font-size: 11px; opacity: 0.7; }
         #navbar-project-role {
             font-size: 10px; font-weight: 600; text-transform: uppercase;
             padding: 2px 6px; vertical-align: middle;
@@ -96,7 +95,6 @@
                             <i class="fa fa-folder-open" style="color:#5b9bd5;font-size:14px;"></i>
                             <span id="navbar-project-name">Select project</span>
                             <span class="badge badge-secondary" id="navbar-project-role" style="display:none;"></span>
-                            <i class="fa fa-caret-down caret"></i>
                         </a>
                         <ul class="dropdown-menu animated flipInX" id="navbar-project-menu">
                             <li><h6 class="dropdown-header">Your projects</h6></li>
@@ -336,9 +334,10 @@
         document.getElementById('nav-runs').href = '/projects/' + projectId + '?tab=runs';
         document.getElementById('nav-config').href = '/projects/' + projectId + '?tab=config';
 
-        // Highlight active tab from URL (default dashboard)
+        // Highlight active tab from URL (default dashboard; run-detail pages
+        // have no ?tab= param, so infer "runs" from the path)
         const params = new URLSearchParams(window.location.search);
-        const activeTab = params.get('tab') || 'dashboard';
+        const activeTab = params.get('tab') || (window.location.pathname.indexOf('/runs/') !== -1 ? 'runs' : 'dashboard');
         document.querySelectorAll('#navbar-links .nav-pill').forEach(p => p.classList.remove('active'));
         const activePill = document.querySelector('#navbar-links [data-tab="' + activeTab + '"]');
         if (activePill) activePill.classList.add('active');

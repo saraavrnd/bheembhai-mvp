@@ -29,28 +29,35 @@
         display: flex; gap: 0; min-height: calc(100vh - 200px);
     }
 
-    /* ── Stage rail (left) ── */
+    /* ── Stage rail (left) — light, matching the EduAdmin theme ── */
     .stage-rail {
         width: var(--rail-width); min-width: var(--rail-width);
-        background: #161b22; border-right: 1px solid #30363d;
+        background: #fff; border-right: 1px solid #172b4c;
         padding: 20px 16px; overflow-y: auto;
     }
     .stage-rail .run-meta {
         margin-bottom: 20px; padding-bottom: 16px;
-        border-bottom: 1px solid #30363d;
+        border-bottom: 1px solid #172b4c;
     }
     .stage-rail .run-meta .story-id {
         font-family: 'JetBrains Mono', monospace; font-size: 13px;
-        color: #58a6ff; font-weight: 600;
+        color: var(--deep-brown); font-weight: 700;
     }
     .stage-rail .run-meta .story-title {
-        font-size: 13px; color: #b5b5c3; margin-top: 2px; line-height: 1.4;
+        font-size: 13px; color: #6e7681; margin-top: 2px; line-height: 1.4;
     }
     .stage-rail .run-meta .run-state {
         font-size: 12px; margin-top: 6px;
     }
+    .stage-rail .run-meta .run-id {
+        font-family: 'JetBrains Mono', monospace; font-size: 11px;
+        color: #8a7a6a; margin-top: 6px;
+    }
     .stage-rail .run-meta .run-elapsed {
-        font-size: 11px; color: #6e7681; margin-top: 4px;
+        font-size: 11px; color: #8a7a6a; margin-top: 4px;
+    }
+    .stage-rail .run-meta .run-started-by {
+        font-size: 11px; color: #8a7a6a; margin-top: 2px;
     }
 
     .stage-item {
@@ -58,8 +65,8 @@
         padding: 8px 6px; cursor: pointer; border-radius: 6px;
         transition: background 0.12s; position: relative;
     }
-    .stage-item:hover { background: rgba(255,255,255,0.04); }
-    .stage-item.selected { background: rgba(255,255,255,0.07); }
+    .stage-item:hover { background: rgba(0,0,0,0.04); }
+    .stage-item.selected { background: rgba(0,0,0,0.06); }
 
     /* Connector column */
     .stage-connector {
@@ -84,22 +91,22 @@
     }
     .stage-circle.failed { background: var(--deep-brown); color: #fff; }
     .stage-circle.pending {
-        background: transparent; border: 2px solid var(--grey-stage);
-        color: var(--grey-stage);
+        background: transparent; border: 2px solid #a3907e;
+        color: #a3907e;
     }
     .stage-line {
         width: 2px; flex-grow: 1; min-height: 16px;
-        background: #30363d; margin: 2px 0;
+        background: #e8e0d6; margin: 2px 0;
     }
     .stage-line.done { background: var(--sage); }
     .stage-line.current { background: var(--terracotta); }
 
     .stage-info { flex: 1; min-width: 0; }
     .stage-info .stage-label {
-        font-size: 12px; font-weight: 500; color: #c9cdd4; line-height: 1.3;
+        font-size: 12px; font-weight: 500; color: #3a3a4a; line-height: 1.3;
     }
     .stage-info .stage-meta {
-        font-size: 10px; color: #6e7681; margin-top: 1px;
+        font-size: 10px; color: #8a7a6a; margin-top: 1px;
     }
     .stage-info .stage-gate-tag {
         display: inline-block; font-size: 9px; font-weight: 600;
@@ -108,22 +115,10 @@
         text-transform: uppercase; letter-spacing: 0.04em;
     }
 
-    /* ── Output panel (right) ── */
+    /* ── Output panel (right) — white, matching the EduAdmin theme ── */
     .output-panel {
-        flex: 1; background: var(--sand); padding: 20px 24px;
+        flex: 1; background: #fff; padding: 20px 24px;
         overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
-    }
-    .output-panel .panel-header {
-        display: flex; align-items: center; justify-content: space-between;
-    }
-    .output-panel .panel-header h4 {
-        font-size: 14px; color: #3a3a4a; margin: 0; font-weight: 600;
-    }
-    .output-panel .panel-header .panel-actions {
-        display: flex; gap: 8px;
-    }
-    .output-panel .panel-header .panel-actions .btn {
-        font-size: 11px; padding: 4px 10px;
     }
 
     /* File pills (tabs) */
@@ -143,22 +138,45 @@
     }
     .file-pill .file-size { font-size: 10px; color: #8a7a6a; margin-left: 4px; }
 
-    /* Viewer card */
+    /* Viewer card — header (heading + actions) sits on top of the results
+       text area, both on the card's white background */
     .viewer-card {
-        background: var(--cream); border-radius: 12px 12px 12px 12px;
-        padding: 24px; flex: 1; overflow-y: auto; min-height: 300px;
+        background: #fff; border: 1px solid #172b4c; border-radius: 12px;
+        flex: 1; min-height: 300px; overflow: hidden;
+        display: flex; flex-direction: column;
         box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    }
+    .viewer-card .panel-header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 8px; flex-wrap: wrap;
+        padding: 14px 20px; border-bottom: 1px solid #172b4c;
+        flex-shrink: 0;
+    }
+    .viewer-card .panel-header h4 {
+        font-size: 14px; color: #3a3a4a; margin: 0; font-weight: 600;
+    }
+    /* EduAdmin defines .panel-actions as position:absolute (top:50%, right:30px) —
+       which pins the buttons mid-card. Neutralise it inside our header. */
+    .viewer-card .panel-header .panel-actions {
+        position: static; top: auto; right: auto; transform: none; margin: 0;
+        display: flex; gap: 8px;
+    }
+    .viewer-card .panel-header .panel-actions .btn {
+        font-size: 11px; padding: 4px 10px;
+    }
+    .viewer-body {
+        flex: 1; overflow-y: auto; padding: 24px;
         font-size: 14px; color: #3a3a4a; line-height: 1.65;
         font-family: 'Inter', -apple-system, sans-serif;
     }
-    .viewer-card h4 { font-size: 15px; font-weight: 600; margin: 16px 0 6px; color: #2a2a3a; }
-    .viewer-card h4:first-child { margin-top: 0; }
-    .viewer-card p { margin: 0 0 8px; }
-    .viewer-card ul { margin: 0 0 8px; padding-left: 18px; }
-    .viewer-card ul li { margin-bottom: 2px; }
+    .viewer-body h4 { font-size: 15px; font-weight: 600; margin: 16px 0 6px; color: #2a2a3a; }
+    .viewer-body h4:first-child { margin-top: 0; }
+    .viewer-body p { margin: 0 0 8px; }
+    .viewer-body ul { margin: 0 0 8px; padding-left: 18px; }
+    .viewer-body ul li { margin-bottom: 2px; }
 
     /* Diff viewer */
-    .viewer-card.diff-view {
+    .viewer-body.diff-view {
         font-family: 'JetBrains Mono', 'Fira Code', monospace;
         font-size: 12px; line-height: 1.7; padding: 16px; white-space: pre-wrap;
     }
@@ -168,13 +186,13 @@
     .diff-hunk { color: var(--terracotta); font-weight: 600; display: block; padding: 3px 8px; }
 
     /* Table viewer */
-    .viewer-card table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    .viewer-card table th {
+    .viewer-body table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .viewer-body table th {
         text-align: left; padding: 8px 12px; font-weight: 600;
-        border-bottom: 2px solid #d5cdc0; color: #5a4a3a; font-size: 11px;
+        border-bottom: 2px solid #172b4c; color: #5a4a3a; font-size: 11px;
         text-transform: uppercase; letter-spacing: 0.04em;
     }
-    .viewer-card table td {
+    .viewer-body table td {
         padding: 7px 12px; border-bottom: 1px solid #e8e0d6;
     }
     .tag-pass {
@@ -228,7 +246,7 @@
 
     /* Review footer */
     .review-footer {
-        background: #fff; border: 1px solid #e8e0d6;
+        background: #fff; border: 1px solid #172b4c;
         border-radius: 8px; padding: 16px;
     }
     .review-footer textarea {
@@ -271,6 +289,9 @@
         background: #fff; border-radius: 10px; padding: 24px;
         width: 400px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
     }
+    /* The EduAdmin theme's Bootstrap CSS sets .modal-dialog { pointer-events: none },
+       so re-enable interactivity for our custom dialog (higher specificity wins). */
+    .modal-backdrop .modal-dialog { pointer-events: auto; }
     .modal-dialog h5 { margin: 0 0 6px; font-size: 16px; color: #2a2a3a; }
     .modal-dialog p { font-size: 13px; color: #6e7681; margin: 0 0 16px; }
     .modal-stage-option {
@@ -296,7 +317,7 @@
     .gate-info-card {
         margin-top: 20px; padding: 10px 12px;
         background: rgba(224,123,90,0.08); border: 1px solid rgba(224,123,90,0.2);
-        border-radius: 6px; font-size: 11px; color: #b5b5c3;
+        border-radius: 6px; font-size: 11px; color: #8a7a6a;
     }
     .gate-info-card strong { color: var(--terracotta); }
 
@@ -317,7 +338,9 @@
             <div class="story-id" id="meta-story-id">—</div>
             <div class="story-title" id="meta-story-title">Loading…</div>
             <div class="run-state" id="meta-state"></div>
+            <div class="run-id" id="meta-run-id"></div>
             <div class="run-elapsed" id="meta-elapsed"></div>
+            <div class="run-started-by" id="meta-started-by"></div>
         </div>
         <div id="stage-list"></div>
         <div class="gate-info-card" id="gate-info-card" style="display:none;">
@@ -329,25 +352,26 @@
 
     <!-- ═══ RIGHT: output panel ═══ -->
     <div class="output-panel" id="output-panel">
-        <div class="panel-header">
-            <h4 id="panel-heading">OUTPUT OF <span id="panel-stage-name">—</span></h4>
-            <div class="panel-actions">
-                <button class="btn btn-outline-secondary btn-sm" onclick="alert('Download coming soon.')">
-                    <i class="fa fa-download"></i> Download all
-                </button>
-                <button class="btn btn-outline-secondary btn-sm" onclick="alert('Stage log coming soon.')">
-                    <i class="fa fa-file-text-o"></i> Stage log
-                </button>
-            </div>
-        </div>
-
         <!-- File pills -->
         <div class="file-pills" id="file-pills"></div>
 
-        <!-- Viewer -->
-        <div class="viewer-card" id="viewer-content">
-            <div class="viewer-placeholder">
-                <p>Select a stage from the left to view its output.</p>
+        <!-- Viewer card: heading + actions on top of the results text area -->
+        <div class="viewer-card" id="viewer-card">
+            <div class="panel-header">
+                <h4 id="panel-heading">OUTPUT OF <span id="panel-stage-name">—</span></h4>
+                <div class="panel-actions">
+                    <button class="btn btn-outline-secondary btn-sm" onclick="alert('Download coming soon.')">
+                        <i class="fa fa-download"></i> Download all
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="alert('Stage log coming soon.')">
+                        <i class="fa fa-file-text-o"></i> Stage log
+                    </button>
+                </div>
+            </div>
+            <div class="viewer-body" id="viewer-content">
+                <div class="viewer-placeholder">
+                    <p>Select a stage from the left to view its output.</p>
+                </div>
             </div>
         </div>
 
@@ -407,8 +431,8 @@ window.addEventListener('bb:userReady', function(e) {
         return;
     }
 
-    // Update breadcrumb
-    document.getElementById('bc-project').href = '/projects/' + window.BB_PROJECT_ID;
+    // Update breadcrumb — the project crumb lands on the project's run list
+    document.getElementById('bc-project').href = '/projects/' + window.BB_PROJECT_ID + '?tab=runs';
     document.getElementById('bc-project').textContent = membership.project_name;
 
     loadRunDetail();
@@ -420,9 +444,13 @@ function loadRunDetail() {
         .then(run => {
             runData = run;
             renderStageRail(run);
-            document.getElementById('bc-run').textContent = run.story_id || run.id.substring(0,8);
-            document.getElementById('run-title').textContent = run.story_id || 'Run ' + run.id.substring(0,8);
-            document.title = (run.story_id || 'Run') + ' — BheemBhai';
+            // Header shows the story plus the unique run id — story ids can
+            // repeat across runs (retries, re-runs), the run id never does.
+            const runIdShort = run.id.substring(0, 8);
+            const heading = (run.story_id || 'Run') + ' — #' + runIdShort;
+            document.getElementById('bc-run').textContent = heading;
+            document.getElementById('run-title').textContent = heading;
+            document.title = heading + ' — BheemBhai';
         })
         .catch(err => {
             document.getElementById('stage-list').innerHTML =
@@ -434,7 +462,11 @@ function renderStageRail(run) {
     // Meta
     document.getElementById('meta-story-id').textContent = run.story_id || run.id.substring(0,8);
     document.getElementById('meta-story-title').textContent = run.workflow_name || 'Pipeline Run';
+    document.getElementById('meta-run-id').textContent = '#' + run.id.substring(0, 8);
     document.getElementById('meta-elapsed').textContent = run.elapsed_total || '';
+    document.getElementById('meta-started-by').textContent = run.started_by
+        ? 'Started by ' + (run.started_by.display_name || run.started_by.email)
+        : '';
 
     // State badge
     const stateLabels = {
@@ -452,7 +484,7 @@ function renderStageRail(run) {
     } else if (run.state === 'running') {
         stateEl.innerHTML = '<span style="color:#58a6ff;font-weight:600;">' + label + '</span>';
     } else {
-        stateEl.innerHTML = '<span style="color:#b5b5c3;">' + label + '</span>';
+        stateEl.innerHTML = '<span style="color:#8a7a6a;">' + label + '</span>';
     }
 
     // Build stage list
@@ -617,26 +649,26 @@ function renderViewerPlaceholder(stage) {
     const vs = stage.visual_state;
 
     if (vs === 'running' || stage.exec_state === 'running') {
-        el.className = 'viewer-card';
+        el.className = 'viewer-body';
         el.innerHTML = `
             <div class="viewer-placeholder">
                 <div class="spinner"></div>
                 <p>Container running — outputs appear when it completes.</p>
             </div>`;
     } else if (vs === 'pending') {
-        el.className = 'viewer-card';
+        el.className = 'viewer-body';
         el.innerHTML = `
             <div class="viewer-placeholder">
                 <p>Not started. Waiting on the stages before it.</p>
             </div>`;
     } else if (vs === 'failed') {
-        el.className = 'viewer-card';
+        el.className = 'viewer-body';
         el.innerHTML = `
             <div class="viewer-placeholder">
                 <p style="color:var(--deep-brown);">This stage failed. Check the stage log for details.</p>
             </div>`;
     } else {
-        el.className = 'viewer-card';
+        el.className = 'viewer-body';
         el.innerHTML = `
             <div class="viewer-placeholder">
                 <p>No output files for this stage.</p>
@@ -648,7 +680,7 @@ function renderViewer(content, viewerType) {
     const el = document.getElementById('viewer-content');
 
     if (viewerType === 'diff') {
-        el.className = 'viewer-card diff-view';
+        el.className = 'viewer-body diff-view';
         el.innerHTML = content.split('\n').map(line => {
             const escLine = esc(line);
             if (line.startsWith('+')) return '<span class="diff-added">' + escLine + '</span>';
@@ -660,7 +692,7 @@ function renderViewer(content, viewerType) {
     }
 
     if (viewerType === 'table') {
-        el.className = 'viewer-card';
+        el.className = 'viewer-body';
         const lines = content.trim().split('\n');
         if (lines.length < 2) { el.innerHTML = '<p>Empty table.</p>'; return; }
         const headers = lines[0].split(',');
@@ -688,7 +720,7 @@ function renderViewer(content, viewerType) {
     }
 
     if (viewerType === 'comments') {
-        el.className = 'viewer-card';
+        el.className = 'viewer-body';
         el.innerHTML = parseCommentsMarkdown(content);
         return;
     }
@@ -709,7 +741,7 @@ function parseDocMarkdown(md) {
 
         if (line.startsWith('```')) {
             inCode = !inCode;
-            if (inCode) { html += '<pre style="background:#f5f0e8;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto;">'; }
+            if (inCode) { html += '<pre style="background:#f4f4f6;padding:12px;border-radius:6px;font-size:12px;overflow-x:auto;">'; }
             else { html += '</pre>'; }
             continue;
         }

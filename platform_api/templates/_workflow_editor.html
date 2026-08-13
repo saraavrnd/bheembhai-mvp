@@ -89,7 +89,7 @@
                                 <div class="row g-2 mt-1">
                                     <div class="col-12">
                                         <label class="form-label small">Model</label>
-                                        <input type="text" class="form-control form-control-sm" id="edit-step-model" placeholder="sonnet">
+                                        <input type="text" class="form-control form-control-sm" id="edit-step-model" placeholder="medium">
                                     </div>
                                 </div>
 
@@ -390,11 +390,11 @@ function _readStepForm(idx) {
     s.skill = document.getElementById('edit-step-skill').value;
     s.label = document.getElementById('edit-step-label').value.trim();
     s.deadline = parseInt(document.getElementById('edit-step-deadline').value) || 900;
-    s.model = document.getElementById('edit-step-model').value.trim() || 'sonnet';
+    s.model = document.getElementById('edit-step-model').value.trim() || 'medium';
 }
 
 function addStep() {
-    const newStep = { id: _nextStepId(), skill: '', model: 'sonnet', label: '', deadline: 900, on: {} };
+    const newStep = { id: _nextStepId(), skill: '', model: 'medium', label: '', deadline: 900, on: {} };
     parsed.steps.push(newStep);
     selectedStepIdx = parsed.steps.length - 1;
     // Auto-set start to the first real step if it's empty

@@ -32,6 +32,7 @@ from platform_api.routers._integration_shared import (
     _integration_to_response,
     _secure_storage,
     _test_integration_connection,
+    validate_ai_vendor_config,
 )
 from platform_api.schemas.admin import (
     IntegrationAdminCreate,
@@ -117,6 +118,12 @@ async def create_integration(
         )
     ).scalar_one_or_none()
 
+    # AI vendors must map all three model tiers before they can be used.
+    # Validate the *effective* config: a label-only save on an existing
+    # integration must not fail because body.config was omitted.
+    effective_config = body.config if body.config else (existing.config if existing else {})
+    validate_ai_vendor_config(body.type, effective_config)
+
     if existing is not None:
         # Update in-place
         if body.label:
@@ -190,6 +197,8 @@ async def update_integration(
     if body.label is not None:
         integration.label = body.label
     if body.config is not None:
+        # AI vendors must map all three model tiers before they can be used
+        validate_ai_vendor_config(integration.type, body.config)
         integration.config = body.config
 
     await db.commit()
@@ -243,9 +252,17 @@ async def test_integration(
             cred = await secure.get(integration.credential_ref)
             credential_value = cred.value if cred else ""
         except Exception:
+            logger.debug(
+                "test_connection: secure storage fetch failed for ref=%s integration=%s",
+                integration.credential_ref, integration_id, exc_info=True,
+            )
             credential_value = ""
 
     if not credential_value:
+        logger.debug(
+            "test_connection: no credential available for integration=%s ref=%s",
+            integration_id, integration.credential_ref or "<none>",
+        )
         return TestConnectionResult(ok=False, message="No credential stored — please save an API token first.")
 
     result = await _test_integration_connection(integration, credential_value)

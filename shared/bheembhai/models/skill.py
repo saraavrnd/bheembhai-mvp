@@ -21,7 +21,7 @@ class Skill(Base):
     )
     description: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(
-        Text, nullable=False, default="sonnet", server_default="sonnet"
+        Text, nullable=False, default="medium", server_default="medium"
     )
     compatibility: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -42,7 +42,7 @@ class Skill(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "model IN ('haiku', 'sonnet', 'opus')",
+            "model IN ('high', 'medium', 'low')",
             name="ck_skills_model",
         ),
     )

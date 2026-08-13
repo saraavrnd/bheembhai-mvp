@@ -36,9 +36,9 @@
                         <div class="col-md-2">
                             <label class="form-label">Model Tier</label>
                             <select class="form-select form-select-sm" id="meta-model">
-                                <option value="haiku">Haiku</option>
-                                <option value="sonnet">Sonnet</option>
-                                <option value="opus">Opus</option>
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
                             </select>
                         </div>
                     </div>
@@ -138,7 +138,7 @@ function loadSkill() {
             document.title = s.name + ' — BheemBhai Admin';
             document.getElementById('meta-name').value = s.name;
             document.getElementById('meta-description').value = s.description || '';
-            document.getElementById('meta-model').value = s.model || 'sonnet';
+            document.getElementById('meta-model').value = s.model || 'medium';
             renderFileList(s.files || []);
             // Auto-select first file
             const files = s.files || [];

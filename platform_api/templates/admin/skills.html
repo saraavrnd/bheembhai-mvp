@@ -68,9 +68,9 @@
                     <div class="form-group">
                         <label class="form-label">Model Tier</label>
                         <select class="form-select" id="skill-model">
-                            <option value="haiku">Haiku (cheap)</option>
-                            <option value="sonnet" selected>Sonnet (standard)</option>
-                            <option value="opus">Opus (strong)</option>
+                            <option value="low">Low (cheap)</option>
+                            <option value="medium" selected>Medium (standard)</option>
+                            <option value="high">High (strong)</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -114,11 +114,11 @@ function renderTable(skills) {
         return;
     }
     tbody.innerHTML = skills.map(s => {
-        const modelBadge = s.model === 'opus'
-            ? '<span class="badge rounded-pill bg-danger">Opus</span>'
-            : s.model === 'haiku'
-                ? '<span class="badge rounded-pill bg-success">Haiku</span>'
-                : '<span class="badge rounded-pill bg-warning">Sonnet</span>';
+        const modelBadge = s.model === 'high'
+            ? '<span class="badge rounded-pill bg-danger">High</span>'
+            : s.model === 'low'
+                ? '<span class="badge rounded-pill bg-success">Low</span>'
+                : '<span class="badge rounded-pill bg-warning">Medium</span>';
         return `
             <tr>
                 <td><strong>${esc(s.name)}</strong></td>
@@ -150,7 +150,7 @@ function showCreateModal() {
     document.getElementById('skill-name').value = '';
     document.getElementById('skill-name').disabled = false;
     document.getElementById('skill-description').value = '';
-    document.getElementById('skill-model').value = 'sonnet';
+    document.getElementById('skill-model').value = 'medium';
     document.getElementById('skill-compatibility').value = '';
     new bootstrap.Modal(document.getElementById('skillModal')).show();
 }
@@ -161,7 +161,7 @@ function showEditModal(id, name, description, model, compatibility) {
     document.getElementById('skill-name').value = name;
     document.getElementById('skill-name').disabled = true;
     document.getElementById('skill-description').value = description;
-    document.getElementById('skill-model').value = model || 'sonnet';
+    document.getElementById('skill-model').value = model || 'medium';
     document.getElementById('skill-compatibility').value = compatibility || '';
     new bootstrap.Modal(document.getElementById('skillModal')).show();
 }

@@ -113,14 +113,14 @@ class SkillResponse(BaseModel):
 class SkillCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field(..., min_length=1)
-    model: str = Field(default="sonnet", pattern=r"^(haiku|sonnet|opus)$")
+    model: str = Field(default="medium", pattern=r"^(high|medium|low)$")
     compatibility: str | None = None
 
 
 class SkillUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
     description: str | None = None
-    model: str | None = Field(None, pattern=r"^(haiku|sonnet|opus)$")
+    model: str | None = Field(None, pattern=r"^(high|medium|low)$")
     compatibility: str | None = None
 
 
@@ -140,7 +140,7 @@ class WorkflowStepSchema(BaseModel):
     """A single step within a parsed workflow YAML."""
     id: str
     skill: str
-    model: str = "sonnet"
+    model: str = "medium"
     label: str = ""
     deadline: int = 900
     on: dict[str, str] = Field(default_factory=dict)

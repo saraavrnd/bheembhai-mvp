@@ -27,13 +27,30 @@ class Run(Base):
     )
     story_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_branch: Mapped[str] = mapped_column(Text, nullable=False)
-    run_branch: Mapped[str] = mapped_column(Text, nullable=False)
+    run_branch: Mapped[str | None] = mapped_column(Text, nullable=True)
+    github_integration_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_integrations.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    jira_integration_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_integrations.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    ai_vendor_integration_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("project_integrations.id", ondelete="SET NULL"),
+        nullable=True
+    )
     state: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending", server_default="pending"
     )
     current_step: Mapped[str | None] = mapped_column(Text, nullable=True)
     cost_usd: Mapped[float] = mapped_column(
         Numeric(10, 4), nullable=False, default=0, server_default="0"
+    )
+    # Who submitted the run — set at creation; SET NULL keeps history if the
+    # user is later deleted. Resolved via a users lookup, not a relationship.
+    started_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
