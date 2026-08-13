@@ -17,6 +17,7 @@ from bheembhai.protocols.auth import Identity
 
 from platform_api.dependencies import (
     get_current_enabled_user,
+    require_admin,
     require_project_member,
     require_project_manager,
 )
@@ -35,7 +36,7 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
 class ProjectUpdate(BaseModel):
-    """Fields a project manager can update."""
+    """Fields an admin can update."""
     name: str | None = Field(None, min_length=1, max_length=200)
 
 
@@ -276,29 +277,14 @@ async def update_project(
     project_id: str,
     body: ProjectUpdate,
     db: "AsyncSession" = Depends(get_session),
-    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+    admin: tuple[User, Identity] = Depends(require_admin),
 ) -> ProjectResponse:
-    """Update a project's name. Requires ``project_manager`` role."""
-    if enabled is None:
-        raise HTTPException(401, "Authentication required")
-    current_user, _ = enabled
+    """Update a project's name. ADMIN-only — PMs see Project Info read-only."""
+    current_user, _ = admin
 
     project = await db.get(Project, project_id)
     if project is None:
         raise HTTPException(404, f"Project {project_id} not found")
-
-    # Check the user is a project_manager
-    membership_result = await db.execute(
-        select(Membership).where(
-            Membership.user_id == current_user.id,
-            Membership.project_id == project_id,
-        )
-    )
-    membership = membership_result.scalar_one_or_none()
-    if membership is None:
-        raise HTTPException(403, "You are not a member of this project")
-    if membership.role != "project_manager":
-        raise HTTPException(403, "Only a project manager can update project settings")
 
     if body.name is not None:
         name = body.name.strip()
@@ -314,7 +300,7 @@ async def update_project(
     await db.commit()
     await db.refresh(project)
 
-    logger.info("Project updated by PM: %s name=%s user=%s", project_id, project.name, current_user.id)
+    logger.info("Project renamed by admin: %s name=%s user=%s", project_id, project.name, current_user.id)
     return _to_response(project)
 
 

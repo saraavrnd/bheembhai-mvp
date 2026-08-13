@@ -164,15 +164,46 @@
         animation: bbFade 0.18s ease-out; max-width: 80vw;
     }
     @keyframes bbFade { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+    /* ── Modal (same pattern as run_detail send-back modal) ── */
+    .modal-backdrop {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 9999;
+    }
+    .modal-dialog {
+        background: #fff; border-radius: 10px; padding: 24px;
+        width: 400px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    .modal-dialog h5 { margin: 0 0 6px; font-size: 16px; color: #2a2a3a; }
+    .modal-dialog p { font-size: 13px; color: #6e7681; margin: 0 0 16px; }
+    .modal-dialog .form-group { margin-bottom: 14px; }
+    .modal-actions {
+        display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end;
+    }
+    .modal-actions .btn-cancel {
+        background: #eaeaef; border: none; padding: 8px 16px;
+        border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    .modal-actions .btn-send {
+        background: #2a62d5; color: #fff; border: none;
+        padding: 8px 16px; border-radius: 6px; font-size: 13px;
+        font-weight: 600; cursor: pointer;
+    }
+
+    /* ── DEMO chip on placeholder stat cards (engine integration pending) ── */
+    .bb-stat-demo-chip {
+        display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
+        color: #8a7a6a; background: #f0e6d8; border: 1px solid #e3d4bc;
+        border-radius: 4px; padding: 1px 6px; margin-left: 8px;
+        vertical-align: middle; cursor: help;
+    }
 </style>
 {% endblock %}
 
 {% block content_header_actions %}
 <button class="btn btn-sm bb-waiting-badge" id="bb-waiting-badge" style="display:none;">
     <i class="far fa-clock"></i> <span id="bb-waiting-count">0</span> waiting on you
-</button>
-<button class="btn btn-primary btn-sm ms-10" id="bb-start-run">
-    <i class="fa fa-plus"></i> Start a run
 </button>
 {% endblock %}
 
@@ -191,7 +222,7 @@
         <div class="col-12">
             <div class="d-flex justify-content-between align-items-center">
                 <div>
-                    <h4 class="mb-0"><i class="fa fa-play-circle text-info me-2"></i>Pipeline Runs</h4>
+                    <h4 class="mb-0"><i class="fa fa-play-circle text-info me-2"></i>List of Runs</h4>
                 </div>
                 <button class="btn btn-primary btn-sm" id="btn-new-run" onclick="createNewRun()">
                     <i class="fa fa-plus"></i> Start a run
@@ -201,34 +232,27 @@
         </div>
     </div>
 
-    <!-- New Run form (hidden by default) -->
-    <div class="row mb-15" id="new-run-form" style="display:none;">
-        <div class="col-lg-6">
-            <div class="box">
-                <div class="box-header with-border">
-                    <h5 class="box-title">Start a New Run</h5>
-                </div>
-                <div class="box-body">
-                    <div class="form-group">
-                        <label class="form-label">Story / Ticket ID</label>
-                        <input type="text" class="form-control" id="run-story-id" placeholder="e.g. PROJ-123">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Workflow</label>
-                        <select class="form-select" id="run-workflow"></select>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Policy</label>
-                        <select class="form-select" id="run-policy"></select>
-                    </div>
-                    <div class="d-flex gap-10">
-                        <button class="btn btn-success btn-sm" onclick="submitNewRun()">
-                            <i class="fa fa-check"></i> Start Run
-                        </button>
-                        <button class="btn btn-secondary btn-sm" onclick="cancelNewRun()">Cancel</button>
-                    </div>
-                    <div id="run-create-error" class="text-danger mt-2" style="display:none;"></div>
-                </div>
+    <!-- New Run modal (opened from the Runs tab header / empty state) -->
+    <div class="modal-backdrop" id="new-run-modal" style="display:none;">
+        <div class="modal-dialog" style="width:460px;">
+            <h5><i class="fa fa-play-circle text-info me-5"></i>Start a New Run</h5>
+            <p>Pick the story, workflow and policy. The pipeline starts on a fresh git branch and pauses at the gates your policy defines.</p>
+            <div class="form-group">
+                <label class="form-label">Story / Ticket ID</label>
+                <input type="text" class="form-control" id="run-story-id" placeholder="e.g. PROJ-123">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Workflow</label>
+                <select class="form-select" id="run-workflow"></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Policy</label>
+                <select class="form-select" id="run-policy"></select>
+            </div>
+            <div id="run-create-error" class="text-danger mt-2" style="display:none;"></div>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="cancelNewRun()">Cancel</button>
+                <button class="btn-send" onclick="submitNewRun()"><i class="fa fa-check"></i> Start Run</button>
             </div>
         </div>
     </div>
@@ -258,27 +282,6 @@
 <!-- ── Configuration Tab (PM only) ── -->
 <div id="tab-config" style="display:none;">
     <div class="row mb-15">
-        <div class="col-lg-6">
-            <div class="box">
-                <div class="box-header with-border">
-                    <h4 class="box-title"><i class="fa fa-pencil-alt me-2"></i>Project Details</h4>
-                </div>
-                <div class="box-body">
-                    <div id="config-error" class="alert alert-danger" style="display:none;"></div>
-                    <div id="config-ok" class="alert alert-success" style="display:none;"></div>
-
-                    <div class="form-group">
-                        <label class="form-label">Project Name</label>
-                        <input type="text" class="form-control" id="config-project-name">
-                    </div>
-
-                    <button class="btn btn-primary btn-sm" onclick="saveConfigProject()">
-                        <i class="fa fa-save"></i> Save Changes
-                    </button>
-                </div>
-            </div>
-        </div>
-
         <div class="col-lg-6">
             <div class="box">
                 <div class="box-header with-border">
@@ -594,8 +597,10 @@ function renderRunRow(run) {
 // ── Create run ──────────────────────────────────────────────────
 
 function createNewRun() {
-    document.getElementById('new-run-form').style.display = '';
+    const modal = document.getElementById('new-run-modal');
+    modal.style.display = '';
     document.getElementById('run-create-error').style.display = 'none';
+    document.getElementById('run-story-id').focus();
     const pid = window.BB_PROJECT_ID;
     fetch('/api/workflows?project_id=' + pid, { headers: authHeaders() })
         .then(r => r.json())
@@ -623,8 +628,16 @@ function loadPoliciesForWorkflow(workflowId) {
 }
 
 function cancelNewRun() {
-    document.getElementById('new-run-form').style.display = 'none';
+    document.getElementById('new-run-modal').style.display = 'none';
 }
+
+// Click on the backdrop (outside the dialog) closes the modal; Esc too
+document.getElementById('new-run-modal').addEventListener('click', function(e) {
+    if (e.target === this) cancelNewRun();
+});
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') cancelNewRun();
+});
 
 function submitNewRun() {
     const storyId = document.getElementById('run-story-id').value.trim();
@@ -657,7 +670,7 @@ function submitNewRun() {
         return r.json();
     })
     .then(run => {
-        document.getElementById('new-run-form').style.display = 'none';
+        document.getElementById('new-run-modal').style.display = 'none';
         document.getElementById('run-story-id').value = '';
         loadRuns();
     })
@@ -667,14 +680,13 @@ function submitNewRun() {
     });
 }
 
-// ── Configuration: project details (PM only) ────────────────────
+// ── Configuration: project info (read-only for PMs — renaming is ADMIN-only) ────────────────────
 
 function loadConfigProject() {
     const pid = window.BB_PROJECT_ID;
     fetch('/api/projects/' + pid, { headers: authHeaders() })
         .then(r => r.json())
         .then(project => {
-            document.getElementById('config-project-name').value = project.name;
             document.getElementById('project-info').innerHTML = `
                 <p><strong>Project ID:</strong> <code>${esc(project.id)}</code></p>
                 <p><strong>Name:</strong> ${esc(project.name)}</p>
@@ -684,35 +696,6 @@ function loadConfigProject() {
         .catch(() => {
             document.getElementById('project-info').innerHTML = '<p class="text-danger">Failed to load project info.</p>';
         });
-}
-
-function saveConfigProject() {
-    const pid = window.BB_PROJECT_ID;
-    const name = document.getElementById('config-project-name').value.trim();
-    const errEl = document.getElementById('config-error');
-    const okEl = document.getElementById('config-ok');
-    errEl.style.display = 'none'; okEl.style.display = 'none';
-
-    if (!name) { errEl.textContent = 'Project name cannot be empty.'; errEl.style.display = ''; return; }
-
-    fetch('/api/projects/' + pid, {
-        method: 'PATCH',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-        body: JSON.stringify({ name: name }),
-    })
-    .then(r => {
-        if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Failed'); });
-        return r.json();
-    })
-    .then(project => {
-        okEl.textContent = 'Project settings saved successfully.';
-        okEl.style.display = '';
-        document.getElementById('project-title').textContent = project.name;
-        document.getElementById('breadcrumb-project').textContent = project.name;
-        document.title = project.name + ' — BheemBhai';
-        setTimeout(() => { okEl.style.display = 'none'; }, 3000);
-    })
-    .catch(err => { errEl.textContent = err.message; errEl.style.display = ''; });
 }
 </script>
 {% endblock %}
