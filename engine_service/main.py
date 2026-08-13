@@ -1,10 +1,15 @@
 """Engine Service — internal state machine & Fargate lifecycle (ADR-003)."""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
+
+# Root handler + level, before uvicorn takes over — same format as platform_api
+# so the worker loop's claim/process lines are actually visible in the logs.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s")
 
 from bheembhai.config import AppConfig, load_config
 from bheembhai.database import close_database, init_database, run_migrations, seed_default_roles

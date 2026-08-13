@@ -7,7 +7,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bheembhai.config import AppConfig
-from bheembhai.database import _sessionmaker
+from bheembhai.database import get_sessionmaker
 from bheembhai.models.work_queue import WorkQueueItem
 
 logger = logging.getLogger(__name__)
@@ -22,14 +22,15 @@ async def recover_on_startup(config: AppConfig) -> int:
 
     Returns the count of recovered items.
     """
-    if _sessionmaker is None:
+    sessionmaker = get_sessionmaker()
+    if sessionmaker is None:
         logger.warning("Database not initialised — skipping crash recovery")
         return 0
 
     threshold = config.engine.stale_heartbeat_threshold_seconds
     stale_since = datetime.now(timezone.utc).timestamp() - threshold
 
-    async with _sessionmaker() as session:
+    async with sessionmaker() as session:
         # Find items with stale heartbeats
         stmt = select(WorkQueueItem).where(
             WorkQueueItem.state == "claimed",

@@ -24,6 +24,17 @@ def init_database(config: DatabaseConfig) -> None:
     _sessionmaker = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
 
 
+def get_sessionmaker():
+    """Return the live session factory (None until ``init_database`` runs).
+
+    ``from bheembhai.database import _sessionmaker`` snapshots the value at
+    import time — which is None for modules imported before the app lifespan
+    calls ``init_database``. Call this helper instead to resolve the current
+    value each time.
+    """
+    return _sessionmaker
+
+
 async def run_migrations() -> None:
     """Run pending Alembic migrations against the configured database.
 
@@ -169,9 +180,9 @@ async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
 
         skill_name = frontmatter.get("name", name)
         description = frontmatter.get("description", "")
-        model = frontmatter.get("model", "sonnet")
-        if model not in ("haiku", "sonnet", "opus"):
-            model = "sonnet"
+        model = frontmatter.get("model", "medium")
+        if model not in ("high", "medium", "low"):
+            model = "medium"
         compatibility = frontmatter.get("compatibility")
 
         async with _sessionmaker() as session:

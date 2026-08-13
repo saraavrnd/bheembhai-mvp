@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bheembhai.config import AppConfig
-from bheembhai.database import _sessionmaker
+from bheembhai.database import get_sessionmaker
 from bheembhai.models.work_queue import WorkQueueItem
 
 logger = logging.getLogger(__name__)
@@ -27,12 +27,13 @@ async def worker_loop(config: AppConfig) -> None:
 
     try:
         while True:
-            if _sessionmaker is None:
+            sessionmaker = get_sessionmaker()
+            if sessionmaker is None:
                 await asyncio.sleep(1)
                 continue
 
             try:
-                async with _sessionmaker() as session:
+                async with sessionmaker() as session:
                     claimed = await _claim_next_item(session, config)
                     if claimed:
                         await _process_item(session, claimed, config)
@@ -104,10 +105,11 @@ async def _heartbeat_loop(config: AppConfig) -> None:
     """Periodically update heartbeat_at for all items this engine has claimed."""
     while True:
         await asyncio.sleep(config.engine.heartbeat_interval_seconds)
-        if _sessionmaker is None:
+        sessionmaker = get_sessionmaker()
+        if sessionmaker is None:
             continue
         try:
-            async with _sessionmaker() as session:
+            async with sessionmaker() as session:
                 now = datetime.now(timezone.utc)
                 stmt = (
                     update(WorkQueueItem)
