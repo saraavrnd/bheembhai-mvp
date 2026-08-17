@@ -1,7 +1,7 @@
 #!/bin/bash
 # Sign in as the test user against LocalStack Cognito and print the JWT.
 # The printed token can be used as a Bearer token for API calls:
-#   curl -H "Authorization: Bearer $(./scripts/dev-login.sh)" http://localhost:8000/api/projects
+#   curl -H "Authorization: Bearer $(./scripts/dev-login.sh)" http://localhost:9000/api/projects
 
 set -eu
 

@@ -43,7 +43,7 @@ class WorkQueueItem(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "action IN ('start', 'continue')",
+            "action IN ('start', 'continue', 'cancel')",
             name="ck_work_queue_action",
         ),
         CheckConstraint(

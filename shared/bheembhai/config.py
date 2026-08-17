@@ -10,7 +10,7 @@ import yaml
 
 @dataclass
 class DatabaseConfig:
-    url: str = "postgresql+asyncpg://bheembhai:bheembhai@localhost:5432/bheembhai"
+    url: str = "postgresql+asyncpg://bheembhai:bheembhai@localhost:5555/bheembhai"
     echo: bool = False
 
     @classmethod
@@ -104,6 +104,35 @@ class EngineConfig:
     heartbeat_interval_seconds: int = 30
     stale_heartbeat_threshold_seconds: int = 60
     poll_interval_seconds: int = 5
+    # Runtime + step execution (ADR-013 §4/§5)
+    runtime: str = "docker"                 # "docker" | "fargate"
+    agent_image: str = "bheembhai/agent:latest"
+    docker_endpoint: str = ""               # unix socket / tcp://… ; empty -> docker.from_env()
+    workdir: str = "/tmp/bheembhai"         # host dir for results/clones/context mounts
+    max_step_visits: int = 3                # runaway-loop seatbelt (BB_MAX_STEP_VISITS)
+    max_attempts: int = 2                   # per-step container attempts (BB_MAX_ATTEMPTS)
+    mem_limit: str = "4g"
+    network: str = "bridge"
+    keep_containers: bool = False           # debugging aid — leave containers for post-mortem
+    gate_poll_interval_seconds: int = 5     # DB poll cadence while waiting for a gate decision
+    # Stop-run: how long the cancel handler waits for the run's in-flight
+    # dispatch to acknowledge the cancel event before forcing the terminal
+    # state itself (the dispatch aborts within a poll tick normally).
+    cancel_wait_seconds: int = 60
+    # Engine -> Platform webhook delivery
+    platform_api_url: str = "http://platform-api:8000"
+    webhook_secret: str = "dev-secret"
+    # Dev convenience: seed the shared catalogs from disk (skills + workflows).
+    # OPT-IN: the seeds are upserts that OVERWRITE DB rows — a running instance
+    # must never clobber user-edited skills/workflows. Set BB_SEED_ON_STARTUP=1
+    # on first boot of a fresh DB (or to deliberately reset catalogs to disk).
+    seed_on_startup: bool = False
+    # Host env vars forwarded verbatim into step containers (mock mode, CLAUDE_CODE knobs).
+    # Credentials are NOT forwarded this way — they come from SecureStorage per ADR-013 §5.
+    env_forward: list[str] = field(default_factory=lambda: [
+        "BB_MOCK", "BB_MOCK_SECONDS", "BB_MOCK_FORCE",
+        "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL",
+    ])
 
     @classmethod
     def from_env(cls) -> "EngineConfig":
@@ -112,6 +141,26 @@ class EngineConfig:
             heartbeat_interval_seconds=int(os.getenv("BB_HEARTBEAT_INTERVAL", "30")),
             stale_heartbeat_threshold_seconds=int(os.getenv("BB_STALE_HEARTBEAT_THRESHOLD", "60")),
             poll_interval_seconds=int(os.getenv("BB_POLL_INTERVAL", "5")),
+            runtime=os.getenv("BB_RUNTIME", "docker"),
+            agent_image=os.getenv("BB_AGENT_IMAGE", "bheembhai/agent:latest"),
+            docker_endpoint=os.getenv("DOCKER_ENDPOINT", ""),
+            workdir=os.getenv("BB_WORKDIR", "/tmp/bheembhai"),
+            max_step_visits=int(os.getenv("BB_MAX_STEP_VISITS", "3")),
+            max_attempts=int(os.getenv("BB_MAX_ATTEMPTS", "2")),
+            mem_limit=os.getenv("BB_MEM_LIMIT", "4g"),
+            network=os.getenv("BB_NETWORK", "bridge"),
+            keep_containers=os.getenv("BB_KEEP_CONTAINERS", "0") == "1",
+            gate_poll_interval_seconds=int(os.getenv("BB_GATE_POLL_INTERVAL", "5")),
+            platform_api_url=os.getenv("PLATFORM_API_URL", "http://platform-api:8000"),
+            webhook_secret=os.getenv("BB_WEBHOOK_SECRET", "dev-secret"),
+            seed_on_startup=os.getenv("BB_SEED_ON_STARTUP", "false").strip().lower() in ("1", "true", "yes"),
+            env_forward=[
+                k.strip() for k in os.getenv(
+                    "BB_ENV_FORWARD",
+                    "BB_MOCK,BB_MOCK_SECONDS,BB_MOCK_FORCE,"
+                    "CLAUDE_CODE_SUBAGENT_MODEL,CLAUDE_CODE_EFFORT_LEVEL",
+                ).split(",") if k.strip()
+            ],
         )
 
 

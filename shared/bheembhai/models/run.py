@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (UUID, BigInteger, DateTime, ForeignKey, Integer, Numeric,
                         String, Text, func)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bheembhai.models.base import Base
@@ -114,6 +115,11 @@ class Transition(Base):
         Text, nullable=False, default="system", server_default="system"
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Structured detail that survives restarts (ADR-003 durability): step outcomes
+    # (summary/artifact/files) on completion rows and the gate card on
+    # awaiting_approval rows — the engine rebuilds routing + re-notification from
+    # these after a crash. UI contract unchanged (renders from this same payload).
+    payload: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     ts: Mapped[float] = mapped_column(Numeric, nullable=False)
 
     run: Mapped["Run"] = relationship(back_populates="transitions")

@@ -11,12 +11,38 @@ from fastapi import FastAPI
 # so the worker loop's claim/process lines are actually visible in the logs.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s")
 
-from bheembhai.config import AppConfig, load_config
-from bheembhai.database import close_database, init_database, run_migrations, seed_default_roles
+logger = logging.getLogger(__name__)
 
-from engine_service.routers import health, webhooks
-from engine_service.worker import worker_loop
+from bheembhai.config import AppConfig, load_config
+from bheembhai.database import (
+    close_database,
+    init_database,
+    run_migrations,
+    seed_default_roles,
+    seed_default_skills,
+    seed_default_workflows,
+)
+from bheembhai.providers.aws_secrets import AWSSecretsManager
+from bheembhai.providers.aws_ssm import AWSSSMParameterStore
+from bheembhai.providers.env_secrets import EnvSecureStorage
+
+from engine_service import notifier
+from engine_service.routers import health
+from engine_service.runtime import DockerRuntime
+from engine_service.worker import configure_worker, worker_loop
 from engine_service.recovery import recover_on_startup
+
+
+def _build_secure_storage(config: AppConfig):
+    """SecureStorage backend per config (ADR-012) — same selection as the platform."""
+    secure_cfg = config.secure_storage
+    if secure_cfg.backend == "aws_ssm":
+        logger.info("SecureStorage wired: aws_ssm region=%s", secure_cfg.aws_region)
+        return AWSSSMParameterStore(region=secure_cfg.aws_region)
+    if secure_cfg.backend == "aws_secrets_manager":
+        logger.info("SecureStorage wired: aws_secrets_manager region=%s", secure_cfg.aws_region)
+        return AWSSecretsManager(region=secure_cfg.aws_region)
+    return EnvSecureStorage(encrypted_config_path=secure_cfg.env_encrypted_config_path)
 
 
 @asynccontextmanager
@@ -28,6 +54,33 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await run_migrations()
     await seed_default_roles()
 
+    # Optional self-seeding (dev): the platform seeds its own DB, but the engine
+    # can run standalone. Idempotent — seed_* are upserts.
+    if config.engine.seed_on_startup:
+        await seed_default_skills()
+        await seed_default_workflows()
+
+    # Runtime + SecureStorage + notifier, wired into the worker BEFORE the loop
+    # starts so every dispatch task can launch containers, resolve credentials,
+    # and push events.
+    ec = config.engine
+    runtime = DockerRuntime(
+        ec.agent_image,
+        endpoint=ec.docker_endpoint or None,
+        workdir=ec.workdir,
+        mem_limit=ec.mem_limit,
+        network=ec.network,
+        keep_containers=ec.keep_containers,
+        env_forward=ec.env_forward,
+    )
+    notify_task = notifier.setup_notifier(config)
+    configure_worker(
+        runtime=runtime,
+        secure_storage=_build_secure_storage(config),
+        publish=notifier.publish,
+    )
+    logger.info("Runtime wired: %s image=%s workdir=%s", ec.runtime, ec.agent_image, ec.workdir)
+
     # Crash recovery: re-enqueue stale work before starting the worker loop
     await recover_on_startup(config)
 
@@ -37,11 +90,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
 
     # Shutdown
-    worker_task.cancel()
-    try:
-        await worker_task
-    except asyncio.CancelledError:
-        pass
+    for task in (worker_task, notify_task):
+        if task is None:
+            continue
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await close_database()
 
 
@@ -52,4 +108,3 @@ app = FastAPI(
 )
 
 app.include_router(health.router)
-app.include_router(webhooks.router)

@@ -11,6 +11,10 @@ steps:
       completed: test-creator
       changes_requested: story-design
       escalation_required: tech-design
+      # A BLOCK verdict (design found a real problem) loops back with the
+      # failure hand-off — policy-governed gates this for a human review.
+      # Visit cap (BB_MAX_STEP_VISITS) breaks a runaway loop.
+      BLOCK: story-design
   - id: tech-design
     skill: tech-design
     model: high   # per-step model (backend-enforced)
