@@ -124,6 +124,16 @@
 
                 <!-- ═══ TAB 2: Policy ═══ -->
                 <div class="tab-pane fade" id="pane-policy" role="tabpanel">
+                    <!-- Policy switcher: ALL policies of the workflow (active +
+                         inactive) are selectable — not just the first one. -->
+                    <div class="d-flex align-items-center gap-2 mb-2" id="policy-toolbar" style="display:none;">
+                        <label class="small text-muted mb-0">Policy</label>
+                        <select class="form-select form-select-sm" id="policy-switcher"
+                                style="width:auto;min-width:260px;" onchange="switchPolicy(this.value)"></select>
+                        <span class="badge rounded-pill bg-success" id="policy-active-badge" style="display:none;">active</span>
+                        <span class="badge rounded-pill bg-dark" id="policy-inactive-badge" style="display:none;">inactive</span>
+                        <button class="btn btn-outline-primary btn-sm ms-auto" onclick="createPolicy()"><i class="ti-plus"></i> New Policy</button>
+                    </div>
                     <div class="row">
                         <!-- Left: Gates table -->
                         <div class="col-md-7">
@@ -168,6 +178,7 @@
                                 </div>
                                 <div class="d-flex gap-2 mt-2">
                                     <button class="btn btn-primary btn-sm" onclick="savePolicy()"><i class="ti-save-alt"></i> Save Policy</button>
+                                    <button class="btn btn-outline-secondary btn-sm" id="policy-active-btn" style="display:none;" onclick="togglePolicyActive()"></button>
                                     <button class="btn btn-danger btn-sm" id="policy-delete-btn" style="display:none;" onclick="deletePolicy()"><i class="ti-trash"></i> Delete</button>
                                     <span id="policy-saved" class="text-success ms-2" style="display:none;">✓ Saved</span>
                                 </div>
@@ -261,6 +272,17 @@ function loadWorkflow() {
 
         populateSkillDropdowns();
         renderAll();
+
+        // Deep link: /config/workflows/<id>?tab=policy lands on the Policy
+        // tab (used by the policy list modal's Edit action).
+        if (new URLSearchParams(window.location.search).get('tab') === 'policy') {
+            const tabEl = document.getElementById('tab-policy');
+            if (window.bootstrap && bootstrap.Tab) {
+                new bootstrap.Tab(tabEl).show();
+            } else {
+                tabEl.click();
+            }
+        }
     })
     .catch(err => {
         document.getElementById('wf-loader').innerHTML =
@@ -553,9 +575,35 @@ function renderPolicyTab() {
     const metaDiv = document.getElementById('policy-meta');
     const badge = document.getElementById('policy-tab-badge');
     const deleteBtn = document.getElementById('policy-delete-btn');
+    const toolbar = document.getElementById('policy-toolbar');
+    const switcher = document.getElementById('policy-switcher');
+    const activeBadge = document.getElementById('policy-active-badge');
+    const inactiveBadge = document.getElementById('policy-inactive-badge');
+    const activeBtn = document.getElementById('policy-active-btn');
 
     badge.textContent = policies.length;
     badge.style.display = policies.length > 0 ? '' : 'none';
+
+    // Switcher lists EVERY policy — active and inactive — so policies #2..N
+    // are reachable instead of being counted and ignored.
+    toolbar.style.display = policies.length > 0 ? '' : 'none';
+    if (policies.length > 0) {
+        const activeIdx = policies.indexOf(activePolicy);
+        switcher.innerHTML = policies.map((p, i) => {
+            const tag = !p.id ? ' (new, unsaved)' : (p.is_active ? ' (active)' : ' (inactive)');
+            return `<option value="${i}" ${i === activeIdx ? 'selected' : ''}>${esc(p.name)} v${p.version}${tag}</option>`;
+        }).join('');
+    }
+    activeBadge.style.display = activePolicy && activePolicy.is_active ? '' : 'none';
+    inactiveBadge.style.display = activePolicy && activePolicy.id && !activePolicy.is_active ? '' : 'none';
+    if (activePolicy && activePolicy.id) {
+        activeBtn.style.display = '';
+        activeBtn.innerHTML = activePolicy.is_active
+            ? '<i class="ti-check-box"></i> Set inactive'
+            : '<i class="ti-check-box"></i> Set active';
+    } else {
+        activeBtn.style.display = 'none';
+    }
 
     if (!activePolicy) {
         emptyDiv.style.display = '';
@@ -633,7 +681,14 @@ function renderPolicySummary() {
 }
 
 function createPolicy() {
-    activePolicy = {
+    // Reuse an existing unsaved draft instead of stacking duplicates.
+    const draft = policies.find(p => !p.id);
+    if (draft) {
+        activePolicy = draft;
+        renderPolicyTab();
+        return;
+    }
+    const newPolicy = {
         id: null,
         name: workflowData.name + '-governed',
         version: 1,
@@ -646,7 +701,35 @@ function createPolicy() {
             gates: {}
         }
     };
+    policies.push(newPolicy);
+    activePolicy = newPolicy;
     renderPolicyTab();
+}
+
+function switchPolicy(idx) {
+    const i = parseInt(idx, 10);
+    if (isNaN(i) || i < 0 || i >= policies.length) return;
+    activePolicy = policies[i];
+    renderStepCards();   // gate indicators follow the selected policy
+    renderPolicyTab();
+}
+
+function togglePolicyActive() {
+    if (!activePolicy || !activePolicy.id) return;
+    const newActive = !activePolicy.is_active;
+    fetch(`${API_BASE}/policies/${activePolicy.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: newActive })
+    })
+        .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+        .then(data => {
+            const idx = policies.findIndex(p => p.id === data.id);
+            if (idx >= 0) policies[idx] = data;
+            if (activePolicy && activePolicy.id === data.id) activePolicy = data;
+            renderPolicyTab();
+        })
+        .catch(err => alert('Error: ' + err.message));
 }
 
 function savePolicy() {
@@ -696,7 +779,15 @@ function savePolicy() {
 }
 
 function deletePolicy() {
-    if (!activePolicy || !activePolicy.id) return;
+    if (!activePolicy) return;
+    if (!activePolicy.id) {
+        // Unsaved draft — just drop it from the list.
+        policies = policies.filter(p => p !== activePolicy);
+        activePolicy = policies.length > 0 ? policies[0] : null;
+        renderStepCards();
+        renderPolicyTab();
+        return;
+    }
     if (!confirm(`Delete policy "${activePolicy.name}"?`)) return;
     fetch(`${API_BASE}/policies/${activePolicy.id}`, { method: 'DELETE' })
         .then(r => { if (!r.ok) throw new Error(r.statusText);
