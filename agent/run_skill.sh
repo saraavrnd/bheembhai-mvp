@@ -16,8 +16,9 @@ emit () {  # status, reason, [next]
   # failed_incomplete even though the work had succeeded.
   BB_STATUS="$1" BB_REASON="${2:-}" BB_NEXT="${3:-}" \
   BB_RUN="${RUN_ID:-}" BB_STEP="${STEP_ID:-}" BB_ATTEMPT="${ATTEMPT_NO:-1}" \
-  BB_SKILL="${SKILL:-}" BB_SUMMARY="${SUMMARY:-}" BB_ARTIFACT="${ARTIFACT:-}" \
-  BB_COST="${COST_USD:-0}" BB_DUR="$(( $(date +%s) - START ))" \
+  BB_SKILL="${SKILL:-}" BB_SUMMARY="${SUMMARY:-}" BB_SUMMARY_FULL="${SUMMARY_FULL:-}" \
+  BB_ARTIFACT="${ARTIFACT:-}" \
+  BB_COST="${COST_USD:-0}" BB_COST_REPORTED="${COST_REPORTED:-0}" BB_DUR="$(( $(date +%s) - START ))" \
   BB_COMMIT="${COMMIT_SHA:-}" BB_MODELS="${MODELS_USED:-}" BB_MODEL_REQ="${BB_MODEL:-}" \
   jq -n --argjson files "${FILES_JSON:-[]}" --argjson review "${REVIEW_JSON:-[]}" '{
         run_id: env.BB_RUN, step_id: env.BB_STEP,
@@ -25,10 +26,12 @@ emit () {  # status, reason, [next]
         skill: env.BB_SKILL, status: env.BB_STATUS,
         reason: env.BB_REASON,
         next: (if env.BB_NEXT == "" then null else env.BB_NEXT end),
-        summary: env.BB_SUMMARY, artifact: env.BB_ARTIFACT,
+        summary: env.BB_SUMMARY, summary_full: env.BB_SUMMARY_FULL,
+        artifact: env.BB_ARTIFACT,
         files: $files, review_files: $review, commit: env.BB_COMMIT,
         models_used: env.BB_MODELS, model_requested: env.BB_MODEL_REQ,
         cost_usd: (env.BB_COST | tonumber? // 0),
+        cost_reported: ((env.BB_COST_REPORTED // "0") == "1"),
         duration_s: (env.BB_DUR | tonumber? // 0)
       }' > "$RESULT".tmp 2>"$RESULT".err
 
@@ -277,7 +280,7 @@ if [ "${BB_MOCK:-0}" = "1" ]; then
   case "${BB_MOCK_FORCE:-}" in
     crash) exit 137 ;;
     fail)  fail failed_execution "mock deterministic failure" 1 ;;
-    block) SUMMARY="Tests are not honestly green." COST_USD=0.02 emit BLOCK "mock block" implement; exit 0 ;;
+    block) SUMMARY="Tests are not honestly green." COST_USD=0.02 COST_REPORTED=1 emit BLOCK "mock block" implement; exit 0 ;;
   esac
   ST="${STORY_ID:+ for $STORY_ID}"
   if [ "$GATE_FOLLOWS" = "true" ]; then
@@ -285,7 +288,7 @@ if [ "${BB_MOCK:-0}" = "1" ]; then
   else
     SUMMARY="${SKILL} finished (mock)${ST}."
   fi
-  ARTIFACT="docs/${SKILL}.md" COST_USD=0.0${RANDOM:0:2}
+  ARTIFACT="docs/${SKILL}.md" COST_USD=0.0${RANDOM:0:2} COST_REPORTED=1
   emit completed "mock run"; exit 0
 fi
 
@@ -429,6 +432,28 @@ else
   RC=${PIPESTATUS[0]}
 fi
 kill "$HB_PID" 2>/dev/null || true
+
+# Extract session cost + models IMMEDIATELY — before any classifier can
+# early-exit. Every emit (success OR fail) must carry what the session
+# actually spent: the two real runs that burned $1.30 / $1.52 on deepseek
+# recorded cost 0 because `fail` exits before the old late extraction.
+# Anchored on the terminal result event (always the last stream-json line);
+# modelUsage.*.costUSD is the fallback for a CLI version that drops the
+# aggregate but keeps per-model accounting.
+RC_COST=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
+          jq -r 'select(.type=="result" and .total_cost_usd != null) | .total_cost_usd' 2>/dev/null | tail -1)
+COST_REPORTED=0
+case "$RC_COST" in ''|*[!0-9.]*) : ;; *) COST_USD="$RC_COST"; COST_REPORTED=1 ;; esac
+if [ "$COST_REPORTED" = "0" ]; then
+  RC_COST_SUM=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
+                jq -r 'select(.type=="result") | .modelUsage | values | map(.costUSD) | add' 2>/dev/null | tail -1)
+  case "$RC_COST_SUM" in ''|*[!0-9.]*) : ;; *) COST_USD="$RC_COST_SUM"; COST_REPORTED=1 ;; esac
+fi
+MODELS_USED=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
+              jq -r 'select(.modelUsage != null) | .modelUsage | keys | join(",")' 2>/dev/null | tail -1)
+[ -n "$MODELS_USED" ] && echo "MODELS_USED=$MODELS_USED (requested: ${BB_MODEL:-default})" \
+    >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+
 OUTPUT=$(tail -c 4000 "$LOGFILE" 2>/dev/null || echo "")
 
 # Distinguish WHICH credential failed, so "the step failed" isn't a mystery. Model-auth
@@ -564,18 +589,8 @@ if [ ! -s "$SUMMARY_FILE" ]; then
   tail -c 1000 "$LOGFILE" > "$SUMMARY_FILE" 2>/dev/null || true
 fi
 
-# real cost reported by the agent (also from the tail, not the whole file)
-RC_COST=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
-          jq -r 'select(.total_cost_usd != null) | .total_cost_usd' 2>/dev/null | tail -1)
-case "$RC_COST" in ''|*[!0-9.]*) : ;; *) COST_USD="$RC_COST" ;; esac
-
-# Record the model(s) actually used, so "did the right model run?" is answerable from the
-# result without digging through logs. This is the accountability half of model governance:
-# we enforce via --model, and we record what actually happened.
-MODELS_USED=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
-          jq -r 'select(.modelUsage != null) | .modelUsage | keys | join(",")' 2>/dev/null | tail -1)
-[ -n "$MODELS_USED" ] && echo "MODELS_USED=$MODELS_USED (requested: ${BB_MODEL:-default})" \
-    >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+# (session cost + models were extracted right after the CLI exited — see the
+# EXECUTE block — so every fail path below already carries them in the emit)
 
 # The agent reports its outcome as a BB_OUTCOME line in its reply (never as a file).
 STATUS=$(grep -oE 'BB_OUTCOME:[[:space:]]*[A-Za-z_]+' "$SUMMARY_FILE" 2>/dev/null | tail -1 \
@@ -601,7 +616,12 @@ REVIEW_JSON=$(grep -oE 'BB_REVIEW:[[:space:]]*.+' "$SUMMARY_FILE" 2>/dev/null | 
 # don't show the machine-readable lines to a human reviewer; cap the length.
 # Take the HEAD of the reply — the agent opens with the actual summary (the
 # BB_* protocol lines sit at the end), so tailing would start mid-sentence.
-SUMMARY=$(sed -E '/BB_OUTCOME:[[:space:]]*[A-Za-z_]+/d; /BB_REVIEW:[[:space:]]*/d' \
-          "$SUMMARY_FILE" 2>/dev/null | head -c 1500)
+# The FULL stripped reply rides along as summary_full and lands in the DB, so
+# a reviewer can load the complete summary on demand; the 1500-char head keeps
+# poll payloads light. 64KB cap: env-var transport to jq (env.BB_SUMMARY_FULL)
+# is safe at that size, far below the ~128KB per-var exec limit.
+SUMMARY_FULL=$(sed -E '/BB_OUTCOME:[[:space:]]*[A-Za-z_]+/d; /BB_REVIEW:[[:space:]]*/d' \
+               "$SUMMARY_FILE" 2>/dev/null | head -c 65536)
+SUMMARY=$(printf '%s' "$SUMMARY_FULL" | head -c 1500)
 progress publish "writing result"
 emit "$STATUS" "ok"; exit 0
