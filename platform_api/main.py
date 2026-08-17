@@ -36,6 +36,7 @@ from platform_api.routers import (
     projects,
     refdata,
     runs,
+    webhooks,
     workflows,
 )
 
@@ -53,8 +54,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_database(config.database)
     await run_migrations()
     await seed_default_roles()
-    await seed_default_skills()
-    await seed_default_workflows()
+    if config.engine.seed_on_startup:
+        # OPT-IN (BB_SEED_ON_STARTUP): both seeds are upserts that OVERWRITE DB
+        # rows — never seed by default, a running instance must not clobber
+        # user-edited skills/workflows.
+        await seed_default_skills()
+        await seed_default_workflows()
 
     # ── Wire Cognito auth service (boto3 — login/refresh/signup) ──
     auth_cfg = config.auth
@@ -234,6 +239,7 @@ app.include_router(workflows.router)
 app.include_router(policies.router)
 app.include_router(refdata.router)
 app.include_router(runs.router)
+app.include_router(webhooks.router)
 
 # Static files (theme, Alpine.js, Mermaid.js)
 app.mount("/static", StaticFiles(directory="platform_api/static"), name="static")

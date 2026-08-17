@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 import uuid as _uuid
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -13,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from bheembhai.database import get_session
 from bheembhai.models.project import ProjectIntegration
-from bheembhai.models.run import Run, Step
+from bheembhai.models.run import Run, Step, Transition
 from bheembhai.models.user import Membership, User
 from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.models.workflow import Policy, Workflow
@@ -29,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
+# Mirrors engine_service.state_machine.TERMINAL_STATES — the run states after
+# which no dispatch token (decision or cancel) has anything to act on.
+TERMINAL_RUN_STATES = {"completed", "failed", "cancelled"}
+
 
 # ── Schemas ────────────────────────────────────────────────────────────────────
 
@@ -41,12 +48,38 @@ class RunCreateRequest(BaseModel):
     github_integration_id: str = Field(..., min_length=1)
     jira_integration_id: str | None = None
     ai_vendor_integration_id: str = Field(..., min_length=1)
+    # Per-run override for the branch the engine cuts the run branch OFF
+    # (defaults to the GitHub integration's base_branch — ADR-013 deferred item).
+    source_branch: str | None = Field(None, max_length=200)
 
 
 class DecisionRequest(BaseModel):
     action: str = Field(..., description="'approve' or 'send_back'")
     send_back_to: str | None = Field(None, description="Step ID to revert to (required for send_back)")
     comment: str | None = Field(None, description="Reviewer comment")
+
+
+_BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
+
+
+def _valid_source_branch(name: str) -> str | None:
+    """Human-readable problem for an invalid source-branch name, else None.
+
+    Mirrors git check-ref-format's essentials — the engine will fail at
+    init anyway if the branch can't be resolved, but a clear 422 at
+    submit time beats a container-less failure ten seconds later.
+    """
+    if name != name.strip():
+        return "branch must not have leading/trailing whitespace"
+    if name.startswith("-") or name.endswith(("/", ".")):
+        return "branch must not start with '-' or end with '/' or '.'"
+    if ".." in name or "@{" in name or "//" in name:
+        return "branch must not contain '..', '@{', or '//'"
+    if name.endswith(".lock") or any(c in name for c in " ~^:?*[\\"):
+        return "branch contains characters git does not allow in refs"
+    if not _BRANCH_NAME_RE.fullmatch(name):
+        return "branch contains characters git does not allow in refs"
+    return None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -174,7 +207,286 @@ def _step_to_dict(step: Step) -> dict:
     }
 
 
-def _build_run_detail(run: Run, started_by: User | None = None) -> dict:
+async def _latest_step_payload(db, run_id, step_id: str) -> dict:
+    """Newest display payload for a finished step: the awaiting_approval gate
+    card while paused, otherwise the completion payload. Both carry the same
+    artifact fields (summary/files/review_files/commit) — the engine owns them,
+    the platform only displays them.
+
+    Gate approval is recorded as an ``awaiting_approval→completed`` transition
+    with an *empty* payload — skip content-less rows so an approved step still
+    renders its gate card / completion result instead of falling back to the
+    demo stubs."""
+    stmt = (
+        select(Transition)
+        .where(Transition.run_id == run_id,
+               Transition.step_id == step_id,
+               Transition.to_state.in_(["completed", "awaiting_approval"]))
+        .order_by(Transition.id.desc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    display_keys = ("files", "review_files", "summary", "artifact", "commit")
+    for row in rows:
+        payload = dict(row.payload or {})
+        if any(k in payload for k in display_keys):
+            return payload
+    # No content-bearing row (e.g. the only row is the empty approval record)
+    # — callers fall back to their demo-stub behavior.
+    return {}
+
+
+def _viewer_for_path(path: str) -> str:
+    """Viewer type from extension — matches the viewer vocabulary in run_detail.html."""
+    lower = path.lower()
+    if lower.endswith((".diff", ".patch")):
+        return "diff"
+    if lower.endswith(".csv"):
+        return "table"
+    if lower.endswith(".json"):
+        return "json"
+    if lower.endswith((".yaml", ".yml", ".py", ".ts", ".js", ".sh", ".toml", ".txt", ".env")):
+        return "code"
+    if lower.endswith(".md") and "comment" in lower:
+        return "comments"
+    return "doc"
+
+
+def _files_from_payload(payload: dict) -> list[dict]:
+    """Artifact pills from an engine payload. Curated review_files (the skill's
+    BB_REVIEW declarations) come first per the curation design; if the skill
+    declared none, fall back to the full changed-file list. Empty when the
+    engine published neither — callers may then fall back to demo stubs."""
+    curated = [f for f in (payload.get("review_files") or []) if isinstance(f, dict)]
+    changed = [f for f in (payload.get("files") or []) if isinstance(f, dict)]
+    pills: list[dict] = []
+    for item in curated or changed:
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        pills.append({
+            "path": path,
+            "label": path.rsplit("/", 1)[-1],
+            "note": str(item.get("note") or ""),
+            "size": "",
+            "viewer": _viewer_for_path(path),
+        })
+    return pills
+
+
+# ── Execution timeline ─────────────────────────────────────────────────────────
+#
+# The stage rail used to show each workflow step ONCE, merged with the step
+# row's LATEST state. That lies about loops: when code-review returns
+# changes_requested and the workflow routes back to implement, the implement
+# row shows only the re-run's failure — the earlier visit (which test-verify
+# actually verified) disappears from view. The transition stream is
+# append-only and complete, so the timeline is rebuilt from it: each
+# `pending→running` row starts a visit (attempt_no does NOT distinguish
+# visits — re-loops reuse the same attempt dir), and visits are laid out in
+# true execution order with their own verdict, artifacts, and gate decisions.
+
+_DISPLAY_PAYLOAD_KEYS = ("files", "review_files", "summary", "artifact", "commit")
+
+
+def _fmt_elapsed(started: float, ended: float) -> str:
+    import datetime as _dt
+    return str(_dt.timedelta(seconds=int(ended - started)))
+
+
+def _gate_decision_from(row) -> dict | None:
+    """Parse a decision transition into {action, actor, comment, ts}.
+
+    The engine records decisions as ``awaiting_approval→completed`` rows with
+    reason ``reviewer chose: approve — <comment>`` (state_machine.py) and the
+    reviewer in the actor column."""
+    reason = (row.reason or "").strip()
+    if reason.startswith("reviewer chose: approve"):
+        action = "approve"
+    elif reason.startswith("reviewer chose: send back"):
+        action = "send_back"
+    else:
+        return None
+    comment = None
+    if " — " in reason:
+        comment = reason.split(" — ", 1)[1].strip() or None
+    return {"action": action, "actor": row.actor, "comment": comment, "ts": float(row.ts)}
+
+
+def _build_timeline(rows, workflow_def: list[dict], gates: dict[str, dict],
+                    run_state: str) -> dict:
+    """Rebuild the true execution path from the transition stream.
+
+    Pure over duck-typed transition rows (id-ordered) so the visit-grouping
+    logic is unit-testable without a database. Returns
+    ``{nodes: [...], current_node_idx}`` — one node per visit in execution
+    order, plus unvisited workflow steps as a pending tail.
+    """
+    visits: list[dict] = []
+    open_visit: dict | None = None
+    by_step: dict[str, int] = {}
+
+    for row in rows:
+        if not row.step_id:
+            continue  # run-level bookkeeping (init, model resolution, resets)
+        if row.from_state == "pending" and row.to_state == "running":
+            if (open_visit is not None and open_visit["step_id"] == row.step_id
+                    and open_visit["verdict"] is None
+                    and open_visit["ended_ts"] is None):
+                # The SAME visit re-announced: a deadline retry ("transient …
+                # — retrying") or a crash-recovery resume both re-fire
+                # pending→running while the step never closed. Merging keeps
+                # one visit; splitting here created phantom open visits that
+                # rendered as running forever (run b2b1b72a's five resume
+                # rows for test-creator). A visit that HAS ended (verdict or
+                # gate) still opens a new one — that's the real re-loop case.
+                continue
+            if open_visit is not None:
+                visits.append(open_visit)
+            visit_no = by_step.get(row.step_id, 0) + 1
+            by_step[row.step_id] = visit_no
+            open_visit = {
+                "step_id": row.step_id, "visit_no": visit_no,
+                "started_ts": float(row.ts), "ended_ts": None,
+                "verdict": None, "reason": None,
+                "gate_open": False, "gate_decision": None,
+                "payload": None, "attempt_no": row.attempt_no or 1,
+            }
+            continue
+        v = open_visit
+        if v is None or v["step_id"] != row.step_id:
+            # A failure row addressed to a step whose visit already closed —
+            # the engine's run-level failure rows land here (e.g. the
+            # runaway-loop cap: "step 'implement' visited 4 times in one
+            # dispatch (cap 3)"). Surface it as a halted node instead of
+            # dropping it, so the run's failure reason stays visible.
+            if row.to_state == "failed" and row.from_state == "running":
+                if open_visit is not None:
+                    visits.append(open_visit)
+                    open_visit = None
+                visit_no = by_step.get(row.step_id, 0) + 1
+                by_step[row.step_id] = visit_no
+                visits.append({
+                    "step_id": row.step_id, "visit_no": visit_no,
+                    "started_ts": None, "ended_ts": None,
+                    "verdict": None, "reason": row.reason,
+                    "gate_open": False, "gate_decision": None,
+                    "payload": None, "attempt_no": row.attempt_no or 1,
+                    "halt": True,
+                })
+            continue
+        if row.to_state == "awaiting_approval":
+            # The gate card is the visit's effective end; the wait itself
+            # surfaces as the decision edge (or the open review footer).
+            v["gate_open"] = True
+            v["ended_ts"] = float(row.ts)
+            continue
+        if row.from_state == "awaiting_approval" and row.to_state == "completed":
+            decision = _gate_decision_from(row)
+            if decision:
+                v["gate_decision"] = decision
+            continue
+        if (row.to_state in ("completed", "failed")
+                and row.result_status and v["verdict"] is None):
+            # First terminal row carrying a verdict: the payload's own reason
+            # (e.g. "could not clone … @ main") outranks the engine's 'ok'.
+            v["verdict"] = row.result_status
+            v["ended_ts"] = float(row.ts)
+            v["reason"] = None if row.reason in (None, "ok") else row.reason
+            payload = dict(row.payload or {})
+            if payload.get("reason"):
+                v["reason"] = str(payload["reason"])
+        payload = dict(row.payload or {})
+        if any(k in payload for k in _DISPLAY_PAYLOAD_KEYS):
+            # Newest content-bearing row in the visit (approval rows are empty
+            # and never overwrite the real payload).
+            v["payload"] = payload
+    if open_visit is not None:
+        visits.append(open_visit)
+
+    wf_by_id = {s["id"]: s for s in workflow_def}
+    nodes: list[dict] = []
+    for v in visits:
+        wf = wf_by_id.get(v["step_id"], {})
+        verdict = v["verdict"]
+        if v.get("halt"):
+            state = "failed"
+        elif verdict == "__cancelled__":
+            state = "cancelled"
+        elif verdict and verdict.startswith("failed_"):
+            state = "failed"
+        elif v["gate_open"] and not v["gate_decision"] and run_state == "paused":
+            state = "awaiting"
+        elif run_state == "cancelled" and verdict is None:
+            # The visit that was open when the run was cancelled (no step-level
+            # verdict row exists — e.g. cancel landed between steps).
+            state = "cancelled"
+        elif verdict:
+            state = "done"
+        else:
+            state = "current"
+        payload = v["payload"] or {}
+        nodes.append({
+            "step_id": v["step_id"],
+            "label": wf.get("label", v["step_id"]),
+            "skill": wf.get("skill", ""),
+            "has_gate": gates.get(v["step_id"], {}).get("review") == "required",
+            "visit_no": v["visit_no"],
+            "state": state,
+            "verdict": verdict,
+            "reason": v["reason"],
+            "elapsed": _fmt_elapsed(v["started_ts"], v["ended_ts"]) if v["ended_ts"] else None,
+            "started_ts": v["started_ts"],
+            "ended_ts": v["ended_ts"],
+            "files": _files_from_payload(payload),
+            "summary": str(payload.get("summary") or ""),
+            "commit": payload.get("commit"),
+            "is_awaiting_review": state == "awaiting",
+            "gate_decision": v["gate_decision"],
+            "attempt_no": v["attempt_no"],
+        })
+
+    # Tail: workflow steps that never ran (future nodes, shown pending).
+    visited = {v["step_id"] for v in visits}
+    for wf in workflow_def:
+        if wf["id"] in visited:
+            continue
+        nodes.append({
+            "step_id": wf["id"],
+            "label": wf.get("label", wf["id"]),
+            "skill": wf.get("skill", ""),
+            "has_gate": gates.get(wf["id"], {}).get("review") == "required",
+            "visit_no": 0,
+            "state": "pending",
+            "verdict": None,
+            "reason": None,
+            "elapsed": None,
+            "started_ts": None,
+            "ended_ts": None,
+            "files": [],
+            "summary": "",
+            "commit": None,
+            "is_awaiting_review": False,
+            "gate_decision": None,
+            "attempt_no": 0,
+        })
+
+    current_node_idx = next(
+        (i for i, n in enumerate(nodes) if n["state"] in ("current", "awaiting")), None)
+    return {"nodes": nodes, "current_node_idx": current_node_idx}
+
+
+async def _run_timeline(db, run: Run, workflow_def: list[dict],
+                        gates: dict[str, dict]) -> dict:
+    """Fetch the run's transition stream and rebuild the execution timeline."""
+    rows = (await db.execute(
+        select(Transition)
+        .where(Transition.run_id == run.id)
+        .order_by(Transition.id)
+    )).scalars().all()
+    return _build_timeline(rows, workflow_def, gates, run.state)
+
+
+async def _build_run_detail(db, run: Run, started_by: User | None = None) -> dict:
     """Full run detail with steps, workflow definition, and gate map."""
     workflow_def = _parse_workflow_steps(run.workflow) if run.workflow else []
     gates = _parse_policy_gates(run.policy) if run.policy else {}
@@ -201,7 +513,7 @@ def _build_run_detail(run: Run, started_by: User | None = None) -> dict:
         elif exec_state in ("running", "pending_review"):
             visual_state = "current"
             current_idx = i
-        elif exec_state == "failed" or result_status in ("failed_execution", "failed_infra", "failed_timeout"):
+        elif exec_state == "failed" or (result_status or "").startswith("failed_"):
             visual_state = "failed"
         else:
             visual_state = "pending"
@@ -224,6 +536,14 @@ def _build_run_detail(run: Run, started_by: User | None = None) -> dict:
             ended = _dt.datetime.fromisoformat(db_step["ended_at"])
             elapsed = str(ended - started).split(".")[0]  # "0:03:10"
 
+        # Artifacts come from the engine's transition payload (curated review
+        # files first, full changed-file list as fallback). Stubs remain only
+        # for legacy/demo runs where the engine published nothing.
+        payload = await _latest_step_payload(db, run.id, sid)
+        files = _files_from_payload(payload)
+        if not files:
+            files = _stub_files_for_step(sid, exec_state, result_status)
+
         stages.append({
             "step_id": sid,
             "skill": wf_step["skill"],
@@ -238,11 +558,13 @@ def _build_run_detail(run: Run, started_by: User | None = None) -> dict:
             "attempt_no": db_step.get("attempt_no", 1),
             "elapsed": elapsed,
             "cost_usd": db_step.get("cost_usd", 0),
-            # Stub artifact files — in production these come from artifact_storage_key
-            "files": _stub_files_for_step(sid, exec_state),
+            "files": files,
+            "summary": str(payload.get("summary") or ""),
+            "commit": payload.get("commit"),
         })
 
     # Build the full detail response
+    timeline = await _run_timeline(db, run, workflow_def, gates)
     return {
         **{k: _run_summary(run, started_by)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "state", "current_step", "cost_usd", "created_at", "started_by", "github_integration_id", "jira_integration_id", "ai_vendor_integration_id"]},
         "source_branch": run.source_branch,
@@ -251,6 +573,10 @@ def _build_run_detail(run: Run, started_by: User | None = None) -> dict:
         "policy_name": run.policy.name if run.policy else "",
         "stages": stages,
         "current_stage_idx": current_idx,
+        # True execution path: one node per visit in execution order (loops
+        # re-open a step as a new visit). `stages` stays for the send-back
+        # modal, which picks unique workflow steps by id.
+        "timeline": timeline,
         "elapsed_total": _compute_elapsed(run.created_at),
         "needs_review": run.state == "paused",
     }
@@ -272,12 +598,17 @@ def _compute_elapsed(created_at) -> str | None:
     return f"{hrs}h {mins % 60}m ago"
 
 
-def _stub_files_for_step(step_id: str, exec_state: str) -> list[dict]:
+def _stub_files_for_step(step_id: str, exec_state: str,
+                         result_status: str | None = None) -> list[dict]:
     """Generate stub file artifacts for demo purposes.
 
     In production these are looked up from artifact storage via ``artifact_storage_key``.
+    A step whose verdict is in the failed_* family produced nothing — never show
+    artifacts for it (its row may still read exec_state="completed", see the engine).
     """
     if exec_state not in ("completed", "pending_review"):
+        return []
+    if (result_status or "").startswith("failed_"):
         return []
 
     # These are demo file stubs — each maps to a viewer type
@@ -531,10 +862,16 @@ async def list_runs(
             gate_db_step = next(
                 (s for s in (run.steps or []) if s.step_id == run.current_step), None
             )
-            gate_files = _stub_files_for_step(
-                run.current_step,
-                gate_db_step.exec_state if gate_db_step else "completed",
-            )
+            # Real curated artifacts from the engine's gate-card payload; stubs
+            # only when the engine published nothing (legacy/demo runs).
+            gate_payload = await _latest_step_payload(db, run.id, run.current_step)
+            gate_files = _files_from_payload(gate_payload)
+            if not gate_files and gate_db_step:
+                gate_files = _stub_files_for_step(
+                    run.current_step,
+                    gate_db_step.exec_state,
+                    gate_db_step.result_status,
+                )
             gate_info = {
                 "gate_step": run.current_step,
                 "gate_label": next(
@@ -544,6 +881,7 @@ async def list_runs(
                 "gate_status": gate_db_step.result_status if gate_db_step else None,
                 "gate_file_count": len(gate_files),
                 "gate_files": [f["label"] for f in gate_files],
+                "gate_summary": str(gate_payload.get("summary") or "")[:400],
             }
 
         summary.update({
@@ -621,10 +959,15 @@ async def create_run(
             db, body.project_id, body.jira_integration_id, {"jira"}, "Jira"
         )
 
-    # Source branch resolves from the selected GitHub integration config
-    # (not user input); the engine cuts the run branch off it at init.
+    # Source branch: the user's per-run override wins; otherwise the selected
+    # GitHub integration's base_branch (fallback "main"). The engine cuts the
+    # run branch off it at init.
     github_config = github.config or {}
-    source_branch = str(github_config.get("base_branch") or "main")
+    source_branch = body.source_branch or str(github_config.get("base_branch") or "main")
+    if body.source_branch:
+        problem = _valid_source_branch(body.source_branch)
+        if problem:
+            raise HTTPException(422, f"Invalid source branch: {problem}")
 
     run = Run(
         project_id=_uuid.UUID(body.project_id),
@@ -686,7 +1029,50 @@ async def get_run(
     starter = None
     if run.started_by_user_id:
         starter = await db.get(User, run.started_by_user_id)
-    return _build_run_detail(run, started_by=starter)
+    return await _build_run_detail(db, run, started_by=starter)
+
+
+_ARTIFACT_TEXT_MAX = 2 * 1024 * 1024  # 2 MB cap on served artifact text
+
+
+def _read_artifact(run_id: str, path: str) -> str:
+    """Read a repo-relative artifact from the engine's clone tree, confined to
+    clones/<run_id> with a path-traversal guard, a 2 MB cap, and text-only
+    filtering (binary content is refused — the viewer renders text)."""
+    workdir = os.environ.get("BB_WORKDIR") or ""
+    if not workdir:
+        return ""
+    base = Path(workdir) / "clones" / str(run_id)
+    if not base.is_dir():
+        return ""
+    clean = os.path.normpath(path)
+    if clean.startswith("..") or os.path.isabs(clean):
+        return ""
+    # Steps run sequentially on one branch; the newest clone holds the latest
+    # branch state. Any clone of this run is fine for committed artifacts.
+    repos = sorted(
+        (p for p in base.rglob("repo") if p.is_dir()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for repo in repos:
+        candidate = (repo / clean).resolve()
+        try:
+            candidate.relative_to(base.resolve())
+        except ValueError:
+            continue
+        if not candidate.is_file():
+            continue
+        try:
+            if candidate.stat().st_size > _ARTIFACT_TEXT_MAX:
+                return ""
+            data = candidate.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in data:
+            continue  # binary — refuse
+        return data.decode("utf-8", errors="replace")
+    return ""
 
 
 @router.get("/{run_id}/file")
@@ -704,25 +1090,22 @@ async def get_run_file(
     if run is None:
         raise HTTPException(404, f"Run {run_id} not found")
 
-    content = _STUB_FILE_CONTENT.get(path, "")
+    # Real artifacts first: the engine's clone tree under BB_WORKDIR. Stub
+    # content remains only for legacy/demo runs with no engine artifacts.
+    content = _read_artifact(run_id, path)
     if not content:
-        for key, val in _STUB_FILE_CONTENT.items():
-            if path in key or key in path:
-                content = val
-                path = key
-                break
-
+        content = _STUB_FILE_CONTENT.get(path, "")
+        if not content:
+            for key, val in _STUB_FILE_CONTENT.items():
+                if path in key or key in path:
+                    content = val
+                    path = key
+                    break
     if not content:
         content = f"# {path}\n\nFile content not available."
 
-    # Determine viewer type from extension
-    ext = path.rsplit(".", 1)[-1] if "." in path else ""
-    viewer_map = {
-        "md": "doc" if "comment" not in path.lower() else "comments",
-        "diff": "diff",
-        "csv": "table",
-    }
-    viewer = viewer_map.get(ext, "doc")
+    # Determine viewer type from extension (single source of truth)
+    viewer = _viewer_for_path(path)
 
     return {"path": path, "viewer": viewer, "content": content}
 
@@ -734,11 +1117,15 @@ async def submit_decision(
     db: "AsyncSession" = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
-    """Approve or send back at a review gate.
+    """Queue a gate decision for the engine (ADR-003 dispatch model).
 
-    ``approve``: advances the run past the current gate.
-    ``send_back``: reverts to the specified ``send_back_to`` step id,
-    discarding everything after it.
+    The platform no longer mutates run state here: it validates that the run is
+    actually paused at a gate, then enqueues a `continue` work item carrying the
+    decision. The engine claims it and applies it — approve routes via the
+    workflow's ``on:`` map, send_back resets later steps and replays with the
+    reviewer comment as ``reviewer_feedback`` — and the UI's re-poll sees the
+    new state. Concurrent decisions land as sibling items; the engine's
+    supersede guard demotes stale claims.
     """
     if enabled is None:
         raise HTTPException(401, "Authentication required")
@@ -748,46 +1135,76 @@ async def submit_decision(
     if run is None:
         raise HTTPException(404, f"Run {run_id} not found")
 
-    if body.action == "approve":
-        # Advance the run — in production this is driven by the engine.
-        # For now we update state optimistically.
-        run.state = "running"
-        await db.commit()
-        logger.info("Run %s approved by user %s", run_id, current_user.id)
-        return {
-            "id": run_id,
-            "decision": "approved",
-            "new_state": "running",
-            "message": "Approved. The pipeline is now advancing to the next stage.",
-        }
+    if run.state != "paused":
+        raise HTTPException(
+            409,
+            f"Run {run_id} is in state '{run.state}', not paused — "
+            "there is no open gate to decide",
+        )
 
+    actor = current_user.email or str(current_user.id)
+
+    if body.action == "approve":
+        payload = {"action": "approve", "comment": body.comment or "", "actor": actor}
+        message = "Approval queued — the engine will advance the run."
     elif body.action == "send_back":
         if not body.send_back_to:
             raise HTTPException(400, "send_back_to is required for send_back action")
 
-        # Validate the target stage exists in the workflow
-        workflow_def = _parse_workflow_steps(run.workflow) if run.workflow else []
+        # Validate the target stage exists in the workflow. Load the workflow by
+        # id — accessing the `run.workflow` relationship here would lazy-load
+        # outside a greenlet context in an async session.
+        workflow = await db.get(Workflow, run.workflow_id)
+        workflow_def = _parse_workflow_steps(workflow)
         valid_ids = {s["id"] for s in workflow_def}
         if body.send_back_to not in valid_ids:
             raise HTTPException(400, f"Unknown step '{body.send_back_to}'. Valid: {sorted(valid_ids)}")
 
-        # In production the engine handles the rewind.
-        # For now we update state optimistically.
-        run.state = "running"
-        run.current_step = body.send_back_to
-        await db.commit()
+        payload = {"action": "send_back", "send_back_to": body.send_back_to,
+                   "comment": body.comment or "", "actor": actor}
+        message = f"Send-back to '{body.send_back_to}' queued — the engine will rewind the run."
+    else:
+        raise HTTPException(400, f"Unknown action '{body.action}'. Use 'approve' or 'send_back'.")
 
-        logger.info(
-            "Run %s sent back to %s by user %s (comment: %s)",
-            run_id, body.send_back_to, current_user.id, (body.comment or "")[:80],
+    db.add(WorkQueueItem(run_id=run.id, action="continue", payload=payload))
+    await db.commit()
+
+    logger.info("Run %s decision %s queued by %s (comment: %s)",
+                run_id, body.action, actor, (body.comment or "")[:80])
+    return {"id": run_id, "decision": body.action, "message": message}
+
+
+@router.post("/{run_id}/cancel", status_code=202)
+async def cancel_run(
+    run_id: str,
+    db: "AsyncSession" = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+) -> dict:
+    """Stop a run (bookkeeper, ADR-003): enqueue a `cancel` dispatch token.
+
+    The engine claims the item and stops the run — signalling its in-flight
+    dispatch through an in-memory event (the step container is force-removed
+    and the run transitions to `cancelled`), or, with no live dispatch (gate
+    pause, still queued), voiding queued siblings and transitioning the run
+    itself. The platform never mutates run state here.
+    """
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+    current_user, _ = enabled
+
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    if run.state in TERMINAL_RUN_STATES:
+        raise HTTPException(
+            409,
+            f"Run {run_id} already finished ({run.state}) — nothing to stop",
         )
-        return {
-            "id": run_id,
-            "decision": "send_back",
-            "send_back_to": body.send_back_to,
-            "new_state": "running",
-            "message": f"Sent back to '{body.send_back_to}'. Stages after it have been discarded.",
-            "comment": body.comment,
-        }
 
-    raise HTTPException(400, f"Unknown action '{body.action}'. Use 'approve' or 'send_back'.")
+    actor = current_user.email or str(current_user.id)
+    db.add(WorkQueueItem(run_id=run.id, action="cancel", payload={"actor": actor}))
+    await db.commit()
+
+    logger.info("Run %s stop requested by %s", run_id, actor)
+    return {"id": run_id, "message": "Stop queued — the engine will cancel the run."}

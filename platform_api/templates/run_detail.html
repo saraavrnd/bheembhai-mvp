@@ -11,6 +11,8 @@
 {% endblock %}
 
 {% block head %}
+<!-- Vendored markdown renderer (no CDN dependency at runtime) -->
+<script src="/static/vendor/marked/marked.min.js?v=1"></script>
 <style>
     :root {
         --sage: #5a9e6f;
@@ -25,8 +27,13 @@
         --rail-width: 260px;
     }
 
+    /* App-shell layout: JS pins the layout height to the viewport (fitRunLayout)
+       so the page itself never scrolls — the rail and the viewer scroll
+       internally, and the review footer stays on screen. min-height is the
+       no-JS fallback. */
     .run-layout {
         display: flex; gap: 0; min-height: calc(100vh - 200px);
+        overflow: hidden;
     }
 
     /* ── Stage rail (left) — light, matching the EduAdmin theme ── */
@@ -56,8 +63,24 @@
     .stage-rail .run-meta .run-elapsed {
         font-size: 11px; color: #8a7a6a; margin-top: 4px;
     }
+    .stage-rail .run-meta .run-branch {
+        font-family: 'JetBrains Mono', monospace; font-size: 11px;
+        color: var(--deep-brown); margin-top: 6px;
+        word-break: break-all; line-height: 1.5;
+    }
     .stage-rail .run-meta .run-started-by {
         font-size: 11px; color: #8a7a6a; margin-top: 2px;
+    }
+    .stage-rail .run-meta .btn-stop {
+        display: block; width: 100%; margin-top: 10px;
+        padding: 6px 10px; font-size: 12px; font-weight: 600;
+        color: #fff; background: var(--deep-brown);
+        border: 1px solid var(--deep-brown); border-radius: 6px;
+        cursor: pointer;
+    }
+    .stage-rail .run-meta .btn-stop:hover { background: #6e2b1d; }
+    .stage-rail .run-meta .btn-stop:disabled {
+        opacity: 0.6; cursor: default;
     }
 
     .stage-item {
@@ -90,6 +113,7 @@
         50% { box-shadow: 0 0 0 7px rgba(224,123,90,0.08); }
     }
     .stage-circle.failed { background: var(--deep-brown); color: #fff; }
+    .stage-circle.cancelled { background: #8a7a6a; color: #fff; }
     .stage-circle.pending {
         background: transparent; border: 2px solid #a3907e;
         color: #a3907e;
@@ -100,6 +124,7 @@
     }
     .stage-line.done { background: var(--sage); }
     .stage-line.current { background: var(--terracotta); }
+    .stage-line.cancelled { background: #8a7a6a; }
 
     .stage-info { flex: 1; min-width: 0; }
     .stage-info .stage-label {
@@ -114,16 +139,47 @@
         padding: 1px 6px; border-radius: 3px; margin-top: 3px;
         text-transform: uppercase; letter-spacing: 0.04em;
     }
+    /* Execution-timeline extras: visit badge, per-visit verdict, gate decision */
+    .stage-info .visit-badge {
+        display: inline-block; font-size: 9px; font-weight: 700;
+        background: #172b4c; color: #fff; border-radius: 50%;
+        min-width: 15px; height: 15px; line-height: 15px; text-align: center;
+        margin-left: 5px; vertical-align: 1px;
+    }
+    .stage-info .stage-verdict {
+        display: inline-block; font-size: 9px; font-weight: 600;
+        padding: 1px 6px; border-radius: 3px; margin-top: 3px;
+        text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .stage-info .stage-verdict.warn { background: rgba(224,123,90,0.18); color: var(--terracotta); }
+    .stage-info .stage-verdict.fail { background: rgba(139,58,42,0.12); color: var(--deep-brown); }
+    .stage-info .stage-reason {
+        font-size: 10px; color: var(--deep-brown); margin-top: 2px;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        max-width: 170px;
+    }
+    .stage-info .gate-decision {
+        display: inline-block; font-size: 10px; background: #e8f5e9;
+        color: #2a5a3a; border-radius: 4px; padding: 2px 6px; margin-top: 3px;
+        max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .stage-info .gate-decision.send-back { background: #fef0eb; color: #8b2a1a; }
+    .stage-item.pending-tail { opacity: 0.55; cursor: default; }
+    .stage-item.pending-tail:hover { background: transparent; }
 
     /* ── Output panel (right) — white, matching the EduAdmin theme ── */
+    /* Column of fixed-height rows: pills (shrink 0), viewer card (flex 1,
+       scrolls internally), review footer (shrink 0 — always visible). */
     .output-panel {
         flex: 1; background: #fff; padding: 20px 24px;
-        overflow-y: auto; display: flex; flex-direction: column; gap: 16px;
+        overflow: hidden; display: flex; flex-direction: column; gap: 16px;
+        min-width: 0;
     }
 
     /* File pills (tabs) */
     .file-pills {
         display: flex; gap: 6px; flex-wrap: wrap;
+        flex-shrink: 0;
     }
     .file-pill {
         font-size: 12px; padding: 5px 12px; border-radius: 16px;
@@ -142,7 +198,7 @@
        text area, both on the card's white background */
     .viewer-card {
         background: #fff; border: 1px solid #172b4c; border-radius: 12px;
-        flex: 1; min-height: 300px; overflow: hidden;
+        flex: 1; min-height: 0; overflow: hidden;
         display: flex; flex-direction: column;
         box-shadow: 0 1px 4px rgba(0,0,0,0.06);
     }
@@ -231,6 +287,67 @@
     }
     .comment-body { margin-top: 4px; font-size: 13px; color: #3a3a4a; }
 
+    /* ── Rendered markdown (marked) ── */
+    .viewer-body.markdown h1, .viewer-body.markdown h2,
+    .viewer-body.markdown h3, .viewer-body.markdown h4,
+    .viewer-body.markdown h5, .viewer-body.markdown h6 {
+        color: #2a2a3a; font-weight: 600; line-height: 1.3;
+        margin: 20px 0 8px;
+    }
+    .viewer-body.markdown h1 { font-size: 22px; padding-bottom: 6px; border-bottom: 1px solid #e8e0d6; }
+    .viewer-body.markdown h2 { font-size: 19px; }
+    .viewer-body.markdown h3 { font-size: 16px; }
+    .viewer-body.markdown h4, .viewer-body.markdown h5,
+    .viewer-body.markdown h6 { font-size: 14px; }
+    .viewer-body.markdown h1:first-child, .viewer-body.markdown h2:first-child,
+    .viewer-body.markdown h3:first-child, .viewer-body.markdown h4:first-child { margin-top: 0; }
+    .viewer-body.markdown p { margin: 0 0 10px; }
+    .viewer-body.markdown a {
+        color: #2f579a; text-decoration: underline; text-underline-offset: 2px;
+    }
+    .viewer-body.markdown code {
+        font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+        background: #f0ede6; color: #8b3a2a; padding: 2px 5px; border-radius: 4px;
+    }
+    .viewer-body.markdown pre {
+        background: #172b4c; color: #e6edf3; padding: 14px 16px;
+        border-radius: 8px; overflow-x: auto; margin: 0 0 12px;
+        font-size: 12.5px; line-height: 1.6;
+    }
+    .viewer-body.markdown pre code {
+        background: transparent; color: inherit; padding: 0; font-size: inherit;
+    }
+    .viewer-body.markdown blockquote {
+        margin: 0 0 12px; padding: 6px 14px;
+        border-left: 3px solid var(--terracotta);
+        background: #faf6ee; color: #5a4a3a;
+    }
+    .viewer-body.markdown blockquote p:last-child { margin-bottom: 0; }
+    .viewer-body.markdown hr { border: none; border-top: 1px solid #e8e0d6; margin: 18px 0; }
+    .viewer-body.markdown img { max-width: 100%; border-radius: 6px; }
+    .viewer-body.markdown ul, .viewer-body.markdown ol { margin: 0 0 10px; padding-left: 22px; }
+    .viewer-body.markdown li { margin-bottom: 3px; }
+    .viewer-body.markdown li > ul, .viewer-body.markdown li > ol { margin-top: 3px; margin-bottom: 0; }
+    .viewer-body.markdown input[type="checkbox"] { accent-color: var(--sage); margin-right: 6px; }
+    .viewer-body.markdown table { margin: 0 0 12px; }
+    .table-scroll { overflow-x: auto; margin: 0 0 12px; }
+
+    /* ── Code + JSON viewers ── */
+    .viewer-body.code-view {
+        font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.6;
+        white-space: pre-wrap; word-break: break-word;
+    }
+    .viewer-body.code-view pre { margin: 0; font-family: inherit; font-size: inherit; }
+    .viewer-body.json-view {
+        font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.6;
+        white-space: pre-wrap; word-break: break-word;
+    }
+    .json-key { color: #2f579a; }
+    .json-string { color: #1a5c2a; }
+    .json-number { color: #b86020; }
+    .json-boolean { color: #7b3f8f; }
+    .json-null { color: #8a7a6a; font-style: italic; }
+
     /* State placeholders */
     .viewer-placeholder {
         display: flex; flex-direction: column; align-items: center;
@@ -244,10 +361,11 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Review footer */
+    /* Review footer — pinned to the bottom of the output panel so
+       "Approve & continue" is always on screen while the viewer scrolls. */
     .review-footer {
         background: #fff; border: 1px solid #172b4c;
-        border-radius: 8px; padding: 16px;
+        border-radius: 8px; padding: 16px; flex-shrink: 0;
     }
     .review-footer textarea {
         width: 100%; border: 1px solid #d5cdc0; border-radius: 6px;
@@ -277,6 +395,7 @@
         background: #e8f5e9; border: 1px solid var(--sage);
         border-radius: 8px; padding: 12px 16px; font-size: 13px;
         color: #2a5a3a; display: flex; align-items: center; gap: 8px;
+        flex-shrink: 0;
     }
 
     /* ── Send-back modal ── */
@@ -321,11 +440,12 @@
     }
     .gate-info-card strong { color: var(--terracotta); }
 
-    /* Responsive */
+    /* Responsive — small screens fall back to normal document flow
+       (fitRunLayout releases the pinned height below 768px too). */
     @media (max-width: 768px) {
-        .run-layout { flex-direction: column; }
-        .stage-rail { width: 100%; min-width: 0; padding: 12px; }
-        .output-panel { padding: 12px; }
+        .run-layout { flex-direction: column; height: auto !important; overflow: visible; }
+        .stage-rail { width: 100%; min-width: 0; padding: 12px; overflow-y: visible; }
+        .output-panel { padding: 12px; overflow-y: visible; }
     }
 </style>
 {% endblock %}
@@ -338,7 +458,11 @@
             <div class="story-id" id="meta-story-id">—</div>
             <div class="story-title" id="meta-story-title">Loading…</div>
             <div class="run-state" id="meta-state"></div>
+            <button class="btn-stop" id="btn-stop-run" style="display:none;" onclick="stopRun()">
+                <i class="fa fa-stop-circle-o"></i> Stop run
+            </button>
             <div class="run-id" id="meta-run-id"></div>
+            <div class="run-branch" id="meta-branch" style="display:none;"></div>
             <div class="run-elapsed" id="meta-elapsed"></div>
             <div class="run-started-by" id="meta-started-by"></div>
         </div>
@@ -419,6 +543,51 @@ let runData = null;
 let selectedStageIdx = null;
 let selectedFilePath = null;
 let decisionSubmitted = false;
+let userPickedStage = false;   // set once the user clicks a stage themselves
+
+// ── App-shell layout ────────────────────────────────────────────
+// The theme navbar is position:fixed, so the run layout's top edge has a
+// fixed viewport offset; pinning its height makes the page itself never
+// scroll — the stage rail and the viewer scroll internally instead, and
+// the review footer ("Approve & continue") stays on screen.
+function fitRunLayout() {
+    const layout = document.querySelector('.run-layout');
+    if (!layout) return;
+    if (window.innerWidth <= 768) { layout.style.height = ''; return; }
+    const top = layout.getBoundingClientRect().top;
+    layout.style.height = Math.max(300, window.innerHeight - top) + 'px';
+}
+window.addEventListener('resize', fitRunLayout);
+window.addEventListener('load', fitRunLayout);
+fitRunLayout();
+
+// ── Markdown renderer (marked, vendored at /static/vendor/marked) ──
+// Raw HTML in rendered content is escaped rather than passed through —
+// agent-produced files are not trusted input.
+if (window.marked && typeof marked.parse === 'function') {
+    const mdRenderer = new marked.Renderer();
+    mdRenderer.html = function (tok) {
+        return esc(typeof tok === 'string' ? tok : (tok && tok.text ? tok.text : ''));
+    };
+    marked.setOptions({ renderer: mdRenderer, gfm: true, breaks: false });
+}
+
+function renderMarkdown(md) {
+    if (window.marked && typeof marked.parse === 'function') {
+        try {
+            let html = marked.parse(md || '');
+            // Wide GFM tables scroll inside their own container instead of
+            // pushing the viewer body.
+            if (html.length < 400000) {
+                html = html.replace(/<table[\s\S]*?<\/table>/g, function (m) {
+                    return '<div class="table-scroll">' + m + '</div>';
+                });
+            }
+            return html;
+        } catch (e) { /* fall through to the built-in parser */ }
+    }
+    return parseDocMarkdown(md);
+}
 
 window.addEventListener('bb:userReady', function(e) {
     const data = e.detail;
@@ -451,6 +620,13 @@ function loadRunDetail() {
             document.getElementById('bc-run').textContent = heading;
             document.getElementById('run-title').textContent = heading;
             document.title = heading + ' — BheemBhai';
+
+            // Live polling: while the run is active, keep refreshing so the
+            // timeline, gates and the Stop button track the engine. Stops on
+            // its own once the run reaches a terminal state.
+            if (run.state === 'pending' || run.state === 'running' || run.state === 'paused') {
+                setTimeout(loadRunDetail, 3000);
+            }
         })
         .catch(err => {
             document.getElementById('stage-list').innerHTML =
@@ -461,8 +637,15 @@ function loadRunDetail() {
 function renderStageRail(run) {
     // Meta
     document.getElementById('meta-story-id').textContent = run.story_id || run.id.substring(0,8);
-    document.getElementById('meta-story-title').textContent = run.workflow_name || 'Pipeline Run';
+    document.getElementById('meta-story-title').textContent = run.story_id
+        ? 'Story ' + run.story_id
+        : (run.workflow_name || 'Pipeline Run');
     document.getElementById('meta-run-id').textContent = '#' + run.id.substring(0, 8);
+    const branchEl = document.getElementById('meta-branch');
+    if (run.run_branch) {
+        branchEl.textContent = '⎇ ' + run.run_branch;
+        branchEl.style.display = '';
+    }
     document.getElementById('meta-elapsed').textContent = run.elapsed_total || '';
     document.getElementById('meta-started-by').textContent = run.started_by
         ? 'Started by ' + (run.started_by.display_name || run.started_by.email)
@@ -483,16 +666,26 @@ function renderStageRail(run) {
         stateEl.innerHTML = '<span style="color:var(--terracotta);font-weight:600;">' + label + '</span>';
     } else if (run.state === 'running') {
         stateEl.innerHTML = '<span style="color:#58a6ff;font-weight:600;">' + label + '</span>';
+    } else if (run.state === 'cancelled') {
+        stateEl.innerHTML = '<span style="color:var(--deep-brown);font-weight:600;">' + label + '</span>';
     } else {
         stateEl.innerHTML = '<span style="color:#8a7a6a;">' + label + '</span>';
     }
 
-    // Build stage list
-    const stages = run.stages || [];
-    const listEl = document.getElementById('stage-list');
-    let html = '';
+    // Stop button: active runs can be cancelled — the platform enqueues a
+    // `cancel` dispatch token, the engine kills the container and records it.
+    const stopBtn = document.getElementById('btn-stop-run');
+    if (stopBtn) {
+        const cancellable = run.state === 'pending' || run.state === 'running' || run.state === 'paused';
+        stopBtn.style.display = cancellable ? '' : 'none';
+        if (cancellable) {
+            stopBtn.disabled = false;
+            stopBtn.innerHTML = '<i class="fa fa-stop-circle-o"></i> Stop run';
+        }
+    }
 
-    // Collect gate info
+    // Collect gate info (unique workflow steps, for the policy card)
+    const stages = run.stages || [];
     const gateSteps = stages.filter(s => s.has_gate).map(s => s.label || s.step_id);
     if (gateSteps.length > 0) {
         document.getElementById('gate-info-card').style.display = '';
@@ -500,115 +693,221 @@ function renderStageRail(run) {
             'Pauses at ' + gateSteps.join(' and ') + '.';
     }
 
-    stages.forEach((st, i) => {
-        const isLast = i === stages.length - 1;
-        const vs = st.visual_state;
+    // Execution timeline: one node per VISIT in true execution order —
+    // a step the workflow re-runs (code-review → implement) appears again
+    // with the next visit badge instead of its first run being overwritten.
+    const nodes = (run.timeline && run.timeline.nodes) || [];
+    const listEl = document.getElementById('stage-list');
+    listEl.innerHTML = nodes.map((node, i) =>
+        renderTimelineNode(node, i, i === nodes.length - 1)).join('');
 
-        // Circle
-        let circleHtml = '';
-        if (vs === 'done') {
-            circleHtml = '<div class="stage-circle done">✓</div>';
-        } else if (vs === 'current') {
-            const pulseClass = st.is_awaiting_review ? ' awaiting' : '';
-            circleHtml = '<div class="stage-circle current' + pulseClass + '">●</div>';
-        } else if (vs === 'failed') {
-            circleHtml = '<div class="stage-circle failed">✕</div>';
+    // Re-fit the app shell after content lands (page title/breadcrumb can
+    // reflow when fonts load).
+    fitRunLayout();
+
+    // Auto-select the live node (running or awaiting review), else the first
+    // visit that published files. Only on first load (or if the user's pick
+    // vanished in a re-shape) — the 3s poll must never yank the output view
+    // away from a stage the user selected manually.
+    const selectionLost = selectedStageIdx === null
+        || selectedStageIdx >= nodes.length;
+    if (!userPickedStage || selectionLost) {
+        const currentIdx = run.timeline ? run.timeline.current_node_idx : null;
+        if (currentIdx !== null && currentIdx !== undefined) {
+            selectStage(currentIdx);
         } else {
-            circleHtml = '<div class="stage-circle pending">' + (i+1) + '</div>';
+            const firstWithFiles = nodes.findIndex(n => n.files && n.files.length > 0);
+            selectStage(firstWithFiles >= 0 ? firstWithFiles : 0);
         }
-
-        // Line
-        let lineClass = '';
-        if (vs === 'done') lineClass = ' done';
-        else if (vs === 'current') lineClass = ' current';
-
-        const lineHtml = isLast ? '' : '<div class="stage-line' + lineClass + '"></div>';
-
-        // Meta text
-        let metaText = '';
-        if (st.elapsed && vs === 'done') {
-            metaText = 'Completed ' + st.elapsed;
-        } else if (st.elapsed && vs === 'current') {
-            metaText = 'Running · ' + st.elapsed;
-        } else if (st.is_awaiting_review) {
-            metaText = 'Waiting on your review';
-        } else if (vs === 'failed') {
-            metaText = 'Container exited ' + (st.attempt_no || 1);
-        } else if (vs === 'pending') {
-            metaText = 'Not started';
-        }
-
-        // Gate tag
-        const gateTag = st.has_gate ? ' <span class="stage-gate-tag">review gate</span>' : '';
-
-        const selectedClass = (selectedStageIdx === i) ? ' selected' : '';
-
-        html += `
-            <div class="stage-item${selectedClass}" data-stage-idx="${i}" onclick="selectStage(${i})">
-                <div class="stage-connector">
-                    ${circleHtml}
-                    ${lineHtml}
-                </div>
-                <div class="stage-info">
-                    <div class="stage-label">${esc(st.label || st.step_id)}${gateTag}</div>
-                    <div class="stage-meta">${metaText}</div>
-                </div>
-            </div>`;
-    });
-
-    listEl.innerHTML = html;
-
-    // Auto-select the current stage
-    const currentIdx = run.current_stage_idx;
-    if (currentIdx !== null && currentIdx !== undefined) {
-        selectStage(currentIdx);
     } else {
-        // Select first stage with files
-        const firstWithFiles = stages.findIndex(s => s.files && s.files.length > 0);
-        selectStage(firstWithFiles >= 0 ? firstWithFiles : 0);
+        // Refresh the stage already on screen (its files/summary may have
+        // grown since the last poll).
+        selectStage(selectedStageIdx);
     }
 }
 
-function selectStage(idx) {
-    if (!runData) return;
-    const stages = runData.stages || [];
-    if (idx < 0 || idx >= stages.length) return;
+const VERDICT_LABELS = {
+    'changes_requested': 'changes requested',
+    'escalation_required': 'escalated',
+    'BLOCK': 'BLOCK',
+    'completed': 'completed',
+};
 
+function renderTimelineNode(node, i, isLast) {
+    const st = node.state;
+
+    // Circle glyph
+    let circleHtml = '';
+    if (st === 'done') {
+        if (node.verdict === 'completed') {
+            circleHtml = '<div class="stage-circle done">✓</div>';
+        } else {
+            // Non-happy verdict (BLOCK / changes_requested / escalation) —
+            // the visit ran, but the verdict re-routed the run.
+            circleHtml = '<div class="stage-circle done" style="background:var(--terracotta);">△</div>';
+        }
+    } else if (st === 'current') {
+        circleHtml = '<div class="stage-circle current">●</div>';
+    } else if (st === 'awaiting') {
+        circleHtml = '<div class="stage-circle current awaiting">●</div>';
+    } else if (st === 'failed') {
+        circleHtml = '<div class="stage-circle failed">✕</div>';
+    } else if (st === 'cancelled') {
+        circleHtml = '<div class="stage-circle cancelled">⊘</div>';
+    } else {
+        circleHtml = '<div class="stage-circle pending"></div>';
+    }
+
+    // Connector line
+    let lineClass = '';
+    if (st === 'done') lineClass = ' done';
+    else if (st === 'current' || st === 'awaiting') lineClass = ' current';
+    else if (st === 'cancelled') lineClass = ' cancelled';
+    const lineHtml = isLast ? '' : '<div class="stage-line' + lineClass + '"></div>';
+
+    // Meta text per visit
+    let metaText = '';
+    if (st === 'awaiting') {
+        metaText = 'Waiting on your review';
+    } else if (st === 'done') {
+        if (node.verdict === 'completed' || !node.verdict) {
+            metaText = 'Completed' + (node.elapsed ? ' ' + node.elapsed : '');
+        } else {
+            const verdictLabel = VERDICT_LABELS[node.verdict] || node.verdict;
+            metaText = verdictLabel.charAt(0).toUpperCase() + verdictLabel.slice(1)
+                + (node.elapsed ? ' · ' + node.elapsed : '');
+        }
+    } else if (st === 'failed') {
+        metaText = 'Failed' + (node.elapsed ? ' · ' + node.elapsed : '');
+    } else if (st === 'cancelled') {
+        metaText = 'Cancelled' + (node.elapsed ? ' · ' + node.elapsed : '');
+    } else if (st === 'current') {
+        metaText = 'Running…';
+    } else {
+        metaText = 'Not started';
+    }
+
+    // Extra chips: review gate tag, verdict chip, gate decision edge
+    let chips = '';
+    if (node.has_gate && st !== 'pending') {
+        chips += ' <span class="stage-gate-tag">review gate</span>';
+    }
+    if (st === 'done' && node.verdict !== 'completed') {
+        const label = VERDICT_LABELS[node.verdict] || node.verdict;
+        chips += ' <span class="stage-verdict warn">' + esc(label) + '</span>';
+    } else if (st === 'failed' && node.verdict) {
+        chips += ' <span class="stage-verdict fail">' + esc(node.verdict) + '</span>';
+    }
+
+    // The visit's failure/cancel reason — what the engine classified, e.g.
+    // "could not clone … @ main".
+    let reasonHtml = '';
+    if ((st === 'failed' || st === 'cancelled') && node.reason) {
+        reasonHtml = '<div class="stage-reason" title="' + esc(node.reason) + '">' + esc(node.reason) + '</div>';
+    }
+
+    // Gate decision recorded after this visit — inline edge in true order.
+    let decisionHtml = '';
+    if (node.gate_decision) {
+        const d = node.gate_decision;
+        const when = d.ts ? new Date(d.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+        if (d.action === 'approve') {
+            decisionHtml = '<div class="gate-decision">⏸ Approved by ' + esc(d.actor || 'reviewer')
+                + (when ? ' at ' + when : '') + '</div>';
+        } else {
+            decisionHtml = '<div class="gate-decision send-back">↩ Sent back'
+                + (d.comment ? ' — ' + esc(d.comment) : '')
+                + (when ? ' · ' + when : '') + '</div>';
+        }
+    }
+
+    // Visit badge: ②, ③… on re-runs (first visits stay clean)
+    const visitBadge = node.visit_no > 1
+        ? ' <span class="visit-badge">' + node.visit_no + '</span>' : '';
+
+    const pendingClass = st === 'pending' ? ' pending-tail' : '';
+    const selectedClass = (selectedStageIdx === i) ? ' selected' : '';
+    const clickAttr = st === 'pending' ? '' : ' onclick="selectStage(' + i + ', true)"';
+
+    return `
+        <div class="stage-item${pendingClass}${selectedClass}" data-stage-idx="${i}"${clickAttr}>
+            <div class="stage-connector">
+                ${circleHtml}
+                ${lineHtml}
+            </div>
+            <div class="stage-info">
+                <div class="stage-label">${esc(node.label || node.step_id)}${visitBadge}${chips}</div>
+                <div class="stage-meta">${metaText}</div>
+                ${reasonHtml}
+                ${decisionHtml}
+            </div>
+        </div>`;
+}
+
+function selectStage(idx, fromUser) {
+    if (!runData) return;
+    const nodes = (runData.timeline && runData.timeline.nodes) || [];
+    if (idx < 0 || idx >= nodes.length) return;
+
+    if (fromUser) userPickedStage = true;
+    // Re-selecting the SAME stage (the 3s poll re-renders the rail) must keep
+    // the user's file-pill choice; only a stage change resets it.
+    const sameStage = selectedStageIdx === idx;
     selectedStageIdx = idx;
-    selectedFilePath = null;
+    if (!sameStage) selectedFilePath = null;
 
     // Update selection highlight
     document.querySelectorAll('.stage-item').forEach((el, i) => {
         el.classList.toggle('selected', i === idx);
     });
 
-    const stage = stages[idx];
-    document.getElementById('panel-stage-name').textContent = stage.step_id || stage.skill;
+    const node = nodes[idx];
+    document.getElementById('panel-stage-name').textContent =
+        node.step_id || node.skill
+        + (node.visit_no > 1 ? ' — visit ' + node.visit_no : '');
 
-    // Render file pills
-    const files = stage.files || [];
+    // Render pills: the stage summary (when the engine published one) leads,
+    // then the curated artifact files (review_files first, else changed files).
+    const files = node.files || [];
+    const hasSummary = !!(node.summary && node.summary.trim());
     const pillsEl = document.getElementById('file-pills');
-    if (files.length > 0) {
-        pillsEl.innerHTML = files.map((f, fi) => {
+    if (files.length > 0 || hasSummary) {
+        let pills = '';
+        if (hasSummary) {
+            pills += `<span class="file-pill" data-summary="1" onclick="selectSummary()">Summary</span>`;
+        }
+        pills += files.map((f, fi) => {
             const activeClass = (fi === 0 && !selectedFilePath) ? ' active' : '';
             return `<span class="file-pill${activeClass}" data-file-idx="${fi}" onclick="selectFile(${fi})">
-                ${esc(f.label)} <span class="file-size">${esc(f.size)}</span>
+                ${esc(f.label)} <span class="file-size">${esc(f.size || '')}</span>
             </span>`;
         }).join('');
-        // Auto-select first file
-        if (!selectedFilePath) selectFile(0);
+        pillsEl.innerHTML = pills;
+        if (!sameStage) {
+            // Fresh stage: lead with the summary, else the first file.
+            if (hasSummary) selectSummary();
+            else selectFile(0);
+        } else {
+            // Live-poll refresh of the stage already on screen: keep the
+            // chosen file if it still exists, else fall back as above.
+            const chosen = files.findIndex(f => f.path === selectedFilePath);
+            if (selectedFilePath === null && hasSummary) selectSummary();
+            else if (chosen >= 0) selectFile(chosen);
+            else if (hasSummary) selectSummary();
+            else selectFile(0);
+        }
     } else {
         pillsEl.innerHTML = '';
-        renderViewerPlaceholder(stage);
+        renderViewerPlaceholder(node);
     }
 
     // Review footer
     const footer = document.getElementById('review-footer');
     const approvedBar = document.getElementById('approved-bar');
-    if (stage.is_awaiting_review && !decisionSubmitted) {
+    if (node.is_awaiting_review && !decisionSubmitted) {
         footer.style.display = '';
         approvedBar.style.display = 'none';
-    } else if (decisionSubmitted && stage.is_awaiting_review) {
+    } else if (decisionSubmitted && node.is_awaiting_review) {
         footer.style.display = 'none';
         approvedBar.style.display = '';
     } else {
@@ -619,15 +918,17 @@ function selectStage(idx) {
 
 function selectFile(idx) {
     if (!runData || selectedStageIdx === null) return;
-    const stage = runData.stages[selectedStageIdx];
-    const files = stage.files || [];
+    const nodes = runData.timeline.nodes || [];
+    const node = nodes[selectedStageIdx];
+    const files = node.files || [];
     if (idx < 0 || idx >= files.length) return;
 
     selectedFilePath = files[idx].path;
 
-    // Update pill highlights
-    document.querySelectorAll('.file-pill').forEach((el, i) => {
-        el.classList.toggle('active', i === idx);
+    // Update pill highlights by data-file-idx (a leading Summary pill would
+    // otherwise shift the DOM index).
+    document.querySelectorAll('.file-pill').forEach(el => {
+        el.classList.toggle('active', Number(el.dataset.fileIdx) === idx);
     });
 
     // Fetch and render file content
@@ -644,34 +945,62 @@ function selectFile(idx) {
         });
 }
 
-function renderViewerPlaceholder(stage) {
-    const el = document.getElementById('viewer-content');
-    const vs = stage.visual_state;
+function selectSummary() {
+    if (!runData || selectedStageIdx === null) return;
+    const nodes = runData.timeline.nodes || [];
+    const node = nodes[selectedStageIdx];
+    selectedFilePath = null;
 
-    if (vs === 'running' || stage.exec_state === 'running') {
+    // Update pill highlights — only the Summary pill stays active
+    document.querySelectorAll('.file-pill').forEach(el => {
+        el.classList.toggle('active', el.dataset.summary === '1');
+    });
+
+    const el = document.getElementById('viewer-content');
+    el.className = 'viewer-body markdown';
+    el.innerHTML = renderMarkdown(node.summary || '');
+}
+
+function renderViewerPlaceholder(node) {
+    const el = document.getElementById('viewer-content');
+    const st = node.state;
+
+    if (st === 'current') {
         el.className = 'viewer-body';
         el.innerHTML = `
             <div class="viewer-placeholder">
                 <div class="spinner"></div>
                 <p>Container running — outputs appear when it completes.</p>
             </div>`;
-    } else if (vs === 'pending') {
+    } else if (st === 'awaiting') {
+        el.className = 'viewer-body';
+        el.innerHTML = `
+            <div class="viewer-placeholder">
+                <p>Waiting on your review — approve or send back below.</p>
+            </div>`;
+    } else if (st === 'pending') {
         el.className = 'viewer-body';
         el.innerHTML = `
             <div class="viewer-placeholder">
                 <p>Not started. Waiting on the stages before it.</p>
             </div>`;
-    } else if (vs === 'failed') {
+    } else if (st === 'failed') {
         el.className = 'viewer-body';
         el.innerHTML = `
             <div class="viewer-placeholder">
-                <p style="color:var(--deep-brown);">This stage failed. Check the stage log for details.</p>
+                <p style="color:var(--deep-brown);">This visit failed${node.reason ? ' — ' + esc(node.reason) : ''}.</p>
+            </div>`;
+    } else if (st === 'cancelled') {
+        el.className = 'viewer-body';
+        el.innerHTML = `
+            <div class="viewer-placeholder">
+                <p style="color:var(--deep-brown);">This visit was cancelled${node.reason ? ' — ' + esc(node.reason) : ''}.</p>
             </div>`;
     } else {
         el.className = 'viewer-body';
         el.innerHTML = `
             <div class="viewer-placeholder">
-                <p>No output files for this stage.</p>
+                <p>No output files for this visit.</p>
             </div>`;
     }
 }
@@ -725,9 +1054,47 @@ function renderViewer(content, viewerType) {
         return;
     }
 
-    // Default doc viewer — simple markdown rendering
-    el.className = 'viewer-card';
-    el.innerHTML = parseDocMarkdown(content);
+    if (viewerType === 'json') {
+        el.className = 'viewer-body json-view';
+        el.innerHTML = renderJson(content);
+        return;
+    }
+
+    if (viewerType === 'code') {
+        el.className = 'viewer-body code-view';
+        el.innerHTML = '<pre>' + esc(content) + '</pre>';
+        return;
+    }
+
+    // Default doc viewer — real markdown rendering (marked)
+    el.className = 'viewer-body markdown';
+    el.innerHTML = renderMarkdown(content);
+}
+
+// Pretty-printed, syntax-tinted JSON. Walks the parsed value and escapes
+// every leaf, so untrusted content can never inject markup.
+function renderJson(content) {
+    function node(val, indent) {
+        const pad = '  '.repeat(indent);
+        if (val === null) return '<span class="json-null">null</span>';
+        if (typeof val === 'boolean') return '<span class="json-boolean">' + val + '</span>';
+        if (typeof val === 'number') return '<span class="json-number">' + val + '</span>';
+        if (typeof val === 'string') return '<span class="json-string">' + esc(JSON.stringify(val)) + '</span>';
+        if (Array.isArray(val)) {
+            if (!val.length) return '[]';
+            return '[\n' + val.map(v => pad + '  ' + node(v, indent + 1)).join(',\n') + '\n' + pad + ']';
+        }
+        const keys = Object.keys(val);
+        if (!keys.length) return '{}';
+        return '{\n' + keys.map(k =>
+            pad + '  <span class="json-key">' + esc(JSON.stringify(k)) + '</span>: ' + node(val[k], indent + 1)
+        ).join(',\n') + '\n' + pad + '}';
+    }
+    try {
+        return '<pre>' + node(JSON.parse(content), 0) + '</pre>';
+    } catch (e) {
+        return '<pre>' + esc(content) + '</pre>';
+    }
 }
 
 function parseDocMarkdown(md) {
@@ -798,12 +1165,32 @@ function parseCommentsMarkdown(md) {
 }
 
 function renderCommentItem(c) {
+    let bodyHtml = esc(c.body.trim());
+    if (window.marked && typeof marked.parseInline === 'function') {
+        try { bodyHtml = marked.parseInline(c.body.trim()); } catch (e) { /* keep escaped */ }
+    }
     return `
         <div class="comment-item">
             <span class="comment-severity sev-${esc(c.severity)}">${esc(c.severity)}</span>
             <span class="comment-location">${esc(c.location)}</span>
-            <div class="comment-body">${esc(c.body.trim())}</div>
+            <div class="comment-body">${bodyHtml}</div>
         </div>`;
+}
+
+// ── Stop run ────────────────────────────────────────────────────
+
+function stopRun() {
+    if (!runData) return;
+    if (!confirm('Stop this run? The engine will kill the current step container and mark the run cancelled.')) return;
+    const btn = document.getElementById('btn-stop-run');
+    if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+    fetch('/api/runs/' + window.BB_RUN_ID + '/cancel', { method: 'POST', headers: authHeaders() })
+        .then(r => { if (!r.ok) return r.json().then(d => { throw new Error(d.detail || 'Stop failed (' + r.status + ')'); }); return r.json(); })
+        .then(() => loadRunDetail())
+        .catch(err => {
+            alert('Could not stop run: ' + err.message);
+            loadRunDetail();   // re-sync the button with the run's real state
+        });
 }
 
 // ── Gate decisions ──────────────────────────────────────────────
