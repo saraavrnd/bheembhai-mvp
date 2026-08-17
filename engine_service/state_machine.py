@@ -31,10 +31,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bheembhai.models.run import Run, Step, Transition
 
 from engine_service.contexts import build_env_bundle, build_step_context
+from engine_service.log_upload import upload_step_logs
 from engine_service.persistence import (RUN_LEVEL_ATTEMPT, RUN_LEVEL_STEP,
                                         record_transition)
 from engine_service.run_init import init_run
-from engine_service.runtime import CANCELLED, Handle, reconcile
+from engine_service.runtime import CANCELLED, Handle, _dump_container_log, reconcile
 from engine_service.workflow import (ExecState, Result, TRANSIENT, PolicySpec,
                                      WorkflowSpec)
 
@@ -95,6 +96,9 @@ def _gate_card(gate: dict, outcome: dict) -> dict:
         "review_files": outcome.get("review_files") or [],
         "next_hint": outcome.get("next_hint"),
         "commit": outcome.get("commit"),
+        "cost_usd": outcome.get("cost_usd"),
+        "cost_reported": bool(outcome.get("cost_reported")),
+        "cost_partial": bool(outcome.get("cost_partial")),
     }
 
 
@@ -154,12 +158,16 @@ async def _publish(publish, event: dict) -> None:
 
 async def drive_run(session: AsyncSession, item, config, runtime,
                     secure_storage, *, publish=None,
-                    cancel_event: asyncio.Event | None = None) -> None:
+                    cancel_event: asyncio.Event | None = None,
+                    store=None) -> None:
     """Advance the run one dispatch. The item's state transitions are the
     worker's job — this never touches them.
 
     cancel_event (stop-run): set by the worker's cancel handler — the loop
-    aborts at the next checkpoint instead of starting new work."""
+    aborts at the next checkpoint instead of starting new work.
+
+    store: the ObjectStorage backend (ADR-011) that receives each attempt's
+    logs. None disables upload (tests, minimal deployments)."""
     run = await session.get(Run, item.run_id)
     if run is None or run.state in TERMINAL_STATES:
         return
@@ -196,7 +204,7 @@ async def drive_run(session: AsyncSession, item, config, runtime,
 
     await _loop(session, ctx, config, runtime, start=start,
                 reviewer_feedback=reviewer_feedback, handoff=handoff,
-                publish=publish, cancel_event=cancel_event)
+                publish=publish, cancel_event=cancel_event, store=store)
 
 
 # ── The step loop ───────────────────────────────────────────────────────
@@ -204,7 +212,8 @@ async def drive_run(session: AsyncSession, item, config, runtime,
 async def _loop(session: AsyncSession, ctx, config, runtime, *, start: str,
                 reviewer_feedback: str = "", handoff: dict | None = None,
                 publish=None,
-                cancel_event: asyncio.Event | None = None) -> None:
+                cancel_event: asyncio.Event | None = None,
+                store=None) -> None:
     """Port of engine.py _loop: run steps, route on verdicts, hand off non-happy
     results — with per-dispatch visit caps and DB-pause gates."""
     wf_spec = ctx.workflow_spec
@@ -265,7 +274,7 @@ async def _loop(session: AsyncSession, ctx, config, runtime, *, start: str,
         verdict, outcome = await _run_step(
             session, ctx, config, runtime, step_id, spec,
             reviewer_feedback=reviewer_feedback, handoff=handoff, publish=publish,
-            cancel_event=cancel_event)
+            cancel_event=cancel_event, store=store)
         if verdict != "advanced":
             return    # paused at a gate, run failed, or cancelled — dispatch ends here
         reviewer_feedback = ""    # consumed by the step that just ran
@@ -279,7 +288,8 @@ async def _loop(session: AsyncSession, ctx, config, runtime, *, start: str,
 async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                     spec: dict, *, reviewer_feedback: str, handoff: dict | None,
                     publish=None,
-                    cancel_event: asyncio.Event | None = None) -> tuple[str, dict | None]:
+                    cancel_event: asyncio.Event | None = None,
+                    store=None) -> tuple[str, dict | None]:
     """Port of engine.py _run_step. Returns ("advanced"|"paused"|"failed"|
     "cancelled", outcome|None). Completion, routing, and any gate pause commit
     atomically — see the module docstring."""
@@ -357,6 +367,12 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
 
         st = outcome.get("status")
 
+        # Capture container output while the container still exists — docker
+        # logs die with it, and the cancel branch below stops it right after.
+        # reconcile already captured on its own kill paths (cancel/timeout);
+        # this covers every other terminal return. Idempotent by design.
+        await _dump_container_log(runtime, h)
+
         # Stop-run: reconcile aborted on the cancel event (in-process), or the
         # DB shows the run cancelled (a cross-engine cancel handler wrote it
         # directly). Either way kill the container NOW — stop() ignores
@@ -369,6 +385,14 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
             row.exec_state = ExecState.FAILED
             row.result_status = CANCELLED
             row.ended_at = datetime.now(timezone.utc)
+            # A cancelled attempt still spent money up to the kill — the
+            # reconciler recovers what the log reported (cost_partial).
+            cost = float(outcome.get("cost_usd") or 0)
+            run.cost_usd = float(run.cost_usd or 0) + cost
+            row.cost_usd = float(row.cost_usd or 0) + cost
+            # The attempt's logs commit atomically with its terminal row —
+            # even a cancelled attempt's partial log is worth keeping.
+            await upload_step_logs(session, run, step_id, attempt, h, store)
             record_transition(session, run.id, ExecState.AWAITING_RESULT, ExecState.FAILED,
                               step_id=step_id, attempt_no=attempt, result_status=CANCELLED,
                               reason="run cancelled while this step was running — container stopped")
@@ -380,6 +404,10 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
         cost = float(outcome.get("cost_usd") or 0)
         run.cost_usd = float(run.cost_usd or 0) + cost
         row.cost_usd = float(row.cost_usd or 0) + cost
+
+        # Log artifacts land in object storage with their reference rows in
+        # the SAME transaction as the step's terminal transition below.
+        await upload_step_logs(session, run, step_id, attempt, h, store)
 
         # Transparency (engine.py 795-816): out-of-vocabulary statuses and ignored
         # hints are recorded, never routed.
@@ -420,11 +448,15 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                           step_id=step_id, attempt_no=attempt, result_status=st,
                           reason=outcome.get("reason"),
                           payload={"summary": outcome.get("summary"),
+                                   "summary_full": outcome.get("summary_full"),
                                    "artifact": outcome.get("artifact"),
                                    "files": outcome.get("files") or [],
                                    "review_files": outcome.get("review_files") or [],
                                    "next_hint": outcome.get("next_hint"),
-                                   "commit": outcome.get("commit")})
+                                   "commit": outcome.get("commit"),
+                                   "cost_usd": outcome.get("cost_usd"),
+                                   "cost_reported": bool(outcome.get("cost_reported")),
+                                   "cost_partial": bool(outcome.get("cost_partial"))})
 
         if st in TRANSIENT and attempt < max_attempts:
             record_transition(session, run.id, to_state, ExecState.RETRYING,

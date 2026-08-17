@@ -21,6 +21,7 @@ logging.getLogger("uvicorn").setLevel(logging.DEBUG)
 
 from bheembhai.config import load_config
 from bheembhai.database import close_database, init_database, run_migrations, seed_default_roles, seed_default_skills, seed_default_workflows
+from bheembhai.providers import build_object_store
 from bheembhai.providers.aws_secrets import AWSSecretsManager
 from bheembhai.providers.aws_ssm import AWSSSMParameterStore
 from bheembhai.providers.cognito import CognitoProvider
@@ -103,6 +104,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "SecureStorage backend '%s' not recognised — secrets API will return 500",
             secure_cfg.backend,
         )
+
+    # ── Wire ObjectStorage provider (ADR-011) ──────────────────
+    # Same backend selection as the engine: both services share the store
+    # (local path under BB_WORKDIR, or the same S3 bucket). The platform only
+    # READS — serve logs from run_logs references, never scan storage.
+    app.state.object_store = build_object_store(config.storage)
+    logger.info("Object storage wired: backend=%s",
+                getattr(app.state.object_store, "backend_name", "?"))
 
     yield
 

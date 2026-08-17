@@ -25,6 +25,104 @@ async def test_reconcile_completed():
     assert outcome["status"] == Result.COMPLETED
     assert outcome["cost_usd"] == 0.01
     assert outcome["summary"] == "design done"
+    # Pre-flag agents (no cost_reported key) still count: a non-zero figure
+    # implies the CLI reported it — real spend never reads "unknown".
+    assert outcome["cost_reported"] is True
+    assert outcome["cost_partial"] is False
+
+
+async def test_reconcile_zero_cost_with_flag_stays_reported():
+    """An explicit cost_reported:true on a $0.00 session is honest reporting,
+    not "unknown" — e.g. a mock run that really did spend nothing."""
+    r = FakeRuntime()
+    h = await r.launch("r1", "design", 1, {})
+    h.result_path.write_text(json.dumps(
+        {"status": "completed", "cost_usd": 0, "cost_reported": True}))
+    outcome = await reconcile(r, h, deadline_s=5)
+    assert outcome["cost_usd"] == 0
+    assert outcome["cost_reported"] is True
+
+
+async def test_reconcile_zero_cost_without_flag_reads_unknown():
+    r = FakeRuntime()
+    h = await r.launch("r1", "design", 1, {})
+    h.result_path.write_text(json.dumps({"status": "completed", "cost_usd": 0}))
+    outcome = await reconcile(r, h, deadline_s=5)
+    assert outcome["cost_usd"] == 0
+    assert outcome["cost_reported"] is False
+
+
+
+async def test_scrape_partial_cost_reads_terminal_result_event(tmp_path):
+    log_path = tmp_path / "agent.log"
+    log_path.write_text(json.dumps({"type": "result", "total_cost_usd": 0.42}) + "\n")
+    assert await rt._scrape_partial_cost(log_path) == 0.42
+
+
+async def test_scrape_partial_cost_last_match_wins(tmp_path):
+    log_path = tmp_path / "agent.log"
+    log_path.write_text(
+        json.dumps({"type": "assistant", "total_cost_usd": 0.10}) + "\n"
+        + json.dumps({"type": "result", "total_cost_usd": 0.99}) + "\n")
+    assert await rt._scrape_partial_cost(log_path) == 0.99
+
+
+async def test_scrape_partial_cost_missing_file_is_none(tmp_path):
+    assert await rt._scrape_partial_cost(tmp_path / "nope.log") is None
+
+
+async def test_scrape_partial_cost_no_cost_event_is_none(tmp_path):
+    log_path = tmp_path / "agent.log"
+    log_path.write_text('{"type": "system", "subtype": "init"}\nnot json\n')
+    assert await rt._scrape_partial_cost(log_path) is None
+
+
+async def test_scrape_partial_cost_rejects_negative(tmp_path):
+    log_path = tmp_path / "agent.log"
+    log_path.write_text(json.dumps({"type": "result", "total_cost_usd": -1.5}) + "\n")
+    assert await rt._scrape_partial_cost(log_path) is None
+
+
+async def test_reconcile_cancel_recovers_partial_cost_from_log():
+    """A kill lands mid-session — whatever the CLI reported before dying must
+    still count, flagged partial (the session would have spent more)."""
+    import asyncio
+    r = FakeRuntime({"design": ["hung"]})
+    h = await r.launch("r1", "design", 1, {})
+    (h.result_path.parent / "agent.log").write_text(
+        json.dumps({"type": "result", "total_cost_usd": 1.25}) + "\n")
+    ev = asyncio.Event()
+    ev.set()
+    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev)
+    assert outcome["status"] == rt.CANCELLED
+    assert outcome["cost_usd"] == 1.25
+    assert outcome["cost_reported"] is True
+    assert outcome["cost_partial"] is True
+
+
+async def test_reconcile_cancel_without_log_marks_cost_unknown():
+    import asyncio
+    r = FakeRuntime({"design": ["hung"]})
+    h = await r.launch("r1", "design", 1, {})
+    ev = asyncio.Event()
+    ev.set()
+    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev)
+    assert outcome["status"] == rt.CANCELLED
+    assert outcome["cost_usd"] == 0
+    assert outcome["cost_reported"] is False
+    assert outcome["cost_partial"] is False
+
+
+async def test_reconcile_timeout_recovers_partial_cost_before_cleanup():
+    r = FakeRuntime({"design": ["hung"]})
+    h = await r.launch("r1", "design", 1, {})
+    (h.result_path.parent / "agent.log").write_text(
+        json.dumps({"type": "result", "total_cost_usd": 0.55}) + "\n")
+    outcome = await reconcile(r, h, deadline_s=0.2)
+    assert outcome["status"] == Result.FAILED_TIMEOUT
+    assert outcome["cost_usd"] == 0.55
+    assert outcome["cost_reported"] is True
+    assert outcome["cost_partial"] is True
 
 
 

@@ -9,6 +9,7 @@ replaces it with flat tier keys (`model_high/medium/low`) on the AI-vendor integ
 
 from dataclasses import dataclass, field
 
+import re
 import yaml
 
 from engine_service.runtime import ExecState, Result, TRANSIENT  # noqa: F401  (re-export)
@@ -146,6 +147,14 @@ def validate_workflow(workflow: WorkflowSpec, known_skills: set[str] | None = No
     for sid, spec in steps.items():
         if not spec.get("skill"):
             problems.append(f"step '{sid}' has no skill")
+        # Step ids become directory names (attempt dirs) and object-store keys
+        # (logs/<run>/<step>/<attempt>/…): keep them to a safe slug charset so
+        # a weird id can never escape its directory or collide after
+        # sanitization. log_keys._slug is the belt-and-braces fallback.
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", sid):
+            problems.append(
+                f"step id '{sid}' is not a safe slug "
+                f"(lowercase a-z, 0-9, dashes, max 64 chars)")
 
     # routing: every on: target resolves to a real step (or route_to / DONE)
     for sid, spec in steps.items():

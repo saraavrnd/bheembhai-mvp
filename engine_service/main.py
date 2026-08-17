@@ -22,6 +22,7 @@ from bheembhai.database import (
     seed_default_skills,
     seed_default_workflows,
 )
+from bheembhai.providers import build_object_store
 from bheembhai.providers.aws_secrets import AWSSecretsManager
 from bheembhai.providers.aws_ssm import AWSSSMParameterStore
 from bheembhai.providers.env_secrets import EnvSecureStorage
@@ -74,12 +75,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         env_forward=ec.env_forward,
     )
     notify_task = notifier.setup_notifier(config)
+    # Object storage (ADR-011): the engine uploads each attempt's logs at
+    # reconcile; the platform reads them back. AWS creds (S3 backend) come
+    # from boto3's default chain — env vars or the EC2 instance role — never
+    # from app config, and never into agent containers.
+    store = build_object_store(config.storage)
     configure_worker(
         runtime=runtime,
         secure_storage=_build_secure_storage(config),
         publish=notifier.publish,
+        store=store,
     )
     logger.info("Runtime wired: %s image=%s workdir=%s", ec.runtime, ec.agent_image, ec.workdir)
+    logger.info("Object storage wired: backend=%s", getattr(store, "backend_name", "?"))
 
     # Crash recovery: re-enqueue stale work before starting the worker loop
     await recover_on_startup(config)

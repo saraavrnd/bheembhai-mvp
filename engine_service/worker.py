@@ -42,11 +42,13 @@ from engine_service.workflow import ExecState, Result
 
 logger = logging.getLogger(__name__)
 
-# Configured once at startup (engine_service.main) — the runtime and SecureStorage
-# backend the dispatches; the optional publish callback fires engine→platform events.
+# Configured once at startup (engine_service.main) — the runtime, SecureStorage,
+# and ObjectStorage backend the dispatches; the optional publish callback fires
+# engine→platform events.
 _runtime = None
 _secure_storage = None
 _publish = None
+_store = None
 
 _run_locks: dict[uuid.UUID, asyncio.Lock] = {}
 _dispatches: set[asyncio.Task] = set()
@@ -82,12 +84,14 @@ def _claim_identity(config: AppConfig) -> str:
     return _process_claim_id
 
 
-def configure_worker(*, runtime, secure_storage, publish=None) -> None:
-    """Wire the runtime + SecureStorage into dispatch tasks (called from lifespan)."""
-    global _runtime, _secure_storage, _publish
+def configure_worker(*, runtime, secure_storage, publish=None, store=None) -> None:
+    """Wire the runtime + SecureStorage + ObjectStorage into dispatch tasks
+    (called from lifespan)."""
+    global _runtime, _secure_storage, _publish, _store
     _runtime = runtime
     _secure_storage = secure_storage
     _publish = publish
+    _store = store
 
 
 def _lock_for(run_id: uuid.UUID) -> asyncio.Lock:
@@ -272,7 +276,8 @@ async def _dispatch_guarded(config: AppConfig, item_id, *,
 
             try:
                 await drive_run(session, item, config, _runtime, _secure_storage,
-                                publish=_publish, cancel_event=cancel_event)
+                                publish=_publish, cancel_event=cancel_event,
+                                store=_store)
             except InitFailure as exc:
                 logger.error("run %s init failed (%s): %s", item.run_id, exc.kind, exc.reason)
                 run = await session.get(Run, item.run_id)

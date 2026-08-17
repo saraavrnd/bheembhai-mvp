@@ -32,8 +32,17 @@ services:
       DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-false}
       AUTH_PROVIDER: ${AUTH_PROVIDER:-cognito}
       COGNITO_REGION: ${COGNITO_REGION:-us-east-1}
-      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      # Object storage (ADR-011): step attempt logs. Dev default "local" needs
+      # no AWS; switch to s3 by setting STORAGE_BACKEND=s3 in .env. AWS creds
+      # (s3 backend) come from boto3's default chain — env vars or the EC2
+      # instance role — and NEVER enter agent containers.
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      # Both services must see the same log tree at the same absolute path
+      # (like BB_WORKDIR): under the workdir bind, so no extra volume needed.
+      LOCAL_STORAGE_PATH: ${LOCAL_STORAGE_PATH:-${BB_WORKDIR:-${PWD}/bb-workdir}/storage}
+      S3_BUCKET: ${S3_BUCKET:-bheembhai-artifacts-dev}
       S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       SECURE_STORAGE_BACKEND: ${SECURE_STORAGE_BACKEND:-env}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       ENGINE_ID: ${ENGINE_ID:-engine-1}

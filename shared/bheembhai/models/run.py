@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (UUID, BigInteger, DateTime, ForeignKey, Integer, Numeric,
-                        String, Text, func)
+                        String, Text, UniqueConstraint, func)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -123,3 +123,37 @@ class Transition(Base):
     ts: Mapped[float] = mapped_column(Numeric, nullable=False)
 
     run: Mapped["Run"] = relationship(back_populates="transitions")
+
+
+class RunLog(Base):
+    """Object-storage reference for one step attempt's log artifact (ADR-011).
+
+    Content lives in object storage under ``logs/<run_id>/<step_id>/<attempt_no>/``
+    (key built by ``bheembhai.log_keys.log_key``). This row is the durable
+    pointer + size: the platform serves logs from it without scanning storage,
+    and the reference commits in the SAME transaction as the step's transition
+    so a crash can never leave an unpointed artifact (re-upload on re-entry is
+    idempotent — the unique constraint dedupes)."""
+    __tablename__ = "run_logs"
+    __table_args__ = (
+        UniqueConstraint("run_id", "step_id", "attempt_no", "kind",
+                         name="uq_run_logs_attempt_kind"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False, index=True
+    )
+    step_id: Mapped[str] = mapped_column(Text, nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    object_key: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc), server_default=func.now()
+    )

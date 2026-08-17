@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import traceback
 from dataclasses import dataclass
@@ -291,6 +292,63 @@ async def read_result(path: Path) -> dict | None:
     return await asyncio.to_thread(_read)
 
 
+_COST_EVENT_RE = re.compile(r'"total_cost_usd"\s*:\s*(-?[0-9.]+)')
+
+
+async def _scrape_partial_cost(log_path: Path) -> float | None:
+    """Best-effort recovery of session spend from ``agent.log`` when the
+    container dies without publishing a result (cancel / timeout / OOM /
+    failed_incomplete). The result event is the terminal stream-json line, so
+    only the tail of the file is scanned and the LAST cost figure wins. A
+    session killed mid-flight usually has no cost event at all -> None — the
+    caller records ``cost_reported: False`` rather than a confident zero.
+    """
+    def _read() -> float | None:
+        try:
+            if not log_path.exists():
+                return None
+            with open(log_path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - 8 * 1024 * 1024))
+                data = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            return None
+        for raw in reversed(_COST_EVENT_RE.findall(data)):
+            try:
+                value = float(raw)
+                if value >= 0:
+                    return value
+            except ValueError:
+                continue
+        return None
+    return await asyncio.to_thread(_read)
+
+
+CONTAINER_LOG_TAIL_LINES = 2000
+CONTAINER_LOG_MAX_BYTES = 512 * 1024  # 512 KB cap on the captured container.log
+
+
+async def _dump_container_log(runtime: Runtime, h: Handle) -> None:
+    """Capture bounded container output into the attempt dir as container.log
+    while the container still exists — docker logs die with the container, and
+    every terminal path (incl. cancel, whose stop() comes after) must read
+    them before removal. Idempotent: an existing non-empty capture (written
+    by reconcile's own kill paths) wins."""
+    target = h.result_path.parent / "container.log"
+    if target.exists() and target.stat().st_size > 0:
+        return
+    logs = await runtime.logs(h, tail=CONTAINER_LOG_TAIL_LINES)
+    if not logs:
+        return
+    data = logs.encode("utf-8", "replace")[-CONTAINER_LOG_MAX_BYTES:]
+    try:
+        target.write_bytes(data)
+    except OSError:
+        log.warning("could not write container.log for container %s",
+                    h.container_id[:12])
+
+
 async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
                     on_progress=None, *, cancel_event: asyncio.Event | None = None) -> dict:
     """Poll until terminal, then classify by joining result + exit status.
@@ -311,7 +369,16 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
     while True:
         if cancel_event is not None and cancel_event.is_set():
             log.warning("reconcile aborted — cancel event set (run cancelled)")
-            return {"status": CANCELLED}
+            # The kill lands mid-session: whatever the CLI reported before the
+            # stop is recoverable from its log and must still count.
+            partial = await _scrape_partial_cost(h.result_path.parent / "agent.log")
+            # The caller's stop() removes the container right after this
+            # returns — this is the last moment its output is readable.
+            await _dump_container_log(runtime, h)
+            return {"status": CANCELLED,
+                    "cost_usd": partial or 0,
+                    "cost_reported": partial is not None,
+                    "cost_partial": partial is not None}
         polls += 1
         try:
             st = await runtime.status(h)
@@ -341,8 +408,12 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
 
         if st["state"] == "gone":
             log.warning("container gone without result -> failed_infra")
+            partial = await _scrape_partial_cost(h.result_path.parent / "agent.log")
             return {"status": Result.FAILED_INFRA,
-                    "reason": "container vanished (OOM / host lost)"}
+                    "reason": "container vanished (OOM / host lost)",
+                    "cost_usd": partial or 0,
+                    "cost_reported": partial is not None,
+                    "cost_partial": partial is not None}
 
         if st["state"] == "exited":
             exited_at = exited_at or time.time()
@@ -351,11 +422,17 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
                 if st["exit_code"] not in (0, None) and status == Result.COMPLETED:
                     status = Result.FAILED_EXECUTION
                 log.info("  -> classified '%s' (exit=%s)", status, st.get("exit_code"))
+                cost_usd = float(payload.get("cost_usd") or 0)
                 return {"status": status,
-                        "cost_usd": float(payload.get("cost_usd") or 0),
+                        "cost_usd": cost_usd,
+                        # Old agent results predate the flag: infer it from a
+                        # non-zero number so real spend never reads "unknown".
+                        "cost_reported": bool(payload.get("cost_reported", cost_usd > 0)),
+                        "cost_partial": bool(payload.get("cost_partial")),
                         "next_hint": payload.get("next"),
                         "artifact": payload.get("artifact"),
                         "summary": payload.get("summary"),
+                        "summary_full": payload.get("summary_full"),
                         "files": payload.get("files") or [],
                         # What the skill wants a human to actually review — a curated subset
                         # (or superset with context files), each optionally annotated. When a
@@ -369,12 +446,24 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
                 continue
             log.warning("  exited (exit=%s) but NO %s at %s -> failed_incomplete",
                         st.get("exit_code"), RESULT_FILENAME, h.result_path)
+            partial = await _scrape_partial_cost(h.result_path.parent / "agent.log")
             return {"status": Result.FAILED_INCOMPLETE,
-                    "reason": f"exited ({st['exit_code']}) without publishing a result"}
+                    "reason": f"exited ({st['exit_code']}) without publishing a result",
+                    "cost_usd": partial or 0,
+                    "cost_reported": partial is not None,
+                    "cost_partial": partial is not None}
 
         if elapsed > deadline_s:
             log.warning("  deadline exceeded (%.1fs > %ss) -> failed_timeout",
                         elapsed, deadline_s)
+            partial = await _scrape_partial_cost(h.result_path.parent / "agent.log")
+            # This branch is the only one where reconcile itself kills the
+            # container — capture its output before cleanup() removes it.
+            await _dump_container_log(runtime, h)
             await runtime.cleanup(h)
-            return {"status": Result.FAILED_TIMEOUT, "reason": f"exceeded {deadline_s}s deadline"}
+            return {"status": Result.FAILED_TIMEOUT,
+                    "reason": f"exceeded {deadline_s}s deadline",
+                    "cost_usd": partial or 0,
+                    "cost_reported": partial is not None,
+                    "cost_partial": partial is not None}
         await asyncio.sleep(POLL_INTERVAL)
