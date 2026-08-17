@@ -63,6 +63,15 @@
     .stage-rail .run-meta .run-elapsed {
         font-size: 11px; color: #8a7a6a; margin-top: 4px;
     }
+    .stage-rail .run-meta .run-cost {
+        font-family: 'JetBrains Mono', monospace; font-size: 14px;
+        font-weight: 700; color: #2a5a3a; margin-top: 8px;
+    }
+    .stage-rail .run-meta .run-cost .run-cost-label {
+        font-family: 'Inter', -apple-system, sans-serif; font-size: 10px;
+        font-weight: 600; color: #8a7a6a; text-transform: uppercase;
+        letter-spacing: 0.04em; margin-right: 4px;
+    }
     .stage-rail .run-meta .run-branch {
         font-family: 'JetBrains Mono', monospace; font-size: 11px;
         color: var(--deep-brown); margin-top: 6px;
@@ -153,6 +162,13 @@
     }
     .stage-info .stage-verdict.warn { background: rgba(224,123,90,0.18); color: var(--terracotta); }
     .stage-info .stage-verdict.fail { background: rgba(139,58,42,0.12); color: var(--deep-brown); }
+    .stage-info .stage-cost {
+        display: inline-block; font-size: 9px; font-weight: 600;
+        padding: 1px 6px; border-radius: 3px; margin-top: 3px;
+        text-transform: uppercase; letter-spacing: 0.04em;
+        background: rgba(46,125,50,0.14); color: #2a5a3a;
+    }
+    .stage-info .stage-cost.unknown { background: rgba(23,43,76,0.08); color: #6b7280; }
     .stage-info .stage-reason {
         font-size: 10px; color: var(--deep-brown); margin-top: 2px;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -164,6 +180,7 @@
         max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
     .stage-info .gate-decision.send-back { background: #fef0eb; color: #8b2a1a; }
+    .stage-info .gate-decision.cancelled { background: #f0efea; color: #6e6a5e; }
     .stage-item.pending-tail { opacity: 0.55; cursor: default; }
     .stage-item.pending-tail:hover { background: transparent; }
 
@@ -225,6 +242,20 @@
         font-size: 14px; color: #3a3a4a; line-height: 1.65;
         font-family: 'Inter', -apple-system, sans-serif;
     }
+    .viewer-source {
+        padding: 6px 24px 0; font-size: 11px; color: #8a8378;
+        letter-spacing: 0.02em; font-family: 'JetBrains Mono', monospace;
+    }
+    .viewer-source-actions {
+        margin: 12px 0 0; padding-top: 10px;
+        border-top: 1px dashed rgba(120,120,140,0.35);
+    }
+    .viewer-source-actions .btn {
+        font-size: 12px; padding: 4px 10px; cursor: pointer;
+        background: rgba(90,130,200,0.10); color: #5a82c8;
+        border: 1px solid rgba(90,130,200,0.35); border-radius: 4px;
+    }
+    .viewer-source-actions .btn:hover { background: rgba(90,130,200,0.18); }
     .viewer-body h4 { font-size: 15px; font-weight: 600; margin: 16px 0 6px; color: #2a2a3a; }
     .viewer-body h4:first-child { margin-top: 0; }
     .viewer-body p { margin: 0 0 8px; }
@@ -432,13 +463,34 @@
         font-weight: 600; cursor: pointer;
     }
 
-    /* Gate info card in rail */
-    .gate-info-card {
-        margin-top: 20px; padding: 10px 12px;
-        background: rgba(224,123,90,0.08); border: 1px solid rgba(224,123,90,0.2);
-        border-radius: 6px; font-size: 11px; color: #8a7a6a;
+    /* ── Inline stage-log view (right output panel, no modal) ── */
+    #log-view {
+        flex: 1; min-height: 0; display: flex; flex-direction: column;
     }
-    .gate-info-card strong { color: var(--terracotta); }
+    .log-tools {
+        display: flex; align-items: center; gap: 10px;
+        /* Inset the controls to the card's 24px content rhythm, so the
+           select/buttons don't sit flush against the panel borders. */
+        margin: 0; padding: 12px 24px 10px;
+    }
+    .log-tools select {
+        padding: 4px 8px; border: 1px solid #d8d2c8; border-radius: 6px;
+        font-size: 12px; background: #fff;
+    }
+    .log-tools .log-size { font-size: 12px; color: #6e7681; }
+    .log-tools .log-refresh {
+        background: #eaeaef; border: none; padding: 6px 12px;
+        border-radius: 6px; font-size: 12px; cursor: pointer;
+    }
+    .log-tools .log-refresh:hover { background: #dfdbe0; }
+    .log-body {
+        flex: 1; overflow: auto; margin: 0 24px; padding: 12px 14px;
+        background: #1e1e2c; color: #d8d8e4; border-radius: 8px;
+        font-family: 'JetBrains Mono', 'Courier New', monospace;
+        font-size: 12px; line-height: 1.5;
+        white-space: pre-wrap; word-break: break-word;
+    }
+    .log-note { margin: 8px 24px 14px; font-size: 12px; color: #a06a3a; }
 
     /* Responsive — small screens fall back to normal document flow
        (fitRunLayout releases the pinned height below 768px too). */
@@ -464,14 +516,10 @@
             <div class="run-id" id="meta-run-id"></div>
             <div class="run-branch" id="meta-branch" style="display:none;"></div>
             <div class="run-elapsed" id="meta-elapsed"></div>
+            <div class="run-cost" id="meta-cost"></div>
             <div class="run-started-by" id="meta-started-by"></div>
         </div>
         <div id="stage-list"></div>
-        <div class="gate-info-card" id="gate-info-card" style="display:none;">
-            <strong>⏸ Review Gates</strong><br>
-            <span id="gate-info-text"></span><br>
-            <a href="#" style="color:var(--terracotta);font-size:11px;" onclick="alert('Policy editing is on the roadmap.')">Change gates →</a>
-        </div>
     </aside>
 
     <!-- ═══ RIGHT: output panel ═══ -->
@@ -487,15 +535,38 @@
                     <button class="btn btn-outline-secondary btn-sm" onclick="alert('Download coming soon.')">
                         <i class="fa fa-download"></i> Download all
                     </button>
-                    <button class="btn btn-outline-secondary btn-sm" onclick="alert('Stage log coming soon.')">
-                        <i class="fa fa-file-text-o"></i> Stage log
+                    <button class="btn btn-outline-secondary btn-sm" id="btn-stage-log"
+                            onclick="openStageLog()" disabled
+                            title="No logs captured for this stage visit">
+                        <i class="fa fa-file-text-o"></i> Logs
                     </button>
                 </div>
             </div>
+            <div class="viewer-source" id="viewer-source" style="display:none;"></div>
             <div class="viewer-body" id="viewer-content">
                 <div class="viewer-placeholder">
                     <p>Select a stage from the left to view its output.</p>
                 </div>
+            </div>
+
+            <!-- Inline stage-log view (object storage, ADR-011): the selected
+                 visit's agent transcript, captured container output, or
+                 pre-run diagnostics — swaps in for the file/summary viewer
+                 while the Logs button is active. -->
+            <div id="log-view" style="display:none;">
+                <div class="log-tools">
+                    <select id="log-kind" onchange="loadStageLog('tail')" title="Which log to view"></select>
+                    <span class="log-size" id="log-size"></span>
+                    <span style="flex:1;"></span>
+                    <button class="log-refresh" onclick="loadStageLog('tail')" title="Re-read the tail">
+                        <i class="fa fa-refresh"></i> Tail
+                    </button>
+                    <button class="log-refresh" onclick="loadStageLog('full')" title="Load the whole log (capped at 20 MB)">
+                        <i class="fa fa-file-text-o"></i> Full
+                    </button>
+                </div>
+                <pre class="log-body" id="log-content">Loading…</pre>
+                <div class="log-note" id="log-note" style="display:none;"></div>
             </div>
         </div>
 
@@ -532,6 +603,7 @@
         </div>
     </div>
 </div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -542,6 +614,16 @@ window.BB_RUN_ID = '{{ run_id }}';
 let runData = null;
 let selectedStageIdx = null;
 let selectedFilePath = null;
+// Identity of the content currently on screen + whether that render succeeded.
+// The 3s poll re-selects the stage under review — content at a visit's commit
+// is immutable, so an identical, healthy render is left alone instead of
+// blinking the spinner and resetting the viewer every tick.
+let lastRenderKey = null;
+let lastRenderOk = false;
+// True while the inline log view (right panel) is showing the selected
+// visit's logs instead of the file/summary viewer. The 3s poll must not
+// yank it — logs at an attempt are immutable.
+let logsViewActive = false;
 let decisionSubmitted = false;
 let userPickedStage = false;   // set once the user clicks a stage themselves
 
@@ -647,6 +729,12 @@ function renderStageRail(run) {
         branchEl.style.display = '';
     }
     document.getElementById('meta-elapsed').textContent = run.elapsed_total || '';
+    // Run-level accumulated spend (engine adds each visit's cost to runs.cost_usd
+    // — including cancelled/partial figures). The per-stage chips carry the
+    // reported-vs-unknown nuance; this header just shows the running total.
+    document.getElementById('meta-cost').innerHTML =
+        '<span class="run-cost-label">Total cost</span>$' +
+        Number(run.cost_usd || 0).toFixed(2);
     document.getElementById('meta-started-by').textContent = run.started_by
         ? 'Started by ' + (run.started_by.display_name || run.started_by.email)
         : '';
@@ -682,15 +770,6 @@ function renderStageRail(run) {
             stopBtn.disabled = false;
             stopBtn.innerHTML = '<i class="fa fa-stop-circle-o"></i> Stop run';
         }
-    }
-
-    // Collect gate info (unique workflow steps, for the policy card)
-    const stages = run.stages || [];
-    const gateSteps = stages.filter(s => s.has_gate).map(s => s.label || s.step_id);
-    if (gateSteps.length > 0) {
-        document.getElementById('gate-info-card').style.display = '';
-        document.getElementById('gate-info-text').textContent =
-            'Pauses at ' + gateSteps.join(' and ') + '.';
     }
 
     // Execution timeline: one node per VISIT in true execution order —
@@ -798,6 +877,17 @@ function renderTimelineNode(node, i, isLast) {
     } else if (st === 'failed' && node.verdict) {
         chips += ' <span class="stage-verdict fail">' + esc(node.verdict) + '</span>';
     }
+    // Per-visit spend, straight from the transition payload the engine persisted.
+    // cost_reported distinguishes "logged $0.00" from "we never saw a number";
+    // partial marks a figure scraped from a killed session's log (under-estimate).
+    if (st !== 'pending' && st !== 'current') {
+        if (node.cost_reported && node.cost_usd != null) {
+            chips += ' <span class="stage-cost">$' + Number(node.cost_usd).toFixed(2)
+                + (node.cost_partial ? ' partial' : '') + '</span>';
+        } else if ((st === 'failed' || st === 'cancelled') && node.verdict && node.verdict !== 'failed_init') {
+            chips += ' <span class="stage-cost unknown">cost unknown</span>';
+        }
+    }
 
     // The visit's failure/cancel reason — what the engine classified, e.g.
     // "could not clone … @ main".
@@ -814,6 +904,10 @@ function renderTimelineNode(node, i, isLast) {
         if (d.action === 'approve') {
             decisionHtml = '<div class="gate-decision">⏸ Approved by ' + esc(d.actor || 'reviewer')
                 + (when ? ' at ' + when : '') + '</div>';
+        } else if (d.action === 'cancel') {
+            decisionHtml = '<div class="gate-decision cancelled">⊘ Cancelled while awaiting review'
+                + (d.actor ? ' by ' + esc(d.actor) : '')
+                + (when ? ' · ' + when : '') + '</div>';
         } else {
             decisionHtml = '<div class="gate-decision send-back">↩ Sent back'
                 + (d.comment ? ' — ' + esc(d.comment) : '')
@@ -854,7 +948,12 @@ function selectStage(idx, fromUser) {
     // the user's file-pill choice; only a stage change resets it.
     const sameStage = selectedStageIdx === idx;
     selectedStageIdx = idx;
-    if (!sameStage) selectedFilePath = null;
+    if (!sameStage) {
+        selectedFilePath = null;
+        // Leaving the stage: the inline log view belongs to the previous
+        // selection — restore the normal viewer before rendering the new one.
+        if (logsViewActive) exitLogView();
+    }
 
     // Update selection highlight
     document.querySelectorAll('.stage-item').forEach((el, i) => {
@@ -865,6 +964,16 @@ function selectStage(idx, fromUser) {
     document.getElementById('panel-stage-name').textContent =
         node.step_id || node.skill
         + (node.visit_no > 1 ? ' — visit ' + node.visit_no : '');
+
+    // Stage-log button: enabled only when the engine recorded log artifacts
+    // for this visit (run_logs references in the poll payload — no storage
+    // probe per poll).
+    const logBtn = document.getElementById('btn-stage-log');
+    const hasLogs = !!(node.has_logs && node.log_kinds && node.log_kinds.length);
+    logBtn.disabled = !hasLogs;
+    logBtn.title = hasLogs
+        ? 'View the agent / container / diagnostics logs for this stage visit'
+        : 'No logs captured for this stage visit';
 
     // Render pills: the stage summary (when the engine published one) leads,
     // then the curated artifact files (review_files first, else changed files).
@@ -887,6 +996,17 @@ function selectStage(idx, fromUser) {
             // Fresh stage: lead with the summary, else the first file.
             if (hasSummary) selectSummary();
             else selectFile(0);
+        } else if (logsViewActive) {
+            // Live-poll refresh while the inline log view is up: the attempt's
+            // logs are immutable, so leave the view alone — just re-apply the
+            // pill highlight (the pills were rebuilt above).
+            const chosen = files.findIndex(f => f.path === selectedFilePath);
+            document.querySelectorAll('.file-pill').forEach(el => {
+                const active = selectedFilePath === null
+                    ? el.dataset.summary === '1'
+                    : Number(el.dataset.fileIdx) === chosen;
+                el.classList.toggle('active', active);
+            });
         } else {
             // Live-poll refresh of the stage already on screen: keep the
             // chosen file if it still exists, else fall back as above.
@@ -899,6 +1019,9 @@ function selectStage(idx, fromUser) {
     } else {
         pillsEl.innerHTML = '';
         renderViewerPlaceholder(node);
+        // No content on screen — nothing to keep alive for the next poll.
+        lastRenderKey = null;
+        lastRenderOk = false;
     }
 
     // Review footer
@@ -923,6 +1046,10 @@ function selectFile(idx) {
     const files = node.files || [];
     if (idx < 0 || idx >= files.length) return;
 
+    // A pill click leaves the inline log view — the file/summary viewer below
+    // renders this selection.
+    if (logsViewActive) exitLogView();
+
     selectedFilePath = files[idx].path;
 
     // Update pill highlights by data-file-idx (a leading Summary pill would
@@ -931,18 +1058,65 @@ function selectFile(idx) {
         el.classList.toggle('active', Number(el.dataset.fileIdx) === idx);
     });
 
-    // Fetch and render file content
+    // Same file already rendered at this visit's commit? Leave it alone —
+    // a re-fetch would blink the spinner and reset the viewer every poll
+    // while a stage sits under review (content is immutable at a commit).
+    const fileKey = (node.step_id || '') + '|' + (node.commit || '') + '|' + selectedFilePath;
+    if (fileKey === lastRenderKey && lastRenderOk) return;
+
+    // Fetch and render file content — ask for this node's recorded commit so
+    // the viewer shows the file as THIS stage left it (git), not the branch's
+    // latest state (local-clone fallback).
     const path = selectedFilePath;
     const viewerType = files[idx].viewer;
+    const stepParam = node.step_id ? '&step_id=' + encodeURIComponent(node.step_id) : '';
+    const commitParam = node.commit ? '&commit=' + encodeURIComponent(node.commit) : '';
 
-    fetch('/api/runs/' + window.BB_RUN_ID + '/file?path=' + encodeURIComponent(path), { headers: authHeaders() })
+    // Git/remote fetches can take a moment — show a spinner while in flight.
+    renderViewerLoading();
+
+    fetch('/api/runs/' + window.BB_RUN_ID + '/file?path=' + encodeURIComponent(path) + stepParam + commitParam, { headers: authHeaders() })
         .then(r => r.json())
         .then(data => {
             renderViewer(data.content, data.viewer || viewerType);
+            renderSourceBadge(data.source, data.commit);
+            lastRenderKey = fileKey;
+            lastRenderOk = true;
         })
         .catch(() => {
+            renderSourceBadge(null);
             renderViewer('# Error\n\nFailed to load file content.', 'doc');
+            // A failed render stays "unhealthy" so the next poll retries.
+            lastRenderKey = fileKey;
+            lastRenderOk = false;
         });
+}
+
+function renderViewerLoading() {
+    // In-flight placeholder: spinner + hidden source badge (a stale badge from
+    // the previous file would be misleading while the new one loads).
+    renderSourceBadge(null);
+    const el = document.getElementById('viewer-content');
+    el.className = 'viewer-body';
+    el.innerHTML = `
+        <div class="viewer-placeholder">
+            <div class="spinner"></div>
+            <p>Fetching file content…</p>
+        </div>`;
+}
+
+function renderSourceBadge(source, commit) {
+    // One muted line above the viewer: which layer served the content.
+    // Cleared (hidden) for the summary and placeholder views.
+    const el = document.getElementById('viewer-source');
+    if (!el) return;
+    let text = '';
+    if (source === 'git') text = 'git @' + esc(commit || '');
+    else if (source === 'clone') text = 'served from local clone';
+    else if (source === 'stub') text = 'demo stub';
+    else if (source === 'full') text = 'full summary';
+    el.style.display = text ? '' : 'none';
+    el.textContent = text;
 }
 
 function selectSummary() {
@@ -951,17 +1125,72 @@ function selectSummary() {
     const node = nodes[selectedStageIdx];
     selectedFilePath = null;
 
+    // Same as selectFile: a pill click leaves the inline log view.
+    if (logsViewActive) exitLogView();
+
     // Update pill highlights — only the Summary pill stays active
     document.querySelectorAll('.file-pill').forEach(el => {
         el.classList.toggle('active', el.dataset.summary === '1');
     });
 
+    // Same guard as selectFile: the published summary at this visit's commit
+    // is immutable, and a poll-driven re-render would also yank a manually
+    // loaded FULL summary back down to the head.
+    const summaryKey = 'summary|' + (node.step_id || '') + '|' + (node.commit || '');
+    if (summaryKey === lastRenderKey && lastRenderOk) return;
+
     const el = document.getElementById('viewer-content');
     el.className = 'viewer-body markdown';
-    el.innerHTML = renderMarkdown(node.summary || '');
+    el.innerHTML = renderMarkdown(node.summary || '') + fullSummaryLink(node);
+    renderSourceBadge(null);
+    lastRenderKey = summaryKey;
+    lastRenderOk = true;
+}
+
+function fullSummaryLink(node) {
+    // Poll payloads carry only the 1500-char head of the agent's summary; the
+    // complete text lives in the DB. Offer an on-demand fetch so a reviewer
+    // never misses the rest — the flag is set server-side when the stored
+    // full text is longer than the polled head.
+    if (!node.has_full_summary) return '';
+    return '<div class="viewer-source-actions">'
+        + '<button class="btn" onclick="loadFullSummary()">Load full summary</button>'
+        + '</div>';
+}
+
+function loadFullSummary() {
+    const nodes = runData.timeline.nodes || [];
+    const node = nodes[selectedStageIdx];
+    const stepParam = 'step_id=' + encodeURIComponent(node.step_id);
+    // The commit pins the fetch to THIS visit of a re-looped step — each
+    // visit stores its own summary_full under its own sha.
+    const commitParam = node.commit ? '&commit=' + encodeURIComponent(node.commit) : '';
+
+    renderViewerLoading();
+    fetch('/api/runs/' + window.BB_RUN_ID + '/summary?' + stepParam + commitParam, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            const el = document.getElementById('viewer-content');
+            el.className = 'viewer-body markdown';
+            el.innerHTML = renderMarkdown(data.summary || '');
+            renderSourceBadge('full', data.commit);
+            // Claim the summary's render key so the next poll's selectSummary
+            // keeps this fuller view instead of reverting to the head.
+            const summaryKey = 'summary|' + (node.step_id || '') + '|' + (node.commit || '');
+            lastRenderKey = summaryKey;
+            lastRenderOk = true;
+        })
+        .catch(() => {
+            renderSourceBadge(null);
+            renderViewer('# Error\n\nFailed to load full summary.', 'doc');
+            // Next poll re-renders the head summary from the payload.
+            lastRenderKey = null;
+            lastRenderOk = false;
+        });
 }
 
 function renderViewerPlaceholder(node) {
+    renderSourceBadge(null);
     const el = document.getElementById('viewer-content');
     const st = node.state;
 
@@ -1250,6 +1479,126 @@ function showSendBackModal() {
 
 function hideSendBackModal() {
     document.getElementById('send-back-modal').style.display = 'none';
+}
+
+// ── Stage-log viewer (inline, right panel) ─────────────────────────
+// The Logs button swaps the file/summary viewer for the selected visit's
+// logs from object storage (ADR-011): the agent transcript, the captured
+// container output, or the pre-run diagnostics — whichever kinds the engine
+// recorded for this attempt. Clicking it again (or any file/summary pill)
+// returns to the stage output.
+
+function logNode() {
+    if (!runData || selectedStageIdx === null) return null;
+    const nodes = runData.timeline.nodes || [];
+    return nodes[selectedStageIdx] || null;
+}
+
+function setLogsButton(active) {
+    const btn = document.getElementById('btn-stage-log');
+    if (!btn) return;
+    if (active) {
+        btn.innerHTML = '<i class="fa fa-arrow-left"></i> Output';
+        btn.title = 'Back to the stage output';
+    } else {
+        btn.innerHTML = '<i class="fa fa-file-text-o"></i> Logs';
+        btn.title = 'View the agent / container / diagnostics logs for this stage visit';
+    }
+}
+
+function exitLogView() {
+    // Hide the inline log view and restore the normal viewer. The caller
+    // renders the content that replaces it (a pill click, a stage change,
+    // or the Logs toggle restoring the previous pill view).
+    logsViewActive = false;
+    setLogsButton(false);
+    document.getElementById('log-view').style.display = 'none';
+    document.getElementById('viewer-content').style.display = '';
+    // Re-show the source badge only if the viewer underneath still carries
+    // one (a guard-skipped render keeps the previous badge text).
+    const srcEl = document.getElementById('viewer-source');
+    srcEl.style.display = srcEl.textContent ? '' : 'none';
+}
+
+function openStageLog() {
+    const node = logNode();
+    if (!node) return;
+    if (logsViewActive) {
+        // Toggle off: back to the pill view for this stage (its content is
+        // either still rendered underneath or re-rendered by the guards).
+        exitLogView();
+        const files = node.files || [];
+        const hasSummary = !!(node.summary && node.summary.trim());
+        const chosen = files.findIndex(f => f.path === selectedFilePath);
+        if (selectedFilePath === null && hasSummary) selectSummary();
+        else if (chosen >= 0) selectFile(chosen);
+        else if (hasSummary) selectSummary();
+        else if (files.length > 0) selectFile(0);
+        else renderViewerPlaceholder(node);
+        return;
+    }
+    if (!(node.log_kinds && node.log_kinds.length)) {
+        alert('No logs were captured for this stage visit.');
+        return;
+    }
+    document.getElementById('log-kind').innerHTML =
+        node.log_kinds.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+    logsViewActive = true;
+    setLogsButton(true);
+    document.getElementById('viewer-content').style.display = 'none';
+    document.getElementById('viewer-source').style.display = 'none';
+    document.getElementById('log-view').style.display = 'flex';
+    loadStageLog('tail');
+}
+
+function loadStageLog(mode) {
+    const node = logNode();
+    if (!node) return;
+    const kind = document.getElementById('log-kind').value;
+    const params = new URLSearchParams({
+        step_id: node.step_id,
+        attempt_no: node.attempt_no,
+        kind: kind,
+        mode: mode,
+    });
+    const box = document.getElementById('log-content');
+    const sizeEl = document.getElementById('log-size');
+    const noteEl = document.getElementById('log-note');
+    box.textContent = 'Loading…';
+    sizeEl.textContent = '';
+    noteEl.style.display = 'none';
+    fetch('/api/runs/' + window.BB_RUN_ID + '/logs?' + params.toString(),
+          { headers: authHeaders() })
+        .then(r => {
+            if (!r.ok) {
+                return r.text().then(t => {
+                    let msg = r.statusText;
+                    try { msg = JSON.parse(t).detail || msg; } catch (e) { /* not JSON */ }
+                    throw new Error(msg);
+                });
+            }
+            return r.json();
+        })
+        .then(d => {
+            sizeEl.textContent = (d.size || 0) > 0
+                ? formatLogSize(d.size) + (d.mode === 'full' ? ' (full)' : ' (tail)')
+                : 'empty';
+            box.textContent = d.content || '(empty log)';
+            if (d.truncated) {
+                noteEl.style.display = '';
+                noteEl.textContent =
+                    'Log exceeds the 20 MB serving cap — showing the most recent portion.';
+            }
+        })
+        .catch(err => {
+            box.textContent = 'Failed to load log: ' + err.message;
+        });
+}
+
+function formatLogSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 function confirmSendBack() {

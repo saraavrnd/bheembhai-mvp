@@ -15,14 +15,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from bheembhai.database import get_session
+from bheembhai.log_keys import KINDS
 from bheembhai.models.project import ProjectIntegration
-from bheembhai.models.run import Run, Step, Transition
+from bheembhai.models.run import Run, RunLog, Step, Transition
 from bheembhai.models.user import Membership, User
 from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.protocols.auth import Identity
 
 from platform_api.dependencies import get_current_enabled_user
+from platform_api.github_content import build_chain, git_fetch_content, resolve_step_sha
 from platform_api.routers._integration_shared import AI_VENDOR_TYPES
 
 if TYPE_CHECKING:
@@ -235,6 +237,50 @@ async def _latest_step_payload(db, run_id, step_id: str) -> dict:
     return {}
 
 
+async def _summary_payloads(db, run_id, step_id: str) -> list[dict]:
+    """Newest-first payloads of a finished step that carry a summary —
+    completion rows carry ``summary_full``, gate-card rows only the truncated
+    ``summary`` (the full text lives on the slightly older completion row)."""
+    stmt = (
+        select(Transition)
+        .where(Transition.run_id == run_id,
+               Transition.step_id == step_id,
+               Transition.to_state.in_(["completed", "awaiting_approval"]))
+        .order_by(Transition.id.desc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    out: list[dict] = []
+    for row in rows:
+        payload = dict(row.payload or {})
+        if "summary" in payload or "summary_full" in payload:
+            out.append(payload)
+    return out
+
+
+def _pick_full_summary(payloads: list[dict], commit: str | None):
+    """Choose the reviewer-visible summary from newest-first payloads.
+
+    Returns ``(text, used_commit, truncated)``. A visit-pinning ``commit``
+    (multi-visit loops store a different SHA per visit) picks that visit's
+    text; otherwise the newest full text wins; otherwise the newest truncated
+    head (pre-feature runs) with ``truncated=True``.
+    """
+    if commit:
+        for p in payloads:
+            if p.get("commit") == commit:
+                full = p.get("summary_full")
+                if full:
+                    return str(full), commit, False
+                return str(p.get("summary") or ""), commit, True
+    for p in payloads:
+        if p.get("summary_full"):
+            return str(p["summary_full"]), p.get("commit"), False
+    for p in payloads:
+        if p.get("summary"):
+            return str(p["summary"]), p.get("commit"), True
+    return None, None, True
+
+
 def _viewer_for_path(path: str) -> str:
     """Viewer type from extension — matches the viewer vocabulary in run_detail.html."""
     lower = path.lower()
@@ -312,15 +358,33 @@ def _gate_decision_from(row) -> dict | None:
     return {"action": action, "actor": row.actor, "comment": comment, "ts": float(row.ts)}
 
 
+def _log_map(log_rows) -> dict:
+    """{(step_id, attempt_no): {"size": total bytes, "kinds": sorted kinds}}
+    from run_logs reference rows — the poll payload's has_logs source."""
+    out: dict = {}
+    for row in log_rows or []:
+        entry = out.setdefault((row.step_id, row.attempt_no), {"size": 0, "kinds": []})
+        entry["size"] += row.size_bytes or 0
+        entry["kinds"].append(row.kind)
+    for entry in out.values():
+        entry["kinds"].sort()
+    return out
+
+
 def _build_timeline(rows, workflow_def: list[dict], gates: dict[str, dict],
-                    run_state: str) -> dict:
+                    run_state: str, log_rows=None) -> dict:
     """Rebuild the true execution path from the transition stream.
 
     Pure over duck-typed transition rows (id-ordered) so the visit-grouping
     logic is unit-testable without a database. Returns
     ``{nodes: [...], current_node_idx}`` — one node per visit in execution
     order, plus unvisited workflow steps as a pending tail.
+
+    ``log_rows``: run_logs reference rows for the run (never content) — each
+    visit node carries has_logs/log_size/log_kinds so the UI can enable the
+    stage-log viewer without probing storage per poll.
     """
+    logs = _log_map(log_rows)
     visits: list[dict] = []
     open_visit: dict | None = None
     by_step: dict[str, int] = {}
@@ -384,6 +448,18 @@ def _build_timeline(rows, workflow_def: list[dict], gates: dict[str, dict],
             decision = _gate_decision_from(row)
             if decision:
                 v["gate_decision"] = decision
+            elif (row.reason or "").startswith("gate closed — run cancelled"):
+                # Stop-run while the gate was open: the engine must close the
+                # awaiting transition with a terminal state and reuses
+                # 'completed' (worker.py _cancel_guarded) — but this is NOT an
+                # approval. Record it as a cancel decision so the visit
+                # renders as cancelled, not as done/completed.
+                v["gate_decision"] = {
+                    "action": "cancel",
+                    "actor": row.actor,
+                    "comment": None,
+                    "ts": float(row.ts),
+                }
             continue
         if (row.to_state in ("completed", "failed")
                 and row.result_status and v["verdict"] is None):
@@ -416,6 +492,12 @@ def _build_timeline(rows, workflow_def: list[dict], gates: dict[str, dict],
             state = "failed"
         elif v["gate_open"] and not v["gate_decision"] and run_state == "paused":
             state = "awaiting"
+        elif (v["gate_open"] and run_state == "cancelled"
+              and v["gate_decision"] and v["gate_decision"].get("action") == "cancel"):
+            # The gate was closed by a stop-run while waiting for review —
+            # the visit's own verdict (completed) stays, but the REVIEW was
+            # cut short, so the stage reads cancelled, not done.
+            state = "cancelled"
         elif run_state == "cancelled" and verdict is None:
             # The visit that was open when the run was cancelled (no step-level
             # verdict row exists — e.g. cancel landed between steps).
@@ -425,6 +507,7 @@ def _build_timeline(rows, workflow_def: list[dict], gates: dict[str, dict],
         else:
             state = "current"
         payload = v["payload"] or {}
+        summary_text = str(payload.get("summary") or "")
         nodes.append({
             "step_id": v["step_id"],
             "label": wf.get("label", v["step_id"]),
@@ -438,11 +521,22 @@ def _build_timeline(rows, workflow_def: list[dict], gates: dict[str, dict],
             "started_ts": v["started_ts"],
             "ended_ts": v["ended_ts"],
             "files": _files_from_payload(payload),
-            "summary": str(payload.get("summary") or ""),
+            "summary": summary_text,
+            # The DB keeps the FULL summary (summary_full); the poll payload
+            # stays light with just the 1500-char head. The flag tells the UI
+            # to offer a "load full summary" fetch instead of sending the
+            # whole text down the wire every poll.
+            "has_full_summary": len(str(payload.get("summary_full") or "")) > len(summary_text),
             "commit": payload.get("commit"),
+            "cost_usd": payload.get("cost_usd"),
+            "cost_reported": bool(payload.get("cost_reported")),
+            "cost_partial": bool(payload.get("cost_partial")),
             "is_awaiting_review": state == "awaiting",
             "gate_decision": v["gate_decision"],
             "attempt_no": v["attempt_no"],
+            "has_logs": (v["step_id"], v["attempt_no"]) in logs,
+            "log_size": logs.get((v["step_id"], v["attempt_no"]), {}).get("size"),
+            "log_kinds": logs.get((v["step_id"], v["attempt_no"]), {}).get("kinds", []),
         })
 
     # Tail: workflow steps that never ran (future nodes, shown pending).
@@ -464,10 +558,17 @@ def _build_timeline(rows, workflow_def: list[dict], gates: dict[str, dict],
             "ended_ts": None,
             "files": [],
             "summary": "",
+            "has_full_summary": False,
             "commit": None,
+            "cost_usd": None,
+            "cost_reported": False,
+            "cost_partial": False,
             "is_awaiting_review": False,
             "gate_decision": None,
             "attempt_no": 0,
+            "has_logs": False,
+            "log_size": None,
+            "log_kinds": [],
         })
 
     current_node_idx = next(
@@ -483,7 +584,10 @@ async def _run_timeline(db, run: Run, workflow_def: list[dict],
         .where(Transition.run_id == run.id)
         .order_by(Transition.id)
     )).scalars().all()
-    return _build_timeline(rows, workflow_def, gates, run.state)
+    log_rows = (await db.execute(
+        select(RunLog).where(RunLog.run_id == run.id)
+    )).scalars().all()
+    return _build_timeline(rows, workflow_def, gates, run.state, log_rows)
 
 
 async def _build_run_detail(db, run: Run, started_by: User | None = None) -> dict:
@@ -1079,10 +1183,19 @@ def _read_artifact(run_id: str, path: str) -> str:
 async def get_run_file(
     run_id: str,
     path: str = Query(..., description="File path within the step"),
+    step_id: str | None = Query(None, description="Step whose commit to read at"),
+    commit: str | None = Query(None, description="Exact commit (validated against run)"),
+    request: Request = None,
     db: "AsyncSession" = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
-    """Get file content for the output viewer. Returns the content and viewer type."""
+    """Get file content for the output viewer. Returns the content and viewer type.
+
+    Fallback chain (see platform_api/github_content.py): git at the step's
+    recorded commit SHA (stage-accurate, when step_id/commit point at one) →
+    local clone tree (copy/demo mode, generated artifacts) → demo stubs →
+    placeholder.
+    """
     if enabled is None:
         raise HTTPException(401, "Authentication required")
 
@@ -1090,24 +1203,132 @@ async def get_run_file(
     if run is None:
         raise HTTPException(404, f"Run {run_id} not found")
 
-    # Real artifacts first: the engine's clone tree under BB_WORKDIR. Stub
-    # content remains only for legacy/demo runs with no engine artifacts.
-    content = _read_artifact(run_id, path)
-    if not content:
-        content = _STUB_FILE_CONTENT.get(path, "")
-        if not content:
-            for key, val in _STUB_FILE_CONTENT.items():
-                if path in key or key in path:
-                    content = val
-                    path = key
-                    break
-    if not content:
-        content = f"# {path}\n\nFile content not available."
+    # Git-at-sha first: the sha is derived server-side from the run's own
+    # transition payloads — a caller-supplied `commit` is only honored when it
+    # matches a recorded one (multi-visit loops have a sha per visit). Skipped
+    # entirely when Secure Storage isn't wired (the chain must never 500).
+    used_commit: str | None = None
+    git_content: str | None = None
+    secure_storage = getattr(request.app.state, "secure_storage", None)
+    if step_id and secure_storage is not None:
+        sha = await resolve_step_sha(db, run_id, step_id, commit)
+        if sha:
+            git_content = await git_fetch_content(
+                db, run, sha, path, secure_storage)
+            if git_content is not None:
+                used_commit = sha
+
+    content, source, resolved_path = build_chain(
+        git_content, _read_artifact(run_id, path), path, _STUB_FILE_CONTENT)
 
     # Determine viewer type from extension (single source of truth)
-    viewer = _viewer_for_path(path)
+    viewer = _viewer_for_path(resolved_path)
 
-    return {"path": path, "viewer": viewer, "content": content}
+    return {"path": resolved_path, "viewer": viewer, "content": content,
+            "source": source, "commit": used_commit}
+
+
+_LOG_FULL_MAX = 20 * 1024 * 1024    # cap on a full log served in one response
+_LOG_TAIL_BYTES = 256 * 1024        # tail mode reads the last 256 KB, then keeps N lines
+_LOG_TAIL_LINES_MAX = 2000
+
+
+def _decode_log(data: bytes) -> str:
+    """Logs are UTF-8 text by convention — decode defensively (control
+    characters from progress spinners must not kill the response)."""
+    return data.decode("utf-8", "replace")
+
+
+@router.get("/{run_id}/logs")
+async def get_run_logs(
+    run_id: str,
+    step_id: str = Query(..., description="Step id of the visit"),
+    attempt_no: int = Query(..., description="Attempt number of the visit"),
+    kind: str = Query(..., description="agent | container | diagnostics"),
+    mode: str = Query("tail", pattern="^(tail|full)$"),
+    lines: int = Query(200, ge=1, le=_LOG_TAIL_LINES_MAX),
+    db: "AsyncSession" = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+    request: Request = None,
+) -> dict:
+    """Serve one attempt's log artifact from object storage (ADR-011).
+
+    ``mode=tail`` reads only the last bytes from storage (ranged read — no
+    full-object download) and returns the last `lines` lines; ``mode=full``
+    returns the whole content up to a 20 MB cap (newest end kept when
+    truncated). The object key ALWAYS comes from the run_logs reference — the
+    store is never scanned and callers can never address arbitrary keys.
+    """
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+    if kind not in KINDS:
+        raise HTTPException(400, f"unknown log kind {kind!r} (valid: {', '.join(KINDS)})")
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+    row = await db.scalar(
+        select(RunLog).where(
+            RunLog.run_id == run.id,
+            RunLog.step_id == step_id,
+            RunLog.attempt_no == attempt_no,
+            RunLog.kind == kind))
+    if row is None:
+        raise HTTPException(
+            404, f"no '{kind}' log for step '{step_id}' attempt {attempt_no}")
+    store = getattr(request.app.state, "object_store", None)
+    if store is None:
+        raise HTTPException(503, "log storage not configured")
+
+    if mode == "full":
+        obj = await store.get(row.object_key)
+        if obj is None:
+            raise HTTPException(404, "log artifact missing from storage (stale reference)")
+        data = obj.data
+        truncated = len(data) > _LOG_FULL_MAX
+        if truncated:
+            data = data[len(data) - _LOG_FULL_MAX:]    # keep the END — newest events
+        return {"kind": kind, "mode": "full", "size": len(data),
+                "truncated": truncated, "content": _decode_log(data)}
+
+    head = await store.head(row.object_key)
+    if head is None:
+        raise HTTPException(404, "log artifact missing from storage (stale reference)")
+    start = max(0, head.size - _LOG_TAIL_BYTES)
+    data = await store.get_range(row.object_key, start, head.size - 1)
+    content = "\n".join(_decode_log(data).splitlines()[-lines:])
+    return {"kind": kind, "mode": "tail", "size": head.size, "lines": lines,
+            "content": content}
+
+
+@router.get("/{run_id}/summary")
+async def get_run_summary(
+    run_id: str,
+    step_id: str = Query(..., description="Step whose summary to return"),
+    commit: str | None = Query(None, description="Visit-pinning commit sha (loops)"),
+    db: "AsyncSession" = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+) -> dict:
+    """The FULL step summary, loaded on demand.
+
+    Poll payloads carry only the 1500-char head (`summary`) so the timeline
+    stays light; the complete text (`summary_full`) is stored in the
+    completion transition's JSONB payload and fetched here when the reviewer
+    clicks "Load full summary". Falls back to the truncated head for steps
+    recorded before this feature existed (`truncated: true`).
+    """
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+
+    payloads = await _summary_payloads(db, run_id, step_id)
+    text, used_commit, truncated = _pick_full_summary(payloads, commit)
+    if text is None:
+        raise HTTPException(404, f"No summary recorded for step {step_id}")
+    return {"run_id": run_id, "step_id": step_id, "commit": used_commit,
+            "summary": text, "truncated": truncated}
 
 
 @router.post("/{run_id}/decision")

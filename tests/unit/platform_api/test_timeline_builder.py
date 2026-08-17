@@ -136,6 +136,57 @@ def test_gate_decision_attaches_to_the_gated_visit():
     assert sd["summary"] == "Story done"
 
 
+def test_gate_closed_by_cancel_renders_cancelled_not_completed():
+    """Stop-run while the gate is open: the engine must close the awaiting
+    transition with a terminal state and reuses 'completed' (worker.py
+    _cancel_guarded) — but that is NOT an approval. The visit's step verdict
+    stays completed (the step did run); its REVIEW was cut short, so the
+    stage renders cancelled with a cancel decision edge."""
+    rows = [
+        _row(step_id="story-design", from_state="pending", to_state="running",
+             ts=100.0, reason="running skill story-design"),
+        _row(step_id="story-design", from_state="awaiting_result", to_state="completed",
+             ts=400.0, result_status="completed", reason="ok",
+             payload={"summary": "Story done", "commit": "abc1234"}),
+        _row(step_id="story-design", from_state="completed", to_state="awaiting_approval",
+             ts=401.0, result_status="completed",
+             payload={"result_status": "completed"}),
+        _row(step_id="story-design", from_state="awaiting_approval", to_state="completed",
+             ts=1000.0, result_status="completed", actor="ksaraav@gmail.com",
+             reason="gate closed — run cancelled by ksaraav@gmail.com", payload=None),
+    ]
+    nodes = _build_timeline(rows, WORKFLOW, GATES, run_state="cancelled")["nodes"]
+    sd = nodes[0]
+    assert sd["state"] == "cancelled"
+    assert sd["verdict"] == "completed"       # the step itself did complete
+    assert sd["is_awaiting_review"] is False
+    assert sd["gate_decision"] == {
+        "action": "cancel", "actor": "ksaraav@gmail.com", "comment": None,
+        "ts": 1000.0,
+    }
+    # The run-level cancel row (no step_id) is skipped; the tail stays pending.
+    assert nodes[-1]["step_id"] == "pr-create"
+    assert nodes[-1]["state"] == "pending"
+
+
+def test_gate_close_by_cancel_only_reads_cancelled_when_run_is_cancelled():
+    """The cancel-close edge is a cancellation marker only in a cancelled run —
+    in any other state the ordinary verdict path wins (defensive)."""
+    rows = [
+        _row(step_id="story-design", from_state="pending", to_state="running", ts=100.0),
+        _row(step_id="story-design", from_state="awaiting_result", to_state="completed",
+             ts=400.0, result_status="completed", reason="ok", payload={"commit": "abc1234"}),
+        _row(step_id="story-design", from_state="completed", to_state="awaiting_approval",
+             ts=401.0, result_status="completed", payload={"result_status": "completed"}),
+        _row(step_id="story-design", from_state="awaiting_approval", to_state="completed",
+             ts=1000.0, result_status="completed", actor="ksaraav@gmail.com",
+             reason="gate closed — run cancelled by ksaraav@gmail.com", payload=None),
+    ]
+    nodes = _build_timeline(rows, WORKFLOW, GATES, run_state="failed")["nodes"]
+    assert nodes[0]["state"] == "done"
+    assert nodes[0]["gate_decision"]["action"] == "cancel"
+
+
 def test_open_gate_marks_the_visit_awaiting_and_pins_it():
     rows = [r for r in _stream() if not (
         r.step_id == "story-design"
@@ -263,3 +314,140 @@ def test_runaway_loop_halt_row_surfaces_as_failed_node():
     assert "runaway loop halted" in halt["reason"]
     # The closed code-review visit keeps its verdict.
     assert nodes[2]["verdict"] == "changes_requested"
+
+
+def _summary_stream(extra_payload=None):
+    payload = {"summary": "head" * 400, "summary_full": "head" * 400 + " tail" * 400,
+               "commit": "abc1234"}
+    if extra_payload:
+        payload.update(extra_payload)
+    return [
+        _row(step_id="story-design", from_state="pending", to_state="running", ts=100.0),
+        _row(step_id="story-design", from_state="running", to_state="completed",
+             ts=400.0, result_status="completed", reason="ok", payload=payload),
+    ]
+
+
+def test_has_full_summary_flag_when_full_outgrows_head():
+    nodes = _build_timeline(_summary_stream(), WORKFLOW, GATES,
+                            run_state="completed")["nodes"]
+    assert nodes[0]["has_full_summary"] is True
+    # The poll payload stays light — only the head rides along.
+    assert nodes[0]["summary"] == "head" * 400
+    assert "summary_full" not in nodes[0]
+    # The pending tail advertises the flag too (the UI reads it unconditionally).
+    assert nodes[-1]["has_full_summary"] is False
+
+
+def test_has_full_summary_false_when_full_missing_or_not_longer():
+    rows = [
+        _row(step_id="story-design", from_state="pending", to_state="running", ts=100.0),
+        _row(step_id="story-design", from_state="running", to_state="completed",
+             ts=400.0, result_status="completed", reason="ok",
+             payload={"summary": "short summary", "commit": "abc1234"}),
+    ]
+    nodes = _build_timeline(rows, WORKFLOW, GATES, run_state="completed")["nodes"]
+    assert nodes[0]["has_full_summary"] is False
+    # Equal length is not "more to load" — no link.
+    nodes2 = _build_timeline(_summary_stream({"summary_full": "same"}),
+                             WORKFLOW, GATES, run_state="completed")["nodes"]
+    assert nodes2[0]["has_full_summary"] is False
+
+
+def test_timeline_node_carries_cost_fields_from_payload():
+    """Per-visit spend rides the poll payload: confident figures pass through,
+    and the UI can tell 'reported $0.00' from 'no number seen'."""
+    nodes = _build_timeline(_summary_stream({"cost_usd": 0.42, "cost_reported": True,
+                                             "cost_partial": False}),
+                            WORKFLOW, GATES, run_state="completed")["nodes"]
+    assert nodes[0]["cost_usd"] == 0.42
+    assert nodes[0]["cost_reported"] is True
+    assert nodes[0]["cost_partial"] is False
+
+
+def test_timeline_node_cost_partial_flag_passes_through():
+    """A cancelled visit's scraped figure is an under-estimate — the partial
+    flag must survive to the UI chip."""
+    nodes = _build_timeline(_summary_stream({"cost_usd": 0.19, "cost_reported": True,
+                                             "cost_partial": True}),
+                            WORKFLOW, GATES, run_state="completed")["nodes"]
+    assert nodes[0]["cost_usd"] == 0.19
+    assert nodes[0]["cost_partial"] is True
+
+
+def test_timeline_node_without_cost_keys_reads_unknown():
+    """Older transition payloads predate the cost fields — the node must still
+    build, with cost_usd None (the UI renders 'cost unknown')."""
+    nodes = _build_timeline(_summary_stream(), WORKFLOW, GATES,
+                            run_state="completed")["nodes"]
+    assert nodes[0]["cost_usd"] is None
+    assert nodes[0]["cost_reported"] is False
+    assert nodes[0]["cost_partial"] is False
+
+
+def test_timeline_pending_tail_defaults_cost_fields():
+    nodes = _build_timeline(_summary_stream(), WORKFLOW, GATES,
+                            run_state="completed")["nodes"]
+    tail = nodes[-1]
+    assert tail["state"] == "pending"
+    assert tail["cost_usd"] is None
+    assert tail["cost_reported"] is False
+    assert tail["cost_partial"] is False
+
+
+def _log_row(**kw):
+    """Duck-typed run_logs reference row (never content)."""
+    base = dict(step_id="story-design", attempt_no=1, kind="agent", size_bytes=1234)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_visit_node_carries_log_availability():
+    log_rows = [
+        _log_row(step_id="story-design", attempt_no=1, kind="agent", size_bytes=100),
+        _log_row(step_id="story-design", attempt_no=1, kind="diagnostics", size_bytes=45),
+        _log_row(step_id="implement", attempt_no=1, kind="container", size_bytes=512),
+    ]
+    nodes = _build_timeline(_stream(), WORKFLOW, GATES, run_state="failed",
+                            log_rows=log_rows)["nodes"]
+    sd = nodes[0]
+    assert sd["has_logs"] is True
+    assert sd["log_size"] == 145
+    assert sd["log_kinds"] == ["agent", "diagnostics"]
+    imp = nodes[1]
+    assert imp["has_logs"] is True
+    assert imp["log_size"] == 512
+    assert imp["log_kinds"] == ["container"]
+    # code-review has no reference rows — the button stays disabled.
+    cr = nodes[2]
+    assert cr["has_logs"] is False
+    assert cr["log_size"] is None
+    assert cr["log_kinds"] == []
+
+
+def test_pending_tail_never_advertises_logs():
+    nodes = _build_timeline(_stream(), WORKFLOW, GATES, run_state="failed",
+                            log_rows=[])["nodes"]
+    tail = nodes[-1]
+    assert tail["state"] == "pending"
+    assert tail["has_logs"] is False
+    assert tail["log_size"] is None
+    assert tail["log_kinds"] == []
+
+
+def test_log_map_aggregates_kinds_and_sizes():
+    from platform_api.routers.runs import _log_map
+    rows = [
+        _log_row(step_id="design", attempt_no=1, kind="agent", size_bytes=10),
+        _log_row(step_id="design", attempt_no=1, kind="container", size_bytes=20),
+        _log_row(step_id="design", attempt_no=2, kind="agent", size_bytes=5),
+    ]
+    m = _log_map(rows)
+    assert m[("design", 1)] == {"size": 30, "kinds": ["agent", "container"]}
+    assert m[("design", 2)] == {"size": 5, "kinds": ["agent"]}
+
+
+def test_log_map_none_and_empty():
+    from platform_api.routers.runs import _log_map
+    assert _log_map(None) == {}
+    assert _log_map([]) == {}
