@@ -19,6 +19,10 @@
         .main-header .navbar { margin-left: 230px; }
 
         /* ── Project selector dropdown in navbar ── */
+        .navbar-project-label {
+            font-size: 12px; font-weight: 600; color: #6e7681;
+            letter-spacing: 0.02em; white-space: nowrap;
+        }
         .navbar-project-dropdown {
             display: flex; align-items: center; gap: 8px;
             color: #e1e4e8; text-decoration: none;
@@ -46,12 +50,15 @@
             display: flex; align-items: center; gap: 4px; margin-left: 16px;
         }
         .navbar-nav-links .nav-pill {
-            color: #b5b5c3; text-decoration: none; padding: 6px 14px;
+            color: #5a5a6e; text-decoration: none; padding: 6px 14px;
             border-radius: 6px; font-size: 13px; font-weight: 500;
             transition: all 0.15s;
         }
-        .navbar-nav-links .nav-pill:hover { color: #ffffff; background: rgba(255,255,255,0.06); }
+        /* The header sits on the light #fafbfd body, so hover must go dark-on-light
+           (white text + white-tinted bg made the pills invisible on hover). */
+        .navbar-nav-links .nav-pill:hover { color: #0052cc; background: rgba(0,0,0,0.04); }
         .navbar-nav-links .nav-pill.active { color: #ffffff; background: #2a62d5; }
+        .navbar-nav-links .nav-pill.active:hover { color: #ffffff; background: #2a62d5; }
         .navbar-nav-links .nav-pill .badge { margin-left: 4px; }
 
         /* ── Logo text ── */
@@ -63,6 +70,7 @@
             .main-header .logo { width: 160px; }
             .main-header .navbar { margin-left: 160px; }
             .navbar-nav-links { display: none; }
+            .navbar-project-label { display: none; }
             #navbar-project-name { display: none; }
         }
     </style>
@@ -91,6 +99,7 @@
                 <ul class="header-megamenu nav">
                     <!-- Project selector (dropdown with role badge) -->
                     <li class="nav-item dropdown d-flex align-items-center">
+                        <span class="navbar-project-label">Choose Project:</span>
                         <a href="#" class="navbar-project-dropdown waves-effect waves-light dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false">
                             <i class="fa fa-folder-open" style="color:#5b9bd5;font-size:14px;"></i>
                             <span id="navbar-project-name">Select project</span>
