@@ -22,6 +22,15 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bheembhai.github import (
+    DEFAULT_GITHUB_API,
+    DEFAULT_GITHUB_URL,
+    GITHUB_API_HEADERS,
+    GitTarget,
+    _api_base_from_host,
+    _clone_base,
+    _slug_from_url,
+)
 from bheembhai.models.project import ProjectIntegration
 from bheembhai.models.run import Run, Step
 from bheembhai.models.skill import Skill
@@ -41,15 +50,6 @@ from engine_service.workflow import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GITHUB_URL = "https://github.com"
-DEFAULT_GITHUB_API = "https://api.github.com"
-
-# GitHub's refs API returns 422 (not a 409) when the ref already exists.
-GITHUB_API_HEADERS = {
-    "Accept": "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-}
-
 
 class InitFailure(Exception):
     """Run init failed with a classified kind. `kind` is one of the run-level
@@ -60,14 +60,6 @@ class InitFailure(Exception):
         super().__init__(reason)
         self.kind = kind
         self.reason = reason
-
-
-@dataclass(frozen=True)
-class GitTarget:
-    """GitHub coordinates derived from an integration config."""
-    api_base: str      # REST base, e.g. https://api.github.com
-    clone_url: str     # what the agent container clones, e.g. https://github.com/o/r.git
-    repository: str    # owner/repo slug for REST paths
 
 
 @dataclass
@@ -103,50 +95,7 @@ def derive_run_branch(story_id: str | None, run_id, *, now: datetime | None = No
 
 
 # ── GitHub coordinates ──────────────────────────────────────────────────
-
-def _split_base(url: str) -> tuple[str, str]:
-    """(scheme, host) of a URL, tolerating missing scheme."""
-    rest = url
-    scheme = "https"
-    if "://" in rest:
-        scheme, rest = rest.split("://", 1)
-    host = rest.split("/", 1)[0]
-    return scheme, host
-
-
-def _api_base_from_host(base: str) -> str:
-    """Pinned API-base rule: github.com → api.github.com; an explicit api host is
-    kept verbatim; any other host is GitHub Enterprise → {host}/api/v3."""
-    scheme, host = _split_base(base)
-    if host in ("github.com", "www.github.com"):
-        return DEFAULT_GITHUB_API
-    if host.startswith("api."):
-        return f"{scheme}://{host}"
-    return f"{scheme}://{host}/api/v3"
-
-
-def _clone_base(config: dict) -> str:
-    """Browser/clone base for the repository URL. Someone pasting the API URL as
-    the integration `url` still gets a cloneable https://github.com base."""
-    base = str(config.get("url") or DEFAULT_GITHUB_URL).strip().rstrip("/")
-    _, host = _split_base(base)
-    if host == "api.github.com":
-        base = DEFAULT_GITHUB_URL
-    return base
-
-
-def _slug_from_url(url: str) -> str:
-    """owner/repo from a full clone URL (https, ssh, or scp-style git@ form)."""
-    rest = url.rstrip("/")
-    if "://" in rest:
-        rest = rest.split("://", 1)[1]
-    if rest.startswith("git@") and ":" in rest:
-        rest = rest.split(":", 1)[1]
-    parts = [p for p in rest.split("/") if p]
-    if len(parts) < 2:
-        return ""
-    return "/".join(parts[-2:]).removesuffix(".git")
-
+# (normalization helpers live in bheembhai.github — shared with the platform)
 
 def compose_git_target(config: dict) -> GitTarget:
     """(api_base, clone_url, repo slug) from a GitHub integration config.
