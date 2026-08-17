@@ -1,6 +1,6 @@
 # ADR-013: Run initialization — engine-owned branch, project-config env bundle, S3 skills
 
-**Status:** Proposed · **Date:** 2026-08-13 · **Deciders:** Saraav
+**Status:** Accepted · **Date:** 2026-08-14 · **Deciders:** Saraav
 **Amends:** `docs/architecture.md` (Run submission, Step execution), `docs/data-model.md` (`runs.run_branch`), `CLAUDE.md` (Git mode)
 
 ## Context
@@ -59,9 +59,11 @@ Seven decisions were locked with the owner:
 
 - The modal lists only integrations with `verified_at IS NOT NULL` ("Test connection
   verified") — enforced in the UI **and** validated server-side (HTTP 422).
-- `source_branch` is **not** user input: it resolves at run creation from the selected GitHub
-  integration's `config.base_branch` (fallback `"main"`) so the NOT NULL column is filled;
-  the engine reads the stored value at init. (Optional override deferred until asked for.)
+- `source_branch` resolves at run creation from an optional per-run override in the run
+  modal (the branch the engine cuts the run branch off), falling back to the selected GitHub
+  integration's `config.base_branch` (then `"main"`) so the NOT NULL column is filled. The
+  platform validates the override with git check-ref-format essentials (HTTP 422) and the
+  engine reads the stored value at init — the run row wins over the live integration config.
 - Platform creates the run row (`state=pending`, `run_branch=NULL`) and INSERTs a
   `work_queue` item (`action=start`, payload `{story_id}`). Everything else the engine
   reads from the DB — the run row is the source of truth for the selections.
@@ -178,6 +180,33 @@ template).
   admin UI or schema.
 - **JSONB for run integration selections (rejected):** explicit FK columns give referential
   integrity and match the existing workflow_id/policy_id convention.
+
+## Implementation notes (BEEM-24, 2026-08-14)
+
+Implemented in the Engine Service (`engine_service/`): decisions §1–§2 (bookkeeper run
+submission, `_init_run` with idempotent GitHub REST branch creation + failure
+classification), §4 (Runtime protocol — `DockerRuntime`), §5 (env bundle with the vendor key
+rule: `claude` → `ANTHROPIC_API_KEY`, others → `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_BASE_URL`),
+and §6–§7 (tier model resolution from integration config, secrets resolved per launch).
+
+Two behaviours settled at implementation time (supersede this ADR where they differ):
+
+- **Gate pause = `runs.state = "paused"`.** The run-level state machine is
+  `pending → running ⇄ paused → completed|failed`. The gated step row keeps
+  `exec_state = "completed"` (the UI renders `is_awaiting_review` from that); the gate card
+  is persisted in the `awaiting_approval` **transition's** JSONB payload so it survives
+  restarts.
+- **Gate decisions are queued, not applied.** `POST /api/runs/{id}/decision` validates
+  `run.state == "paused"` (else 409) and INSERTs a `work_queue` item
+  (`action="continue"`, payload `{action: approve|send_back, send_back_to, comment, actor}`)
+  with **no state mutation**. The engine claims the token and applies the decision; the UI
+  re-poll sees the flip.
+
+**Deferred** (unchanged from the ADR, no new decisions): §3 S3 skill delivery (skills stay
+baked in the agent image — `run_skill.sh` clones a pre-existing `RUN_BRANCH` and only creates
+one when missing), `FargateRuntime` (DockerRuntime is the local-dev runtime;
+`steps.fargate_task_arn` is reused as the generic runtime handle), presigned URLs,
+`model_profiles` table, budget caps.
 
 ## Consequences
 
