@@ -1,6 +1,8 @@
 """Unit tests — runtime protocol + reconcile classification matrix (no Docker needed)."""
 
 import json
+import sys
+import types
 
 import pytest
 
@@ -279,7 +281,14 @@ async def test_launch_clears_stale_result(monkeypatch, tmp_path):
     result file — the reconciler reads its presence as "published" (regression for
     the implement re-loop, where poll #1 saw result_present=True from the stale file
     and a crash-before-publish relaunch could be classified with the old payload)."""
-    monkeypatch.setattr("docker.from_env", lambda **kw: _FakeDockerClient())
+    # DockerRuntime imports docker lazily inside __init__; CI installs only
+    # shared/[dev] (no docker-py), so string-patching `docker.from_env` would make
+    # monkeypatch's resolve() import the real module and fail. Seed a stub instead.
+    docker_stub = types.ModuleType("docker")
+    docker_stub.from_env = lambda **kw: _FakeDockerClient()
+    docker_stub.DockerClient = lambda **kw: _FakeDockerClient()
+    docker_stub.errors = types.SimpleNamespace(NotFound=Exception)
+    monkeypatch.setitem(sys.modules, "docker", docker_stub)
     r = rt.DockerRuntime(image="test-image", workdir=str(tmp_path))
     outdir = tmp_path / "results" / "r1" / "implement" / "1"
     outdir.mkdir(parents=True)
