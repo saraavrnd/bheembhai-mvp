@@ -4,6 +4,9 @@ set -uo pipefail
 # NOTE: bb_step_result.json, not result.json — the PDLC skills use result.json as their own
 # in-repo handoff artifact, so the control plane keeps a separate, unambiguous name.
 RESULT="${RESULT_DIR:-/out}/bb_step_result.json"
+# Workspace mount point — overridable so the script can also run on the host
+# (tests/unit/agent/test_run_skill_reentry.py points it at a temp dir).
+WORKSPACE="${WORKSPACE_DIR:-/workspace}"
 START=$(date +%s)
 emit () {  # status, reason, [next]
   # Build the JSON with ONE jq call from environment variables. The previous version
@@ -13,8 +16,9 @@ emit () {  # status, reason, [next]
   # failed_incomplete even though the work had succeeded.
   BB_STATUS="$1" BB_REASON="${2:-}" BB_NEXT="${3:-}" \
   BB_RUN="${RUN_ID:-}" BB_STEP="${STEP_ID:-}" BB_ATTEMPT="${ATTEMPT_NO:-1}" \
-  BB_SKILL="${SKILL:-}" BB_SUMMARY="${SUMMARY:-}" BB_ARTIFACT="${ARTIFACT:-}" \
-  BB_COST="${COST_USD:-0}" BB_DUR="$(( $(date +%s) - START ))" \
+  BB_SKILL="${SKILL:-}" BB_SUMMARY="${SUMMARY:-}" BB_SUMMARY_FULL="${SUMMARY_FULL:-}" \
+  BB_ARTIFACT="${ARTIFACT:-}" \
+  BB_COST="${COST_USD:-0}" BB_COST_REPORTED="${COST_REPORTED:-0}" BB_DUR="$(( $(date +%s) - START ))" \
   BB_COMMIT="${COMMIT_SHA:-}" BB_MODELS="${MODELS_USED:-}" BB_MODEL_REQ="${BB_MODEL:-}" \
   jq -n --argjson files "${FILES_JSON:-[]}" --argjson review "${REVIEW_JSON:-[]}" '{
         run_id: env.BB_RUN, step_id: env.BB_STEP,
@@ -22,21 +26,30 @@ emit () {  # status, reason, [next]
         skill: env.BB_SKILL, status: env.BB_STATUS,
         reason: env.BB_REASON,
         next: (if env.BB_NEXT == "" then null else env.BB_NEXT end),
-        summary: env.BB_SUMMARY, artifact: env.BB_ARTIFACT,
+        summary: env.BB_SUMMARY, summary_full: env.BB_SUMMARY_FULL,
+        artifact: env.BB_ARTIFACT,
         files: $files, review_files: $review, commit: env.BB_COMMIT,
         models_used: env.BB_MODELS, model_requested: env.BB_MODEL_REQ,
         cost_usd: (env.BB_COST | tonumber? // 0),
+        cost_reported: ((env.BB_COST_REPORTED // "0") == "1"),
         duration_s: (env.BB_DUR | tonumber? // 0)
-      }' > "$RESULT".tmp 2>/dev/null
+      }' > "$RESULT".tmp 2>"$RESULT".err
 
   # Only move into place if it actually parsed — never leave a half-written result.
   if [ -s "$RESULT".tmp ] && jq -e . "$RESULT".tmp >/dev/null 2>&1; then
     mv "$RESULT".tmp "$RESULT"
+    rm -f "$RESULT".err
   else
-    # last-ditch minimal result so the engine always gets a verdict it can read
+    # last-ditch minimal result so the engine always gets a verdict it can read.
+    # But first log WHY the rich emit failed — a silent fallback hides the real bug
+    # (e.g. an invalid --argjson from a corrupted FILES_JSON / REVIEW_JSON).
+    { echo "WARN: rich result emit failed — wrote minimal fallback"
+      echo "  jq stderr: $(head -c 200 "$RESULT".err 2>/dev/null)"
+      echo "  files_json: ${FILES_JSON:-}"
+      echo "  review_json: ${REVIEW_JSON:-}"; } >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
     printf '{"run_id":"%s","step_id":"%s","attempt_no":%s,"status":"%s","summary":"(summary unavailable)","files":[],"cost_usd":%s}\n' \
       "${RUN_ID:-}" "${STEP_ID:-}" "${ATTEMPT_NO:-1}" "$1" "${COST_USD:-0}" > "$RESULT"
-    rm -f "$RESULT".tmp
+    rm -f "$RESULT".tmp "$RESULT".err
   fi
 }
 
@@ -60,7 +73,19 @@ heartbeat_loop () {   # keeps elapsed_s ticking while the agent works
 }
 progress init "starting up"
 [ -n "${SKILL:-}" ] || fail failed_init "no SKILL provided" 2
-[ -d /workspace ]   || fail failed_init "no workspace mounted" 2
+[ -d "$WORKSPACE" ]   || fail failed_init "no workspace mounted" 2
+# Mount sanity: everything below writes to these dirs. If they are not writable
+# the git clone dies with a confusing "could not create work tree dir" and the
+# result file can't be published either — so fail loudly on stderr (survives in
+# docker logs + the engine's log capture) instead of exiting 3 with no trace.
+[ -w "${RESULT_DIR:-/out}" ] || {
+  echo "FATAL: ${RESULT_DIR:-/out} is not writable by $(id -un) — mount perms or BB_WORKDIR path parity" >&2
+  fail failed_init "result dir ${RESULT_DIR:-/out} not writable" 2
+}
+[ -w "$WORKSPACE" ] || {
+  echo "FATAL: $WORKSPACE is not writable by $(id -un)" >&2
+  fail failed_init "$WORKSPACE not writable" 2
+}
 
 # --- INIT (git mode): clone the run branch, creating it from the source branch on step 1 ---
 # The run owns its branch exclusively and steps run sequentially, so there is no concurrent
@@ -75,7 +100,13 @@ if [ "${BB_GIT_MODE:-0}" = "1" ]; then
     AUTH_URL=$(printf '%s' "$GIT_REMOTE_URL" | sed -E "s#https://#https://x-access-token:${GH_TOKEN}@#")
   fi
   progress init "cloning ${RUN_BRANCH}"
-  cd /workspace
+  cd "$WORKSPACE"
+  # Re-entry guard: a previous visit of this step (routing re-loop, gate send-back, or a
+  # crash-recovery relaunch of the same attempt) reuses this workspace dir with its clone
+  # still in place. `git clone` into a non-empty dir fails instantly ("destination path
+  # 'repo' already exists"), so drop the leftover first — the clone below then resumes
+  # from the last pushed state, which is exactly what push-lands-or-retry wants.
+  [ -d "$WORKSPACE/repo" ] && rm -rf "$WORKSPACE/repo"
   # Try the run branch first (steps 2+); if it doesn't exist yet, create it from source.
   if git clone --quiet --single-branch --branch "$RUN_BRANCH" "$AUTH_URL" repo 2>/dev/null; then
     echo "cloned existing run branch $RUN_BRANCH" | tee -a "${RESULT_DIR:-/out}/agent.log"
@@ -90,17 +121,40 @@ if [ "${BB_GIT_MODE:-0}" = "1" ]; then
   fi
   # scrub credentials from the remote so the token never sits in .git/config
   ( cd repo && git remote set-url origin "$GIT_REMOTE_URL" 2>/dev/null || true )
-  # everything below expects the repo at /workspace; point at the clone
-  ln -sfn /workspace/repo /workspace/_repo 2>/dev/null || true
-  WORKDIR_REPO=/workspace/repo
+  # everything below expects the repo at $WORKSPACE; point at the clone
+  ln -sfn "$WORKSPACE/repo" "$WORKSPACE/_repo" 2>/dev/null || true
+  WORKDIR_REPO="$WORKSPACE/repo"
 else
-  WORKDIR_REPO=/workspace
+  WORKDIR_REPO="$WORKSPACE"
 fi
 
+# Test hook: stop after git init — lets the re-entry regression test
+# (tests/unit/agent/test_run_skill_reentry.py) run the real script end-to-end
+# against a local repo without launching Claude Code.
+[ "${BB_STOP_AFTER_INIT:-0}" = "1" ] && exit 0
+
 # --- INIT: make skills discoverable where Claude Code looks (.claude/skills) ---
-# The image ships skills at /skills; Claude loads project skills from $PWD/.claude/skills.
+# Default: the image ships skills at /skills; Claude loads project skills from
+# $PWD/.claude/skills, so symlink the baked library in (unless the repo tracks
+# its own .claude/skills).
+# Project skill overlay: the engine sets BB_SKILLS_DIR=/skills when the run's
+# project has DB-delivered project-scoped skills, and the runtime bind-mounts
+# the materialized library over /skills. The overlay is authoritative — DB
+# project skills shadow platform skills AND beat repo-tracked .claude/skills —
+# so the symlink is forced. The COMMIT block restores tracked .claude before
+# staging so the overlay never lands on the branch.
 mkdir -p "${WORKDIR_REPO}/.claude"
-[ -e "${WORKDIR_REPO}/.claude/skills" ] || ln -sfn /skills "${WORKDIR_REPO}/.claude/skills"
+if [ -n "${BB_SKILLS_DIR:-}" ]; then
+  rm -rf "${WORKDIR_REPO}/.claude/skills"
+  ln -sfn "$BB_SKILLS_DIR" "${WORKDIR_REPO}/.claude/skills"
+else
+  [ -e "${WORKDIR_REPO}/.claude/skills" ] || ln -sfn /skills "${WORKDIR_REPO}/.claude/skills"
+fi
+
+# Test hook: stop after the skills overlay — lets the overlay regression test
+# (tests/unit/agent/test_run_skill_reentry.py) run the real script against a
+# local repo without launching Claude Code.
+[ "${BB_STOP_AFTER_SKILLS:-0}" = "1" ] && exit 0
 
 # --- INIT: install MCP config with runtime credentials substituted ---
 # Written to $HOME/bb-mcp.json (ours alone, passed via --mcp-config) rather than
@@ -178,7 +232,7 @@ DIAG="${RESULT_DIR:-/out}/diagnostics.txt"
   echo "perm_flags_will_be: $( [ "$(id -u)" -ne 0 ] && echo '--dangerously-skip-permissions' || echo '--permission-mode acceptEdits (ROOT FALLBACK)' )"
   echo
   echo "=== credentials present (values redacted) ==="
-  for v in JIRA_URL JIRA_USERNAME JIRA_API_TOKEN GH_TOKEN ANTHROPIC_API_KEY; do
+  for v in JIRA_URL JIRA_USERNAME JIRA_API_TOKEN GH_TOKEN ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN; do
     eval "val=\${$v:-}"
     if [ -n "$val" ]; then
       # last 4 chars only — lets you match the key against the '****UgAA' in a 401 without
@@ -200,7 +254,7 @@ DIAG="${RESULT_DIR:-/out}/diagnostics.txt"
   echo "uvx runnable as this user: $(uvx --help >/dev/null 2>&1 && echo YES || echo NO)"
   echo
   echo "=== workspace writability ==="
-  echo "/workspace writable: $( [ -w /workspace ] && echo YES || echo NO )"
+  echo "$WORKSPACE writable: $( [ -w "$WORKSPACE" ] && echo YES || echo NO )"
   echo "/out writable:       $( [ -w "${RESULT_DIR:-/out}" ] && echo YES || echo NO )"
 } > "$DIAG" 2>&1
 
@@ -208,7 +262,7 @@ DIAG="${RESULT_DIR:-/out}/diagnostics.txt"
   echo
   echo "=== MCP config ==="
   echo "status: ${MCP_STATUS:-unknown}"
-  for f in "${HOME:-/home/node}/bb-mcp.json" /workspace/.mcp.json; do
+  for f in "${HOME:-/home/node}/bb-mcp.json" "$WORKSPACE/.mcp.json"; do
     if [ -f "$f" ]; then
       echo "  $f: present, placeholders_remaining=$(grep -c '\${' "$f" 2>/dev/null || echo 0)"
       echo "    servers: $(jq -r '(.mcpServers // {}) | keys | join(",")' "$f" 2>/dev/null || echo unparseable)"
@@ -244,7 +298,7 @@ if [ "${BB_MOCK:-0}" = "1" ]; then
   case "${BB_MOCK_FORCE:-}" in
     crash) exit 137 ;;
     fail)  fail failed_execution "mock deterministic failure" 1 ;;
-    block) SUMMARY="Tests are not honestly green." COST_USD=0.02 emit BLOCK "mock block" implement; exit 0 ;;
+    block) SUMMARY="Tests are not honestly green." COST_USD=0.02 COST_REPORTED=1 emit BLOCK "mock block" implement; exit 0 ;;
   esac
   ST="${STORY_ID:+ for $STORY_ID}"
   if [ "$GATE_FOLLOWS" = "true" ]; then
@@ -252,7 +306,7 @@ if [ "${BB_MOCK:-0}" = "1" ]; then
   else
     SUMMARY="${SKILL} finished (mock)${ST}."
   fi
-  ARTIFACT="docs/${SKILL}.md" COST_USD=0.0${RANDOM:0:2}
+  ARTIFACT="docs/${SKILL}.md" COST_USD=0.0${RANDOM:0:2} COST_REPORTED=1
   emit completed "mock run"; exit 0
 fi
 
@@ -396,17 +450,63 @@ else
   RC=${PIPESTATUS[0]}
 fi
 kill "$HB_PID" 2>/dev/null || true
+
+# Extract session cost + models IMMEDIATELY — before any classifier can
+# early-exit. Every emit (success OR fail) must carry what the session
+# actually spent: the two real runs that burned $1.30 / $1.52 on deepseek
+# recorded cost 0 because `fail` exits before the old late extraction.
+# Anchored on the terminal result event (always the last stream-json line);
+# modelUsage.*.costUSD is the fallback for a CLI version that drops the
+# aggregate but keeps per-model accounting.
+RC_COST=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
+          jq -r 'select(.type=="result" and .total_cost_usd != null) | .total_cost_usd' 2>/dev/null | tail -1)
+COST_REPORTED=0
+case "$RC_COST" in ''|*[!0-9.]*) : ;; *) COST_USD="$RC_COST"; COST_REPORTED=1 ;; esac
+if [ "$COST_REPORTED" = "0" ]; then
+  RC_COST_SUM=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
+                jq -r 'select(.type=="result") | .modelUsage | values | map(.costUSD) | add' 2>/dev/null | tail -1)
+  case "$RC_COST_SUM" in ''|*[!0-9.]*) : ;; *) COST_USD="$RC_COST_SUM"; COST_REPORTED=1 ;; esac
+fi
+MODELS_USED=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
+              jq -r 'select(.modelUsage != null) | .modelUsage | keys | join(",")' 2>/dev/null | tail -1)
+[ -n "$MODELS_USED" ] && echo "MODELS_USED=$MODELS_USED (requested: ${BB_MODEL:-default})" \
+    >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+
 OUTPUT=$(tail -c 4000 "$LOGFILE" 2>/dev/null || echo "")
 
-# Distinguish WHICH credential failed, so "the step failed" isn't a mystery. These checks read
-# the agent's own error output. Model-auth (Anthropic key) is the most common and shows up as a
-# 401 with model "<synthetic>"; Jira/GitHub failures surface as MCP tool errors; git failures as
-# push/clone errors (already handled in the COMMIT block).
-if grep -qiE '401 Authentication|api key.*invalid|authentication_failed' "$LOGFILE" 2>/dev/null; then
-  fail failed_execution "ANTHROPIC_API_KEY rejected by the model API (401). The key reaching the container is invalid, expired, or doesn't match ANTHROPIC_BASE_URL. This is NOT a Jira or git problem — it's the model credential." 1
+# Distinguish WHICH credential failed, so "the step failed" isn't a mystery. Model-auth
+# (Anthropic/vendor key) is the most common and shows up as a 401; Jira/GitHub failures
+# surface as MCP tool errors; git failures as push/clone errors (handled in the COMMIT block).
+#
+# These checks scan ONLY channels the CLI itself generates, never the whole transcript.
+# Grepping the transcript raw is a false-positive minefield: every repo file and tool
+# result the agent read lands there as one giant JSON line, and docs/code/ticket content
+# routinely contains "api key", "401" and "invalid" text. Two real runs were misclassified
+# failed_execution this way — "api key.*invalid" matched "SendGrid API key" ... "cache
+# entries invalidated" 18 KB apart inside the repo's own architecture.md, and the Jira
+# pattern matched a SUCCESSFUL atlassian tool result (the ticket's own JSON). The
+# classifier exits BEFORE the COMMIT block, so in both cases the step's completed work
+# was discarded uncommitted.
+#
+# Channels: (a) stream-json lines the CLI flagged "is_error":true — failed tool results
+# and the error result payload; (b) the CLI's own stderr (non-JSON lines), consulted
+# only when the run failed, where the CLI prints connection errors rather than content.
+ERRLOG=$(grep -E '"is_error":true' "$LOGFILE" 2>/dev/null | tail -c 8000 || echo "")
+STDERR_TEXT=""
+if [ "$RC" -ne 0 ]; then
+  STDERR_TEXT=$(grep -vE '^\{' "$LOGFILE" 2>/dev/null | tail -c 8000 || echo "")
+  [ -z "$ERRLOG" ] && ERRLOG="$OUTPUT"   # non-streaming output: only the tail is available
 fi
-if grep -qiE 'mcp.*(unauthorized|401|invalid.token)|atlassian.*(401|forbidden)' "$LOGFILE" 2>/dev/null; then
-  fail failed_execution "Jira/Atlassian MCP authentication failed — check JIRA_API_TOKEN / JIRA_USERNAME. (Model auth was fine.)" 1
+if [ -n "$ERRLOG" ]; then
+  if printf '%s' "$ERRLOG" | grep -qiE '401 Authentication|authentication_failed|api[ _-]?key[^"]{0,80}invalid|invalid[^"]{0,80}api[ _-]?key'; then
+    fail failed_execution "Model API rejected the credential (401). The ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN reaching the container is invalid, expired, or doesn't match ANTHROPIC_BASE_URL. This is NOT a Jira or git problem — it's the model credential." 1
+  fi
+  if printf '%s' "$ERRLOG" | grep -qiE 'mcp.*(unauthorized|401|invalid.token)|atlassian.*(401|forbidden)'; then
+    fail failed_execution "Jira/Atlassian MCP authentication failed — check JIRA_API_TOKEN / JIRA_USERNAME. (Model auth was fine.)" 1
+  fi
+fi
+if [ -n "$STDERR_TEXT" ] && printf '%s' "$STDERR_TEXT" | grep -qiE 'failed to connect to mcp server|mcp server .*(error|failed)'; then
+  fail failed_execution "An MCP server failed to connect — check JIRA_API_TOKEN / JIRA_USERNAME / GH_TOKEN. (Model auth was fine.)" 1
 fi
 
 if [ "$RC" -ne 0 ]; then
@@ -423,18 +523,38 @@ FILES_JSON="[]"
 REPO="${WORKDIR_REPO:-/workspace}"
 if [ -d "${REPO}/.git" ]; then
   cd "$REPO"
+  # Project skill overlay: restore whatever .claude content the repo tracks
+  # (the symlink we planted over .claude/skills must never land on the branch),
+  # then let the plumbing filter below run as usual.
+  if [ -n "${BB_SKILLS_DIR:-}" ]; then
+    rm -f .claude/skills 2>/dev/null || true
+    git restore .claude 2>/dev/null || true
+  fi
   # Never commit platform plumbing into the user's branch: the skills symlink and our MCP
-  # config live in the working tree but must not land on their history.
-  git rm -r --cached --quiet .claude 2>/dev/null || true
-  rm -f .mcp.json 2>/dev/null || true
-  printf '.claude/\n.mcp.json\n' >> .gitignore 2>/dev/null || true
+  # config live in the working tree but must not land on their history. If the repo
+  # TRACKS .claude it is the repo's OWN content (some projects version their skills) —
+  # leave it alone; the filter targets only the plumbing our agent injects.
+  if git ls-files --error-unmatch .claude >/dev/null 2>&1; then
+    echo "repo tracks .claude — left intact (not platform plumbing)" \
+        >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+  else
+    git rm -r --cached --quiet .claude 2>/dev/null || true
+    rm -f .mcp.json 2>/dev/null || true
+    printf '.claude/\n.mcp.json\n' >> .gitignore 2>/dev/null || true
+  fi
   git add -A 2>/dev/null
+  # NB: no `|| echo "[]"` fallback here — under `set -o pipefail` a grep with zero matches
+  # makes the whole pipeline exit 1 even when jq succeeded, so the fallback echo would
+  # APPEND a second "[]" to jq's own output ("[]\n[]") and corrupt the JSON (emit's
+  # --argjson then fails downstream). jq -Rn prints `[]` by itself on empty input; the
+  # guard below covers the only remaining failure mode (a jq parse error).
   FILES_JSON=$(git diff --cached --name-status 2>/dev/null | \
     grep -v -E '^[A-Z][[:space:]]+\.claude/' | \
     grep -v -E '^[A-Z][[:space:]]+\.mcp\.json$' | \
     grep -v -E '^[A-Z][[:space:]]+\.gitignore$' | \
     jq -Rn '[inputs | split("\t") | select(length >= 2) |
-             {status: .[0], path: .[-1]}]' 2>/dev/null || echo "[]")
+             {status: .[0], path: .[-1]}]' 2>/dev/null)
+  [ -n "$FILES_JSON" ] || FILES_JSON="[]"
   git -c user.email=agent@bheembhai -c user.name=BheemBhai \
       commit -q -m "${SKILL} (run ${RUN_ID:-} step ${STEP_ID:-})" 2>/dev/null || true
   COMMIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "")
@@ -461,7 +581,8 @@ else
       -not -path '*/.git/*' -not -path '*/.claude/*' -not -path '*/node_modules/*' \
       -not -path '*/.venv/*' -not -path '*/__pycache__/*' -not -path '*/.pytest_cache/*' \
       2>/dev/null | head -50 | \
-      sed "s|^${REPO}/||" | jq -Rn '[inputs | {status:"M", path:.}]' 2>/dev/null || echo "[]")
+      sed "s|^${REPO}/||" | jq -Rn '[inputs | {status:"M", path:.}]' 2>/dev/null)
+  [ -n "$FILES_JSON" ] || FILES_JSON="[]"
 fi
 # Extract a human-readable summary. With --output-format stream-json the log is
 # line-delimited JSON, so pull the final result text rather than raw JSON.
@@ -476,30 +597,25 @@ SUMMARY_FILE="${RESULT_DIR:-/out}/summary.txt"
 
 # The final "result" event is the last line of a completed stream — search backwards
 # through a bounded tail rather than parsing the entire file.
+#
+# IMPORTANT: the agent's reply is MULTI-line text (the BB_OUTCOME / BB_REVIEW protocol
+# lines live inside it). Never pipe jq's raw text output through `tail -1` — that keeps
+# only the LAST line ("BB_OUTCOME: completed"), silently discarding the summary and every
+# BB_REVIEW line. The result event is unique per stream, so no line-trimming is needed.
 tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
-  jq -r 'select(.type=="result") | .result // empty' 2>/dev/null | tail -1 > "$SUMMARY_FILE" || true
+  jq -r 'select(.type=="result") | .result // empty' 2>/dev/null > "$SUMMARY_FILE" || true
 
 if [ ! -s "$SUMMARY_FILE" ]; then
   tail -n 200 "$LOGFILE" 2>/dev/null | grep '^{' | \
     jq -r 'select(.type=="assistant") | .message.content[]? | select(.type=="text") | .text' \
-    2>/dev/null | tail -1 > "$SUMMARY_FILE" || true
+    2>/dev/null | tail -c 4000 > "$SUMMARY_FILE" || true
 fi
 if [ ! -s "$SUMMARY_FILE" ]; then
   tail -c 1000 "$LOGFILE" > "$SUMMARY_FILE" 2>/dev/null || true
 fi
 
-# real cost reported by the agent (also from the tail, not the whole file)
-RC_COST=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
-          jq -r 'select(.total_cost_usd != null) | .total_cost_usd' 2>/dev/null | tail -1)
-case "$RC_COST" in ''|*[!0-9.]*) : ;; *) COST_USD="$RC_COST" ;; esac
-
-# Record the model(s) actually used, so "did the right model run?" is answerable from the
-# result without digging through logs. This is the accountability half of model governance:
-# we enforce via --model, and we record what actually happened.
-MODELS_USED=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
-          jq -r 'select(.modelUsage != null) | .modelUsage | keys | join(",")' 2>/dev/null | tail -1)
-[ -n "$MODELS_USED" ] && echo "MODELS_USED=$MODELS_USED (requested: ${BB_MODEL:-default})" \
-    >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+# (session cost + models were extracted right after the CLI exited — see the
+# EXECUTE block — so every fail path below already carries them in the emit)
 
 # The agent reports its outcome as a BB_OUTCOME line in its reply (never as a file).
 STATUS=$(grep -oE 'BB_OUTCOME:[[:space:]]*[A-Za-z_]+' "$SUMMARY_FILE" 2>/dev/null | tail -1 \
@@ -511,17 +627,26 @@ STATUS=$(grep -oE 'BB_OUTCOME:[[:space:]]*[A-Za-z_]+' "$SUMMARY_FILE" 2>/dev/nul
 # We turn each into {path, note}. This is the curated list the UI shows by default instead
 # of every git-touched file. If the skill emits none, review_files stays [] and the UI falls
 # back to the full changed-file list — so nothing is ever hidden by omission.
+# NB: same pipefail rule as FILES_JSON — no `|| echo "[]"` here, or a grep with zero
+# matches would double jq's own `[]` output and corrupt the JSON.
 REVIEW_JSON=$(grep -oE 'BB_REVIEW:[[:space:]]*.+' "$SUMMARY_FILE" 2>/dev/null | \
   sed -E 's/^BB_REVIEW:[[:space:]]*//' | \
   jq -Rn '[inputs
            | split("|")
-           | {path: (.[0] | gsub("^\\s+|\\s+$";"")),
-              note: (if length > 1 then (.[1] | gsub("^\\s+|\\s+$";"")) else "" end)}
-           | select(.path != "")]' 2>/dev/null || echo "[]")
+           | {path: (.[0] | gsub("^[[:space:]]+|[[:space:]]+$";"")),
+              note: (if length > 1 then (.[1] | gsub("^[[:space:]]+|[[:space:]]+$";"")) else "" end)}
+           | select(.path != "")]' 2>/dev/null)
 [ -n "$REVIEW_JSON" ] || REVIEW_JSON="[]"
 
-# don't show the machine-readable lines to a human reviewer; cap the length
-SUMMARY=$(sed -E '/BB_OUTCOME:[[:space:]]*[A-Za-z_]+/d; /BB_REVIEW:[[:space:]]*/d' \
-          "$SUMMARY_FILE" 2>/dev/null | tail -c 1500)
+# don't show the machine-readable lines to a human reviewer; cap the length.
+# Take the HEAD of the reply — the agent opens with the actual summary (the
+# BB_* protocol lines sit at the end), so tailing would start mid-sentence.
+# The FULL stripped reply rides along as summary_full and lands in the DB, so
+# a reviewer can load the complete summary on demand; the 1500-char head keeps
+# poll payloads light. 64KB cap: env-var transport to jq (env.BB_SUMMARY_FULL)
+# is safe at that size, far below the ~128KB per-var exec limit.
+SUMMARY_FULL=$(sed -E '/BB_OUTCOME:[[:space:]]*[A-Za-z_]+/d; /BB_REVIEW:[[:space:]]*/d' \
+               "$SUMMARY_FILE" 2>/dev/null | head -c 65536)
+SUMMARY=$(printf '%s' "$SUMMARY_FULL" | head -c 1500)
 progress publish "writing result"
 emit "$STATUS" "ok"; exit 0

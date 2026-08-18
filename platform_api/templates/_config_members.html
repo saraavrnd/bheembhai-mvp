@@ -1,0 +1,224 @@
+<!-- ══════════ Configuration sub-tab: Members (project-manager view) ══════════
+     Included by project.html inside #config-panel-members. Lazy-activated via
+     BBConfig.members.activate(); fetches /api/projects/{id}/members*. -->
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title"><i class="fa fa-users me-2"></i>Project Members</h4>
+            </div>
+            <div class="box-body">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Email</th>
+                                <th>Role</th>
+                                <th>Added</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pm-members-tbody">
+                            <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-md-4">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Add Member</h4>
+            </div>
+            <div class="box-body">
+                <form id="pm-add-member-form" onsubmit="BBConfig.members.addMember(event)">
+                    <div class="form-group">
+                        <label class="form-label">User <span class="text-danger">*</span></label>
+                        <select class="form-select" id="pm-new-member-user-id" required>
+                            <option value="">— Select a user —</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Project Role</label>
+                        <select class="form-select" id="pm-new-member-role">
+                            <option value="project_manager">Project Manager</option>
+                            <option value="developer" selected>Developer</option>
+                            <option value="qa">QA Engineer</option>
+                            <option value="devops">DevOps Engineer</option>
+                            <option value="ba">Business Analyst</option>
+                            <option value="tech_lead">Tech Lead</option>
+                            <option value="product_owner">Product Owner</option>
+                            <option value="viewer">Viewer</option>
+                        </select>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="ti-plus"></i> Add Member
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">SDLC Roles</h4>
+            </div>
+            <div class="box-body">
+                <ul class="list-unstyled mb-0">
+                    <li><span class="badge rounded-pill bg-danger me-1">PM</span> Project Manager</li>
+                    <li><span class="badge rounded-pill bg-info me-1">TL</span> Tech Lead</li>
+                    <li><span class="badge rounded-pill bg-success me-1">DEV</span> Developer</li>
+                    <li><span class="badge rounded-pill bg-warning me-1">QA</span> QA Engineer</li>
+                    <li><span class="badge rounded-pill bg-primary me-1">DO</span> DevOps Engineer</li>
+                    <li><span class="badge rounded-pill bg-secondary me-1">BA</span> Business Analyst</li>
+                    <li><span class="badge rounded-pill bg-dark me-1">PO</span> Product Owner</li>
+                    <li><span class="badge rounded-pill bg-light text-dark me-1">V</span> Viewer</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+    const projectId = window.BB_PROJECT_ID;
+
+    const ALL_ROLES = [
+        { key: 'project_manager', label: 'Project Manager' },
+        { key: 'developer', label: 'Developer' },
+        { key: 'qa', label: 'QA Engineer' },
+        { key: 'devops', label: 'DevOps Engineer' },
+        { key: 'ba', label: 'Business Analyst' },
+        { key: 'tech_lead', label: 'Tech Lead' },
+        { key: 'product_owner', label: 'Product Owner' },
+        { key: 'viewer', label: 'Viewer' },
+    ];
+
+    // Reject non-2xx with the server's detail message when present
+    function throwIfError(r) {
+        if (r.ok) return r;
+        return r.text().then(t => {
+            let msg = r.statusText;
+            try { const d = JSON.parse(t); msg = d.detail || msg; } catch (e) { /* not JSON */ }
+            throw new Error(msg);
+        });
+    }
+
+    function loadCandidates() {
+        const select = document.getElementById('pm-new-member-user-id');
+        select.innerHTML = '<option value="">— Select a user —</option>';
+        fetch('/api/projects/' + projectId + '/members/candidates', { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(users => {
+                users.forEach(u => {
+                    const opt = document.createElement('option');
+                    opt.value = u.id;
+                    opt.textContent = u.name + ' (' + u.email + ')';
+                    select.appendChild(opt);
+                });
+            })
+            .catch(() => {
+                select.innerHTML = '<option value="">— Failed to load users —</option>';
+            });
+    }
+
+    function loadMembers() {
+        fetch('/api/projects/' + projectId + '/members', { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(members => {
+                const tbody = document.getElementById('pm-members-tbody');
+                if (!members.length) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No members yet. Add one!</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = members.map(m => `
+                    <tr>
+                        <td><strong>${esc(m.user_name)}</strong></td>
+                        <td>${esc(m.user_email)}</td>
+                        <td><span class="badge rounded-pill bg-info">${esc(m.role.replace(/_/g, ' '))}</span></td>
+                        <td>${m.created_at ? new Date(m.created_at).toLocaleDateString() : ''}</td>
+                        <td>
+                            <select class="form-select form-select-sm d-inline-block w-auto" onchange="BBConfig.members.changeRole('${m.id}', this.value)" style="width:auto;">
+                                <option value="">Change role...</option>
+                                ${ALL_ROLES.map(r => `<option value="${r.key}">${r.label}</option>`).join('')}
+                            </select>
+                            <button class="btn btn-danger btn-sm" onclick="BBConfig.members.removeMember('${m.id}', '${esc(m.user_name)}')">
+                                <i class="ti-trash"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `).join('');
+            })
+            .catch(err => {
+                document.getElementById('pm-members-tbody').innerHTML =
+                    '<tr><td colspan="5" class="text-center text-danger">Failed to load members.</td></tr>';
+            });
+    }
+
+    function addMember(event) {
+        event.preventDefault();
+        const userId = document.getElementById('pm-new-member-user-id').value;
+        const role = document.getElementById('pm-new-member-role').value;
+
+        if (!userId) { alert('Please select a user.'); return; }
+
+        fetch('/api/projects/' + projectId + '/members', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ user_id: userId, role })
+        })
+        .then(throwIfError)
+        .then(() => {
+            document.getElementById('pm-new-member-user-id').value = '';
+            loadMembers();
+        })
+        .catch(err => alert('Error: ' + err.message));
+    }
+
+    function changeRole(membershipId, newRole) {
+        if (!newRole) return;
+        if (!confirm(`Change role to "${newRole}"?`)) return;
+
+        fetch('/api/projects/' + projectId + '/members/' + membershipId, {
+            method: 'PATCH',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ role: newRole })
+        })
+        .then(throwIfError)
+        .then(() => loadMembers())
+        .catch(err => alert('Error: ' + err.message));
+    }
+
+    function removeMember(membershipId, name) {
+        if (!confirm(`Remove "${name}" from this project?`)) return;
+
+        fetch('/api/projects/' + projectId + '/members/' + membershipId, {
+            method: 'DELETE',
+            headers: authHeaders(),
+        })
+        .then(throwIfError)
+        .then(() => loadMembers())
+        .catch(err => alert('Error: ' + err.message));
+    }
+
+    function activate() {
+        loadMembers();
+        loadCandidates();
+    }
+
+    window.BBConfig = window.BBConfig || {};
+    window.BBConfig.members = {
+        activate: activate,
+        loadMembers: loadMembers,
+        addMember: addMember,
+        changeRole: changeRole,
+        removeMember: removeMember,
+    };
+})();
+</script>

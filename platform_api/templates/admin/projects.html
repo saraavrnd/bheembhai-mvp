@@ -1,7 +1,8 @@
 {% extends "admin_base.html" %}
 
 {% block title %}Projects{% endblock %}
-{% block nav_projects %}{% endblock %}
+{% block nav_projects %}active menu-open{% endblock %}
+{% block page_title %}Projects{% endblock %}
 
 {% block breadcrumb %}
 <li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
@@ -58,9 +59,10 @@
                         <input type="text" class="form-control" id="project-name" placeholder="Enter project name" required>
                     </div>
                     <div class="form-group" id="pm-group">
-                        <label class="form-label">Project Manager (User ID — optional)</label>
-                        <input type="text" class="form-control" id="project-pm-id" placeholder="Leave blank to set yourself as PM">
-                        <small class="text-muted">Enter the user's UUID to assign them as Project Manager.</small>
+                        <label class="form-label">Project Manager <span class="text-danger">*</span></label>
+                        <select class="form-select" id="project-pm-id" required>
+                            <option value="">— Select a user —</option>
+                        </select>
                     </div>
                 </form>
             </div>
@@ -90,11 +92,17 @@ function loadProjects() {
                 <tr>
                     <td><strong>${esc(p.name)}</strong></td>
                     <td>${esc(p.owner_name || p.owner_id)}</td>
-                    <td><span class="badge badge-pill badge-info">${p.member_count}</span></td>
+                    <td><span class="badge rounded-pill bg-info">${p.member_count}</span></td>
                     <td>${p.created_at ? new Date(p.created_at).toLocaleDateString() : ''}</td>
                     <td>
                         <a href="/admin/projects/${p.id}/members" class="btn btn-info btn-sm" title="Manage Members">
                             <i class="ti-user"></i> Members
+                        </a>
+                        <a href="/admin/projects/${p.id}/workflows" class="btn btn-success btn-sm" title="Manage Workflows">
+                            <i class="ti-settings"></i> Workflows
+                        </a>
+                        <a href="/admin/projects/${p.id}/integrations" class="btn btn-primary btn-sm" title="Manage Integrations">
+                            <i class="ti-plug"></i> Integrations
                         </a>
                         <button class="btn btn-warning btn-sm" onclick="showEditModal('${p.id}', '${esc(p.name)}')" title="Edit">
                             <i class="ti-pencil"></i>
@@ -111,12 +119,31 @@ function loadProjects() {
         });
 }
 
+function loadUsersIntoDropdown(selectedId) {
+    const select = document.getElementById('project-pm-id');
+    select.innerHTML = '<option value="">— Select a user —</option>';
+    fetch('/api/admin/users')
+        .then(r => r.json())
+        .then(users => {
+            users.forEach(u => {
+                const opt = document.createElement('option');
+                opt.value = u.id;
+                opt.textContent = `${u.display_name} (${u.email})`;
+                if (u.id === selectedId) opt.selected = true;
+                select.appendChild(opt);
+            });
+        })
+        .catch(() => {
+            select.innerHTML = '<option value="">— Failed to load users —</option>';
+        });
+}
+
 function showCreateModal() {
     document.getElementById('projectModalTitle').textContent = 'Create Project';
     document.getElementById('project-id').value = '';
     document.getElementById('project-name').value = '';
-    document.getElementById('project-pm-id').value = '';
     document.getElementById('pm-group').style.display = '';
+    loadUsersIntoDropdown('');
     new bootstrap.Modal(document.getElementById('projectModal')).show();
 }
 
@@ -131,14 +158,16 @@ function showEditModal(id, name) {
 function saveProject() {
     const id = document.getElementById('project-id').value;
     const name = document.getElementById('project-name').value.trim();
-    const pmId = document.getElementById('project-pm-id').value.trim();
+    const pmId = document.getElementById('project-pm-id').value;
 
     if (!name) { alert('Project name is required.'); return; }
 
     const isCreate = !id;
+    if (isCreate && !pmId) { alert('Please select a Project Manager.'); return; }
+
     const url = isCreate ? '/api/admin/projects' : `/api/admin/projects/${id}`;
     const method = isCreate ? 'POST' : 'PATCH';
-    const body = isCreate ? { name, project_manager_id: pmId || null } : { name };
+    const body = isCreate ? { name, project_manager_id: pmId } : { name };
 
     fetch(url, {
         method,

@@ -18,7 +18,7 @@ jobs:
           POSTGRES_PASSWORD: bheembhai
           POSTGRES_DB: bheembhai_test
         ports:
-          - 5432:5432
+          - 5555:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -49,5 +49,5 @@ jobs:
 
       - name: Integration tests
         env:
-          DATABASE_URL: postgresql+asyncpg://bheembhai:bheembhai@localhost:5432/bheembhai_test
+          DATABASE_URL: postgresql+asyncpg://bheembhai:bheembhai@localhost:5555/bheembhai_test
         run: pytest tests/integration/ -v

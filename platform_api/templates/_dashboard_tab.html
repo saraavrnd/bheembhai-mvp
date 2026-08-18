@@ -1,0 +1,508 @@
+<!-- ══════════ Dashboard tab — project overview (waiting band, stat strip, runs table) ══════════
+     Included by project.html. Driven by window.BB_PROJECT_ID; exposes window.BBDash. -->
+
+<div id="bb-loading" class="text-center" style="padding:80px 0;color:#8a7a6a;">
+    <i class="fa fa-spinner fa-spin" style="font-size:18px;display:block;margin-bottom:10px;"></i> Loading dashboard…
+</div>
+
+<div id="bb-content" style="display:none;">
+
+    <!-- Project head: name, role context, preview-as -->
+    <div class="row mb-15">
+        <div class="col-12">
+            <div class="box mb-0">
+                <div class="box-body d-flex align-items-center flex-wrap" style="gap:14px;">
+                    <div class="me-auto">
+                        <h4 class="box-title mb-0" id="bb-project-name">Project</h4>
+                        <div class="fs-12 text-muted mt-5" id="bb-project-meta"></div>
+                    </div>
+                    <div class="d-flex align-items-center">
+                        <span class="fs-12 text-muted me-10 fw-600" title="See this dashboard through another project role's eyes: the waiting cards, the four stat cards and the run state pills re-filter to that role's gate responsibilities. Click the active role again to return to your own view.">PREVIEW AS <i class="fa fa-question-circle"></i></span>
+                        <div class="btn-group btn-group-xs" id="bb-seg"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Waiting on you band -->
+    <div class="row mb-15" id="bb-waiting-band" style="display:none;">
+        <div class="col-12">
+            <div class="box bb-waiting-box mb-0">
+                <div class="box-header with-border">
+                    <h4 class="box-title">
+                        <i class="fa fa-bell"></i> <span id="bb-waiting-n">0</span> waiting on you
+                        <span class="fs-12 fw-400" style="color:#c98d6f;">— clear a gate to unblock a run</span>
+                    </h4>
+                    <div class="box-tools pull-right">
+                        <span class="badge badge-secondary" id="bb-demo-chip" style="display:none;">DEMO DATA</span>
+                    </div>
+                </div>
+                <div class="box-body">
+                    <div class="row" id="bb-waiting-grid"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stat strip: four role-specific numbers -->
+    <div class="row" id="bb-stats"></div>
+
+    <!-- Runs list -->
+    <div class="row">
+        <div class="col-12">
+            <div class="box">
+                <div class="box-header with-border">
+                    <h4 class="box-title">Runs</h4>
+                    <div class="box-tools pull-right">
+                        <div class="btn-group btn-group-xs" id="bb-mine-toggle-group">
+                            <button type="button" class="btn btn-xs" id="bb-mine-toggle">Mine</button>
+                            <button type="button" class="btn btn-xs btn-primary" id="bb-all-toggle">All</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="box-body p-0">
+                    <div class="table-responsive">
+                        <table class="table no-margin bb-runs-table">
+                            <thead>
+                                <tr>
+                                    <th>STORY</th>
+                                    <th>PROGRESS</th>
+                                    <th>STATE</th>
+                                    <th>UPDATED</th>
+                                    <th class="text-end">ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody id="bb-runs"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    /* ════════════════════ Role configuration (mockup source of truth) ════════════════════ */
+    const ROLE_CONFIGS = {
+        project_manager: {
+            short: 'PM', label: 'Project Manager', gates: null, // gates everything
+            stats: [
+                { label: 'AWAITING REVIEW', sub: 'clear a gate to unblock', src: 'awaiting', tint: 'bg-primary-light' },
+                { label: 'RUNS THIS WEEK', sub: '4 sent back', src: 'runsWeek', tint: 'bg-info-light' },
+                { label: 'MEDIAN RUN', sub: '11m of it waiting on humans', src: 'demo:11m', tint: 'bg-success-light' },
+                { label: 'CONFIG WARN.', sub: 'DeepSeek token, loop cap', src: 'demo:2', tint: 'bg-warning-light' },
+            ],
+        },
+        business_analyst: {
+            short: 'BA', label: 'Business Analyst', gates: ['story-design'],
+            stats: [
+                { label: 'WAITING ON YOU', sub: 'story gates to clear', src: 'awaiting', tint: 'bg-primary-light' },
+                { label: 'YOU APPROVED', sub: 'stories accepted', src: 'demo:5', tint: 'bg-info-light' },
+                { label: 'YOU SENT BACK', sub: 'stories returned', src: 'demo:2', tint: 'bg-success-light' },
+                { label: 'RUNS IN FLIGHT', sub: 'stories being built', src: 'inflight', tint: 'bg-warning-light' },
+            ],
+        },
+        developer: {
+            short: 'Dev', label: 'Developer', gates: ['code-review'],
+            stats: [
+                { label: 'WAITING ON YOU', sub: 'code-review gates', src: 'awaiting', tint: 'bg-primary-light' },
+                { label: 'DIFFS REVIEWED', sub: 'this week', src: 'demo:7', tint: 'bg-info-light' },
+                { label: 'SENT BACK', sub: 'with feedback', src: 'demo:3', tint: 'bg-success-light' },
+                { label: 'YOUR RUNS', sub: 'started this week', src: 'runsWeek', tint: 'bg-warning-light' },
+            ],
+        },
+        qa: {
+            short: 'QA', label: 'QA Engineer', gates: ['test-verify'],
+            stats: [
+                { label: 'WAITING ON YOU', sub: 'test-verify gates', src: 'awaiting', tint: 'bg-primary-light' },
+                { label: 'SUITES VERIFIED', sub: 'this week', src: 'demo:9', tint: 'bg-info-light' },
+                { label: 'HONEST-GREEN BLOCKS', sub: 'you flagged', src: 'demo:2', tint: 'bg-success-light' },
+                { label: 'FLAKY RERUNS', sub: 'this week', src: 'demo:4', tint: 'bg-warning-light' },
+            ],
+        },
+        devops: {
+            short: 'DevOps', label: 'DevOps Engineer', gates: ['pr-create'],
+            stats: [
+                { label: 'WAITING ON YOU', sub: 'pr-create gates', src: 'awaiting', tint: 'bg-primary-light' },
+                { label: 'PRS OPENED', sub: 'this week', src: 'demo:6', tint: 'bg-info-light' },
+                { label: 'CONTAINER FAILURES', sub: 'this week', src: 'demo:1', tint: 'bg-success-light' },
+                { label: 'AVG RUNTIME', sub: 'per run', src: 'demo:9m', tint: 'bg-warning-light' },
+            ],
+        },
+        viewer: {
+            short: 'Viewer', label: 'Viewer', gates: [],
+            stats: [
+                { label: 'RUNS IN FLIGHT', sub: 'right now', src: 'inflight', tint: 'bg-primary-light' },
+                { label: 'COMPLETED', sub: 'all time', src: 'completed', tint: 'bg-info-light' },
+                { label: 'AWAITING OTHERS', sub: 'gates pending', src: 'awaitingAll', tint: 'bg-success-light' },
+                { label: 'LAST RUN', sub: 'updated', src: 'lastRun', tint: 'bg-warning-light' },
+            ],
+        },
+    };
+    // Alias the seeded 'ba' role key to the business-analyst config
+    ROLE_CONFIGS['ba'] = ROLE_CONFIGS['business_analyst'];
+    // Fixed segment order — keeps the preview-as strip stable (the alias adds a key)
+    const ROLE_SEG_ORDER = ['project_manager', 'business_analyst', 'developer', 'qa', 'devops', 'viewer'];
+
+    /* Demo content — shown only when the project has no real data yet (engine integration pending). */
+    const STEP_GATE_ROLES = { 'story-design': 'BA', 'code-review': 'Dev', 'test-verify': 'QA', 'pr-create': 'DevOps' };
+    const DEMO_STORY_TITLES = {
+        'STORY-142': 'SSO Login via Okta',
+        'STORY-138': 'Batch retry policy for webhooks',
+        'STORY-131': 'Rate limiter for /v1/reports',
+        'STORY-129': 'Dependency audit & PR',
+    };
+    const DEMO_WAITING = [
+        { story: 'STORY-142', step: 'story-design', status: 'BLOCK', files: 2, wait: '3h 18m' },
+        { story: 'STORY-138', step: 'code-review', status: 'changes_requested', files: 2, wait: '1h 02m' },
+        { story: 'STORY-131', step: 'test-verify', status: 'BLOCK', files: 1, wait: '26m' },
+        { story: 'STORY-129', step: 'pr-create', status: 'completed', files: 1, wait: '8m' },
+    ];
+
+    /* ════════════════════ State (authHeaders/esc come from user_base) ════════════════════ */
+    const state = {
+        user: null,
+        projectId: window.BB_PROJECT_ID,
+        realRole: null,
+        previewRole: null,   // null = use the real role
+        overview: null,
+        runs: [],
+        dataMode: 'real',    // 'demo' when fallback content is on screen
+    };
+
+    function currentRole() { return state.previewRole || state.realRole; }
+    function roleConfig() { return ROLE_CONFIGS[currentRole()] || fallbackConfig(currentRole()); }
+    function fallbackConfig(role) {
+        return {
+            short: (role || '?').slice(0, 2).toUpperCase(), label: role || 'Unknown', gates: [],
+            stats: [{ label: 'RUNS', sub: 'in this project', src: 'awaitingAll', tint: 'bg-primary-light' }],
+        };
+    }
+    function storyTitle(storyId) { return DEMO_STORY_TITLES[storyId] || storyId; }
+    function toast(msg) {
+        const el = document.createElement('div');
+        el.className = 'bb-toast';
+        el.textContent = msg;
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 3200);
+    }
+    function $id(id) { return document.getElementById(id); }
+
+    /* ════════════════════ Waiting-on-you computation ════════════════════ */
+    function roleGatesStep(cfg, step) {
+        if (cfg.gates === null) return true;          // PM gates everything
+        return (cfg.gates || []).includes(step);
+    }
+    function waitingItems() {
+        const cfg = roleConfig();
+        state.dataMode = 'real';
+        const items = [];
+
+        // Real paused runs first
+        for (const run of state.runs) {
+            if (run.needs_review && run.gate && roleGatesStep(cfg, run.gate.gate_step)) {
+                items.push({
+                    story: run.story_id, title: storyTitle(run.story_id),
+                    step: run.gate.gate_label || run.gate.gate_step,
+                    status: run.gate.gate_status || 'completed',
+                    files: run.gate.gate_file_count || 0,
+                    wait: run.elapsed || 'just now',
+                    runId: run.id, real: true,
+                });
+            }
+        }
+        // Demo fallback when nothing real exists yet
+        if (items.length === 0 && cfg.gates && cfg.gates.length > 0) {
+            for (const d of DEMO_WAITING) {
+                if (roleGatesStep(cfg, d.step)) {
+                    items.push({ story: d.story, title: storyTitle(d.story), step: d.step, status: d.status, files: d.files, wait: d.wait, runId: null, real: false });
+                }
+            }
+            if (items.length) state.dataMode = 'demo';
+        }
+        return items;
+    }
+
+    /* ════════════════════ Render: project head + preview-as ════════════════════ */
+    function renderHead() {
+        const ov = state.overview || {};
+        const p = ov.project || {};
+        const members = (ov.member_count || 0) + (ov.member_count === 1 ? ' member' : ' members');
+        const wfs = (ov.workflow_names || []).length ? (ov.workflow_names || []).join(', ') : 'no workflow';
+        const pols = (ov.policy_names || []).length ? (ov.policy_names || []).join(', ') : 'no policy';
+
+        $id('bb-project-name').textContent = p.name || 'Project';
+        $id('bb-project-meta').innerHTML =
+            (state.previewRole
+                ? 'Viewing as <strong class="text-primary">' + esc(currentRole()) + '</strong>'
+                : 'You are <strong class="text-primary">' + esc(currentRole()) + '</strong> here') +
+            ' · ' + esc(members) + ' · ' + esc(wfs) + ' · ' + esc(pols);
+
+        const seg = $id('bb-seg');
+        seg.innerHTML = ROLE_SEG_ORDER.map(key => {
+            const cfg = ROLE_CONFIGS[key];
+            if (!cfg) return '';
+            const title = state.previewRole === key
+                ? cfg.label + ' (previewing — click again for your own view)'
+                : cfg.label;
+            return '<button type="button" class="btn btn-xs' + (key === currentRole() ? ' btn-primary' : '') + '" data-role="' + key + '" title="' + esc(title) + '">' + esc(cfg.short) + '</button>';
+        }).join('');
+        seg.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Clicking the role you're already previewing returns you to your real role
+                state.previewRole = (state.previewRole === btn.dataset.role) ? null : btn.dataset.role;
+                renderAll();
+            });
+        });
+    }
+
+    /* ════════════════════ Render: waiting band ════════════════════ */
+    function renderWaitingBand() {
+        const items = waitingItems();
+        const band = $id('bb-waiting-band');
+        if (!items.length) { band.style.display = 'none'; return; }
+        band.style.display = '';
+
+        $id('bb-waiting-n').textContent = items.length;
+        $id('bb-demo-chip').style.display = state.dataMode === 'demo' ? '' : 'none';
+
+        $id('bb-waiting-grid').innerHTML = items.map(it =>
+            '<div class="col-lg-6 col-12 mb-10">' +
+                '<div class="bb-waiting-card">' +
+                    '<div class="d-flex align-items-center" style="gap:12px;">' +
+                        '<div class="flex-grow-1">' +
+                            '<span class="bb-story-chip">' + esc(it.story) + '</span>' +
+                            '<span class="fw-600">' + esc(it.title) + '</span>' +
+                            '<div class="fs-12 text-muted mt-5">' + esc(it.step) + ' · <strong class="text-danger">' + esc(it.status) + '</strong> · ' +
+                                it.files + ' file' + (it.files === 1 ? '' : 's') + ' · ' + esc(it.wait) + '</div>' +
+                        '</div>' +
+                        '<button class="btn btn-danger btn-sm bb-review-btn" data-run="' + (it.runId ? esc(it.runId) : '') + '">Review</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        ).join('');
+
+        $id('bb-waiting-grid').querySelectorAll('.bb-review-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (btn.dataset.run) {
+                    window.location = '/projects/' + state.projectId + '/runs/' + btn.dataset.run;
+                } else {
+                    toast('Demo data — the engine will feed this card once a run reaches a gate.');
+                }
+            });
+        });
+    }
+
+    /* ════════════════════ Render: stat strip ════════════════════ */
+    function statValue(src) {
+        const runs = state.runs;
+        if (src === 'awaiting') return waitingItems().length;
+        if (src === 'awaitingAll') {
+            const n = runs.filter(r => r.needs_review).length;
+            return n || (state.dataMode === 'demo' ? 3 : 0);
+        }
+        if (src === 'runsWeek') {
+            const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
+            const n = runs.filter(r => r.created_at && new Date(r.created_at).getTime() >= weekAgo).length;
+            return n || (state.dataMode === 'demo' ? 8 : 0);
+        }
+        if (src === 'inflight') {
+            const n = runs.filter(r => r.state === 'running').length;
+            return n || (state.dataMode === 'demo' ? 3 : 0);
+        }
+        if (src === 'completed') {
+            const n = runs.filter(r => r.state === 'completed').length;
+            return n || (state.dataMode === 'demo' ? 12 : 0);
+        }
+        if (src === 'lastRun') {
+            return runs.length ? (runs[0].elapsed || '—') : (state.dataMode === 'demo' ? '2h ago' : '—');
+        }
+        if (src && src.indexOf('demo:') === 0) return src.slice(5);
+        return '—';
+    }
+    function renderStats() {
+        const cfg = roleConfig();
+        $id('bb-stats').innerHTML = cfg.stats.map(s => {
+            const isDemo = s.src.indexOf('demo:') === 0 || state.dataMode === 'demo';
+            const demoChip = isDemo
+                ? '<span class="bb-stat-demo-chip" title="Placeholder number — will be computed from real runs once the engine integration lands.">DEMO</span>'
+                : '';
+            return '<div class="col-xl-3 col-md-6 mb-15">' +
+                '<div class="box ' + s.tint + '">' +
+                    '<div class="box-body d-flex align-items-center px-0">' +
+                        '<div class="flex-grow-1 p-30">' +
+                            '<div class="fw-500 fs-12">' + esc(s.label) + demoChip + '</div>' +
+                            '<h3 class="mt-0 mb-0">' + esc(String(statValue(s.src))) + '</h3>' +
+                            '<div class="fs-12 text-muted mt-5">' + esc(s.sub) + '</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+        }).join('');
+    }
+
+    /* ════════════════════ Render: runs table ════════════════════ */
+    function statePillFor(run) {
+        const cfg = roleConfig();
+        if (run.needs_review) {
+            const gateStep = run.gate ? run.gate.gate_step : '';
+            if (roleGatesStep(cfg, gateStep)) return { cls: 'awaiting-me', text: 'Your review' };
+            const short = STEP_GATE_ROLES[gateStep] || 'other';
+            return { cls: 'awaiting-other', text: 'Awaiting ' + short };
+        }
+        const map = {
+            running: { cls: 'running', text: 'Running' },
+            completed: { cls: 'completed', text: 'Completed' },
+            failed: { cls: 'failed', text: 'Failed' },
+            cancelled: { cls: 'failed', text: 'Cancelled' },
+            paused: { cls: 'awaiting-other', text: 'Awaiting' },
+        };
+        return map[run.state] || { cls: 'pending', text: run.state || 'Pending' };
+    }
+    function renderRuns() {
+        const el = $id('bb-runs');
+
+        if (!state.runs.length) {
+            el.innerHTML =
+                '<tr><td colspan="5" class="text-center p-30 text-muted">' +
+                '<i class="fa fa-play-circle text-primary me-5"></i> No runs yet for this project. ' +
+                '<a href="/projects/' + esc(state.projectId) + '?tab=runs&new=1">Start a run</a> to see it here.' +
+                '</td></tr>';
+            return;
+        }
+
+        el.innerHTML = state.runs.map(run => {
+            const pill = statePillFor(run);
+            const mine = pill.cls === 'awaiting-me';
+            const segs = (run.stage_progress || []).map(s =>
+                '<span class="bb-seg-pill ' + esc(s.progress_state || 'pending') + '" title="' + esc(s.label) + '"></span>'
+            ).join('');
+            return '<tr class="bb-run-row" data-run="' + esc(run.id) + '">' +
+                '<td>' +
+                    '<div class="bb-story-key">' + esc(run.story_id || run.run_branch || '—') + '</div>' +
+                    '<div class="fs-12 text-muted">' + esc(storyTitle(run.story_id)) + '</div>' +
+                '</td>' +
+                '<td><div class="bb-progress">' + segs + '</div></td>' +
+                '<td><span class="bb-state-pill ' + pill.cls + '">' + esc(pill.text) + '</span></td>' +
+                '<td class="fs-12 text-muted">' + esc(run.elapsed || '') + '</td>' +
+                '<td class="text-end"><button class="btn btn-xs ' + (mine ? 'btn-primary' : 'btn-default') + ' bb-row-btn">' + (mine ? 'Review' : 'View') + '</button></td>' +
+            '</tr>';
+        }).join('');
+
+        el.querySelectorAll('.bb-run-row').forEach(row => {
+            row.addEventListener('click', () => {
+                window.location = '/projects/' + state.projectId + '/runs/' + row.dataset.run;
+            });
+        });
+    }
+
+    /* ════════════════════ Header badge ════════════════════ */
+    function updateWaitingBadge() {
+        const badge = $id('bb-waiting-badge');
+        if (!badge) return;
+        const n = waitingItems().length;
+        badge.style.display = n ? '' : 'none';
+        $id('bb-waiting-count').textContent = n;
+    }
+
+    /* ════════════════════ Master render ════════════════════ */
+    function renderAll() {
+        renderHead();
+        renderWaitingBand();
+        renderStats();
+        renderRuns();
+        updateWaitingBadge();
+    }
+
+    /* ════════════════════ Data loading ════════════════════ */
+    function showLoading() {
+        $id('bb-loading').style.display = '';
+        $id('bb-content').style.display = 'none';
+    }
+    function hideLoading() {
+        $id('bb-loading').style.display = 'none';
+        $id('bb-content').style.display = '';
+    }
+
+    async function load() {
+        const projectId = state.projectId;
+        if (!projectId) return;
+        showLoading();
+        try {
+            const [ovRes, runsRes] = await Promise.all([
+                fetch('/api/projects/' + projectId + '/overview', { headers: authHeaders() }),
+                fetch('/api/runs?project_id=' + projectId, { headers: authHeaders() }),
+            ]);
+            const [ov, runs] = await Promise.all([ovRes.json(), runsRes.json()]);
+            state.overview = ov && ov.project ? ov : null;
+            state.runs = Array.isArray(runs) ? runs : [];
+        } catch (e) {
+            toast('Failed to load project data.');
+            state.overview = null;
+            state.runs = [];
+        }
+        hideLoading();
+        renderAll();
+    }
+
+    /* Not a member of this project — replace the tab content with an alert */
+    function denied() {
+        const loading = $id('bb-loading');
+        const content = $id('bb-content');
+        const container = $id('tab-dashboard');
+        if (loading) loading.style.display = 'none';
+        if (content) content.style.display = 'none';
+        const badge = $id('bb-waiting-badge');
+        if (badge) badge.style.display = 'none';
+        if (container) {
+            container.innerHTML =
+                '<div class="row"><div class="col-12">' +
+                '<div class="alert alert-danger"><i class="fa fa-ban"></i> You are not a member of this project.</div>' +
+                '</div></div>';
+        }
+    }
+
+    /* ════════════════════ Interactions (header buttons live in project.html) ════════════════════ */
+    const waitingBadge = $id('bb-waiting-badge');
+    if (waitingBadge) waitingBadge.addEventListener('click', () => {
+        if (typeof window.showTab === 'function') window.showTab('dashboard');
+        const band = $id('bb-waiting-band');
+        if (band) band.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    // "Start a run" lives in the Runs tab header (and the dashboard empty state
+    // links there) — no header-level start button on the Dashboard tab.
+
+    // Mine/All toggle — run ownership isn't tracked yet, so Mine is a no-op for now
+    const mineToggle = $id('bb-mine-toggle');
+    const allToggle = $id('bb-all-toggle');
+    if (mineToggle && allToggle) {
+        mineToggle.addEventListener('click', () => {
+            toast('Run ownership isn’t tracked yet — showing all runs for now.');
+            allToggle.classList.add('btn-primary');
+            mineToggle.classList.remove('btn-primary');
+        });
+        allToggle.addEventListener('click', () => {
+            allToggle.classList.add('btn-primary');
+            mineToggle.classList.remove('btn-primary');
+        });
+    }
+
+    /* ════════════════════ Init — project page context ════════════════════ */
+    window.addEventListener('bb:userReady', function (ev) {
+        const data = ev.detail;
+        state.user = data;
+        const membership = (data.memberships || []).find(m => m.project_id === state.projectId);
+        if (!membership) { denied(); return; }
+        state.realRole = membership.role;
+        state.previewRole = null;
+        load();
+    });
+
+    window.BBDash = { load: load, state: state };
+})();
+</script>

@@ -35,7 +35,7 @@ When features are ready to deploy:
 terraform plan    # should show 11 new resources (EC2 + IAM + SG)
 terraform apply
 
-# 3. Wait ~3 min, then open http://<ec2_public_ip>:8000
+# 3. Wait ~3 min, then open http://<ec2_public_ip>:9000
 ```
 
 ## Resources (full set after Phase 2)

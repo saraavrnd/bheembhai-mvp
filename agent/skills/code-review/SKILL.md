@@ -3,12 +3,15 @@ name: code-review
 description: >
   Review a verified story's implementation against coding standards, a security audit, the
   acceptance criteria, and maintainability — producing an advisory report of findings by
-  severity and proposing concrete fixes, which are routed back to `implement` to apply. Use this
-  as the review step of the per-story delivery loop, after test-verify passes and before
-  pr-create. Trigger this even when the user just says "review the code", "do a code review for
-  LEARN-21", "security review this", "check coding standards", or "audit before PR". This skill
-  is advisory (it reports everything, blocks nothing) and does NOT edit code itself — it proposes
-  fixes and hands them to `implement`. After any fixes, the loop re-runs `test-verify`.
+  severity and proposing concrete fixes. Use this as the review step of the per-story delivery
+  loop, after test-verify passes and before pr-create. Trigger this even when the user just says
+  "review the code", "do a code review for LEARN-21", "security review this", "check coding
+  standards", or "audit before PR". This skill is advisory (it reports everything, blocks
+  nothing) and does NOT edit code itself — it proposes fixes and hands them to `implement`.
+  Verdict rule: `completed` by default (every finding still lands in code-review.md);
+  `changes_requested` ONLY when the review found in-loop fixable defects the next `implement`
+  pass should fix before `pr-create` (see "Verdict (BB_OUTCOME)" below). After any fixes, the
+  loop re-runs `test-verify`.
 compatibility: >
   Tool-agnostic (Claude Code or Codex). Reads the diff/branch, the project's standards (from
   project-scaffold / tech-design), the story acceptance criteria, and the verification report.
@@ -59,10 +62,32 @@ routes them to `implement`, keeping review independent of editing (the same sepa
 ## Output it produces
 - `docs/product/epics/<EPIC_KEY>/stories/<STORY_KEY>/code-review.md`: findings grouped by the four areas, each with a severity
   (Critical / High / Medium / Low / Nit), location (file:line), why it matters, and a proposed
-  fix. Advisory verdict — a summary, never a block.
+  fix. Advisory verdict — a summary, never a block (see "Verdict (BB_OUTCOME)" below).
 - A prioritised **fix list** suitable for handing to `implement` (the proposals, ordered by
   severity), plus the explicit note that fixes go through `implement` → `test-verify` before
   `pr-create`.
+
+## Verdict (BB_OUTCOME) — the report carries findings; the verdict is only routing
+
+The pipeline injects the allowed outcome words (`allowed_result_statuses`) and their
+meanings into your context, and reads your verdict from a final `BB_OUTCOME:` line. Choose
+honestly, from the injected list only — for this step that is normally `completed` and
+`changes_requested`.
+
+- **`completed`** — the default. Verification is PASS and nothing requires the loop to
+  re-run `implement` before `pr-create`. **Every finding — Critical included — still goes
+  into `code-review.md`.** The report is the vehicle for findings; the verdict is only
+  routing. Findings the loop cannot fix — pre-existing code, committed credentials that need
+  owner rotation, out-of-loop decisions — stay in the report and do NOT change the verdict.
+- **`changes_requested`** — ONLY when the review found defects the next `implement` pass can
+  and should fix before `pr-create`: a Critical introduced by this change, or Highs that make
+  the change unsafe or incorrect to ship. The fix list in `code-review.md` is the hand-off;
+  say so in `summary` ("N blocking findings — fix list in code-review.md"). Re-looping
+  `implement` for findings it cannot fix wastes the run and trips the loop guard, so never
+  choose this for advisory-only content — a report full of Medium/Low/Nit findings with
+  nothing blocking is still `completed`.
+
+Emit `BLOCK` or `escalation_required` only if the injected vocabulary lists them.
 
 ## The four review areas
 
@@ -102,6 +127,8 @@ tech debt. Flag over-engineering as readily as under-engineering — both cost l
 - **Medium** — worth fixing soon; not a merge-blocker on its own.
 - **Low / Nit** — minor or stylistic; optional.
 Severity guides the human; this skill never converts a severity into an automatic block.
+Severity is also NOT the verdict: see "Verdict (BB_OUTCOME)" for when a finding becomes a
+`changes_requested` re-loop.
 
 ## Procedure
 1. **Gather context** — diff, standards/NFRs, acceptance criteria, story-design, PASS report.

@@ -1,0 +1,18 @@
+{% extends "admin_base.html" %}
+
+{% block title %}{{ skill_id }}{% endblock %}
+{% block nav_skills %}active menu-open{% endblock %}
+
+{% block page_title %}Edit Skill{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a href="/admin/skills">Skills</a></li>
+<li class="breadcrumb-item active" aria-current="page" id="breadcrumb-skill-name">...</li>
+{% endblock %}
+
+{% block content %}
+{# Wrapper contract for the shared editor (no head block in admin_base —
+   globals must land before the include's script runs). #}
+<script>window.SKILL_API_BASE = '/api/admin'; window.SKILL_ID = '{{ skill_id }}'; window.SKILL_TITLE_SUFFIX = 'BheemBhai Admin';</script>
+{% include "_skill_editor.html" %}
+{% endblock %}

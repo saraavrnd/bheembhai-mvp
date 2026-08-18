@@ -107,19 +107,31 @@
                 <div class="multinav-scroll" style="height: 100%;">
                     <ul class="sidebar-menu" data-widget="tree">
                         <li class="header">BheemBhai</li>
-                        <li class="treeview {% block nav_dashboard %}{% endblock %}">
+                        <li class="{% block nav_dashboard %}{% endblock %}">
                             <a href="/admin">
                                 <i class="icon-Layout-4-blocks"><span class="path1"></span><span class="path2"></span></i>
                                 <span>Dashboard</span>
                             </a>
                         </li>
-                        <li class="treeview {% block nav_projects %}{% endblock %}">
+                        <li class="{% block nav_projects %}{% endblock %}">
                             <a href="/admin/projects">
                                 <i class="icon-Folder"></i>
                                 <span>Projects</span>
                             </a>
                         </li>
-                        <li class="treeview {% block nav_users %}{% endblock %}">
+                        <li class="{% block nav_skills %}{% endblock %}">
+                            <a href="/admin/skills">
+                                <i class="icon-Code"></i>
+                                <span>Skills</span>
+                            </a>
+                        </li>
+                        <li class="{% block nav_workflows %}{% endblock %}">
+                            <a href="/admin/workflows">
+                                <i class="icon-Component"></i>
+                                <span>Workflows</span>
+                            </a>
+                        </li>
+                        <li class="{% block nav_users %}{% endblock %}">
                             <a href="/admin/users">
                                 <i class="icon-User"><span class="path1"></span><span class="path2"></span></i>
                                 <span>Users</span>
@@ -176,7 +188,7 @@
 
     fetch('/api/auth/me', { headers: authHeaders() })
         .then(r => {
-            if (r.status === 401) { window.location = '/login'; return null; }
+            if (r.status === 401 || r.status === 403) { window.location = '/login'; return null; }
             return r.json();
         })
         .then(data => {
@@ -192,32 +204,41 @@
             .catch(() => { window.location = '/login'; });
     }
 
-    // ── Sidebar menu-open toggle (runs AFTER template.js tree init on window.load) ──
+    // ── Sidebar active-item highlight (deferred to run AFTER template.js tree init) ──
     window.addEventListener('load', function() {
-        var path = window.location.pathname;
-        var links = document.querySelectorAll('.sidebar-menu > li > a');
-        // Remove any stale active/menu-open classes set by template.js
-        document.querySelectorAll('.sidebar-menu > li').forEach(function(li) {
-            li.classList.remove('active', 'menu-open');
-        });
-        // Find the link matching the current URL and mark it menu-open
-        for (var i = 0; i < links.length; i++) {
-            var href = links[i].getAttribute('href');
-            if (href && (path === href || path.startsWith(href + '/') || path.startsWith(href + '?'))) {
-                var li = links[i].parentElement;
-                li.classList.add('menu-open');
-                // Also mark ancestor treeview items
+        setTimeout(function() {
+            var path = window.location.pathname;
+            var links = document.querySelectorAll('.sidebar-menu > li > a');
+            document.querySelectorAll('.sidebar-menu > li').forEach(function(li) {
+                li.classList.remove('active', 'menu-open');
+            });
+            // Find the BEST (longest-prefix) match — not the first.
+            // Otherwise /admin matches /admin/skills before the Skills link is checked.
+            var bestMatch = null, bestLen = 0;
+            for (var i = 0; i < links.length; i++) {
+                var href = links[i].getAttribute('href');
+                if (!href) continue;
+                var match = (path === href)
+                    || (path.startsWith(href + '/'))
+                    || (path.startsWith(href + '?'));
+                if (match && href.length > bestLen) {
+                    bestMatch = links[i];
+                    bestLen = href.length;
+                }
+            }
+            if (bestMatch) {
+                var li = bestMatch.parentElement;
+                li.classList.add('active', 'menu-open');
                 var parent = li.parentElement;
                 while (parent && parent.classList.contains('treeview-menu')) {
                     var ancestor = parent.parentElement;
                     if (ancestor && ancestor.classList.contains('treeview')) {
-                        ancestor.classList.add('menu-open');
+                        ancestor.classList.add('active', 'menu-open');
                     }
                     parent = ancestor ? ancestor.parentElement : null;
                 }
-                break;
             }
-        }
+        }, 100);
     });
 </script>
 

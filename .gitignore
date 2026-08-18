@@ -46,3 +46,15 @@ playwright-report/
 .claude/
 .mcp.json
 .agents/
+
+# Terraform — local variables (the file itself says never commit)
+infra/terraform.tfvars
+
+# Engine/agent runtime workdirs (git clones, step results) — never committed
+# (also excluded from pytest collection via the root conftest.py)
+bb-workdir/
+infra/bb-workdir/
+
+# Dev scratch scripts at repo root (mutate os.environ at import — not tests)
+/quick_test.py
+/main.py

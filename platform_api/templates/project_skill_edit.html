@@ -1,0 +1,19 @@
+{% extends "user_base.html" %}
+
+{% block title %}Skill Editor{% endblock %}
+
+{% block page_title %}Edit Skill{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a href="/projects/{{ project_id }}?tab=config" id="breadcrumb-config-link">Configuration</a></li>
+<li class="breadcrumb-item"><a href="/projects/{{ project_id }}?tab=config&sub=skills" id="breadcrumb-skills-link">Skills</a></li>
+<li class="breadcrumb-item active" aria-current="page" id="breadcrumb-skill-name">...</li>
+{% endblock %}
+
+{% block head %}
+<script>window.SKILL_API_BASE = '/api/projects/{{ project_id }}'; window.SKILL_ID = '{{ skill_id }}';</script>
+{% endblock %}
+
+{% block content %}
+{% include "_skill_editor.html" %}
+{% endblock %}

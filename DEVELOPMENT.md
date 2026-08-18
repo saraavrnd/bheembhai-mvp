@@ -8,7 +8,7 @@
 │                                                          │
 │  ┌──────────────┐  ┌──────────────┐                     │
 │  │ platform-api │  │engine-service│                     │
-│  │   :8000      │  │   :8001      │                     │
+│  │   :9000      │  │   :9001      │                     │
 │  │  (--reload)  │  │  (--reload)  │                     │
 │  └──────┬───────┘  └──────┬───────┘                     │
 │         │                 │                              │
@@ -16,7 +16,7 @@
 │                  │                                       │
 │           ┌──────┴──────┐                               │
 │           │  postgres:16 │                               │
-│           │    :5432     │                               │
+│           │    :5555     │                               │
 │           └─────────────┘                               │
 └──────────────────────────────────────────────────────────┘
 
@@ -53,11 +53,11 @@ aws sts get-caller-identity  # verify
 docker-compose up -d
 
 # 4. Verify
-curl http://localhost:8000/health           # Platform API
-curl http://localhost:8001/engine/health    # Engine Service
+curl http://localhost:9000/health           # Platform API
+curl http://localhost:9001/engine/health    # Engine Service
 
 # 5. Login (dev mode — any credentials work)
-open http://localhost:8000/login
+open http://localhost:9000/login
 ```
 
 ## Auth: two modes
@@ -68,7 +68,7 @@ open http://localhost:8000/login
 All API calls work without tokens. This is what docker-compose uses by default.
 
 ```bash
-curl http://localhost:8000/api/projects  # works — dev identity
+curl http://localhost:9000/api/projects  # works — dev identity
 ```
 
 ### Real auth mode (AWS Cognito)
@@ -82,7 +82,7 @@ curl http://localhost:8000/api/projects  # works — dev identity
    COGNITO_CLIENT_ID: xxxxxxxxxxxxxxxxxxxxxxxxxx
    ```
 3. Restart: `docker-compose restart platform-api`
-4. Login at `http://localhost:8000/login` with a real Cognito user
+4. Login at `http://localhost:9000/login` with a real Cognito user
 
 ## AWS resources (DEV-tagged)
 
@@ -190,15 +190,15 @@ docker-compose up -d postgres
 
 # Terminal 2: Platform API
 cd platform_api
-DATABASE_URL=postgresql+asyncpg://bheembhai:bheembhai@localhost:5432/bheembhai \
+DATABASE_URL=postgresql+asyncpg://bheembhai:bheembhai@localhost:5555/bheembhai \
 DEV_AUTH_BYPASS=true \
-uvicorn main:app --port 8000 --reload
+uvicorn main:app --port 9000 --reload
 
 # Terminal 3: Engine Service
 cd engine_service
-DATABASE_URL=postgresql+asyncpg://bheembhai:bheembhai@localhost:5432/bheembhai \
+DATABASE_URL=postgresql+asyncpg://bheembhai:bheembhai@localhost:5555/bheembhai \
 ENGINE_ID=dev-1 \
-uvicorn main:app --port 8001 --reload
+uvicorn main:app --port 9001 --reload
 ```
 
 ## Testing
@@ -226,7 +226,7 @@ docker-compose up -d     # fresh start
 ### Run database migrations
 ```bash
 cd shared
-DATABASE_URL=postgresql+asyncpg://bheembhai:bheembhai@localhost:5432/bheembhai \
+DATABASE_URL=postgresql+asyncpg://bheembhai:bheembhai@localhost:5555/bheembhai \
   alembic upgrade head
 ```
 

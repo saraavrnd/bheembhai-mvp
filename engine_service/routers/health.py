@@ -1,6 +1,8 @@
-"""Engine health endpoint — reports liveness and queue depth."""
+"""Engine health endpoint — reports liveness, queue depth, and dispatch activity."""
 
 from fastapi import APIRouter, Request
+
+from engine_service.metrics import METRICS
 
 router = APIRouter(tags=["health"])
 
@@ -12,6 +14,7 @@ async def health(request: Request) -> dict:
         "status": "ok",
         "service": "engine-service",
         "engine_id": config.engine.engine_id,
-        "orphaned_items": None,  # populated by recovery module
-        "queue_depth": None,      # populated by worker loop
+        "orphaned_items": METRICS.orphaned_items,      # from crash recovery
+        "queue_depth": METRICS.queue_depth,            # from the worker claim pass
+        "active_dispatches": METRICS.active_dispatches,
     }

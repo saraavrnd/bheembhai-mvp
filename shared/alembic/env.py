@@ -1,8 +1,8 @@
 """Alembic environment — async runner for Postgres migrations."""
 
 import asyncio
+import logging
 import os
-from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import pool
@@ -11,9 +11,13 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Alembic Config object
 config = context.config
 
-# Interpret the config file for Python logging
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+# The host app configures logging at import time (root handler + per-logger
+# levels). alembic.ini's fileConfig would disable every logger created before
+# this point — including uvicorn's and the app's — and reset the root level,
+# silencing startup and request-path logs for the process lifetime. Set
+# alembic's own levels directly instead.
+logging.getLogger("alembic").setLevel(logging.INFO)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 # Override sqlalchemy.url from env var
 db_url = os.getenv("DATABASE_URL")
@@ -21,7 +25,8 @@ if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
 
 # Model MetaData for autogenerate
-from bheembhai.models import Base  # noqa: E402
+from bheembhai.models import Base
+
 target_metadata = Base.metadata
 
 

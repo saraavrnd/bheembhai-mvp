@@ -91,7 +91,7 @@ class CognitoAuthService:
 
         # ── Debug: log all top-level keys in the Cognito response ─
         print(f"  AUTH  Cognito response keys: {list(resp.keys())}", flush=True)
-        for key in resp.keys():
+        for key in resp:
             val = resp[key]
             if isinstance(val, dict):
                 print(f"  AUTH    {key}: {json.dumps(val, default=str)[:200]}", flush=True)

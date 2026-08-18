@@ -8,8 +8,8 @@ Two services + a shared package + an agent container:
 
 | Component | Purpose | Port |
 |-----------|---------|------|
-| **Platform API** | User-facing REST API + server-rendered HTML UI | 8000 |
-| **Engine Service** | Internal state machine, Fargate lifecycle, work queue consumer | 8001 |
+| **Platform API** | User-facing REST API + server-rendered HTML UI | 9000 |
+| **Engine Service** | Internal state machine, Fargate lifecycle, work queue consumer | 9001 |
 | **Shared package** | SQLAlchemy models, provider protocols (Auth, Storage, Secrets), Alembic migrations | — |
 | **Agent container** | Docker image running Claude Code CLI for skill execution (existing) | — |
 
@@ -38,8 +38,8 @@ docker build -t bheembhai/agent:latest agent/
 docker-compose up -d
 
 # 4. Verify
-curl http://localhost:8000/health       # Platform API
-curl http://localhost:8001/engine/health # Engine Service
+curl http://localhost:9000/health       # Platform API
+curl http://localhost:9001/engine/health # Engine Service
 
 # 5. Run tests
 pip install -e shared/[dev]
@@ -81,7 +81,7 @@ bheembhai-mvp/
 pytest tests/unit/ -v
 
 # Integration tests (needs Postgres)
-DATABASE_URL=postgresql+asyncpg://bheembhai:bheembhai@localhost:5432/bheembhai_test \
+DATABASE_URL=postgresql+asyncpg://bheembhai:bheembhai@localhost:5555/bheembhai_test \
   pytest tests/integration/ -v
 
 # End-to-end tests (needs running stack)

@@ -2,13 +2,26 @@
 
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from sqlalchemy import (UUID, Boolean, CheckConstraint, DateTime, ForeignKey,
-                        String, Text, UniqueConstraint, func)
+from sqlalchemy import (
+    UUID,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bheembhai.models.base import Base
+
+if TYPE_CHECKING:
+    from bheembhai.models.run import Run
+    from bheembhai.models.user import Membership
+    from bheembhai.models.workflow import Workflow
 
 
 class Project(Base):
@@ -26,10 +39,19 @@ class Project(Base):
         server_default=func.now()
     )
 
-    memberships: Mapped[list["Membership"]] = relationship(back_populates="project")
-    integrations: Mapped[list["ProjectIntegration"]] = relationship(back_populates="project")
-    workflows: Mapped[list["Workflow"]] = relationship(back_populates="project")
-    runs: Mapped[list["Run"]] = relationship(back_populates="project")
+    # passive_deletes: the DB FK constraints cascade (memberships/integrations/
+    # runs: ON DELETE CASCADE) or null (workflows: ON DELETE SET NULL) — the
+    # ORM must not emulate the cascade, because its emulation nulls NOT NULL
+    # FKs (UPDATE project_integrations SET project_id=NULL) and blows up on
+    # admin project deletion.
+    memberships: Mapped[list["Membership"]] = relationship(
+        back_populates="project", passive_deletes=True)
+    integrations: Mapped[list["ProjectIntegration"]] = relationship(
+        back_populates="project", passive_deletes=True)
+    workflows: Mapped[list["Workflow"]] = relationship(
+        back_populates="project", passive_deletes=True)
+    runs: Mapped[list["Run"]] = relationship(
+        back_populates="project", passive_deletes=True)
 
 
 class ProjectIntegration(Base):
@@ -63,7 +85,7 @@ class ProjectIntegration(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "type IN ('github', 'jira')",
+            "type IN ('github', 'jira', 'openai', 'claude', 'deepseek', 'kimi')",
             name="ck_integration_type",
         ),
         UniqueConstraint(

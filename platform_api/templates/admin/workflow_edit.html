@@ -1,0 +1,16 @@
+{% extends "admin_base.html" %}
+
+{% block title %}{{ workflow_id }}{% endblock %}
+{% block nav_workflows %}active menu-open{% endblock %}
+
+{% block page_title %}Edit Workflow{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a href="/admin/workflows" id="breadcrumb-workflows-link">Workflows</a></li>
+<li class="breadcrumb-item active" aria-current="page" id="breadcrumb-name">...</li>
+{% endblock %}
+
+{% block content %}
+<script>window.WF_API_BASE = '/api/admin'; window.WF_WRAPPER = 'admin';</script>
+{% include "_workflow_editor.html" %}
+{% endblock %}

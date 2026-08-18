@@ -2,11 +2,25 @@
 
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID, Boolean, CheckConstraint, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    UUID,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bheembhai.models.base import Base
+
+if TYPE_CHECKING:
+    from bheembhai.models.project import Project
 
 
 class User(Base):
@@ -21,6 +35,9 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
     platform_role: Mapped[str] = mapped_column(
         String(20), nullable=False, default="USER", server_default="USER"
+    )
+    is_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),

@@ -1,0 +1,316 @@
+<!-- ══════════ Configuration sub-tab: Workflows (project-manager view) ══════════
+     Included by project.html inside #config-panel-workflows. Lazy-activated via
+     BBConfig.workflows.activate(); fetches /api/workflows (PM-gated variants). -->
+
+<div class="row">
+    <!-- Left: Mapped workflows -->
+    <div class="col-md-7">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title"><i class="fa fa-sitemap me-2"></i>Mapped Workflows</h4>
+            </div>
+            <div class="box-body">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Version</th>
+                                <th>Steps</th>
+                                <th>Policies</th>
+                                <th>Active</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="wf-mapped-tbody">
+                            <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right: Available platform workflows to map -->
+    <div class="col-md-5">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Map a Platform Workflow</h4>
+            </div>
+            <div class="box-body">
+                <p class="small text-muted">Platform workflows are shared templates. Mapping one creates a project‑specific copy that can be customised independently.</p>
+                <div id="wf-platform-list">
+                    <p class="text-center text-muted">Loading...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Policy list modal — opened from the Policies badge in the mapped table.
+     Shows ALL policies of the workflow (PM view, include_inactive=1): name,
+     version, active state, gate summary, edit + delete. -->
+<div class="modal fade" id="wf-policies-modal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Policies — <span id="wf-policies-title"></span></h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Version</th>
+                                <th>Status</th>
+                                <th>Gates</th>
+                                <th class="text-end">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="wf-policies-tbody">
+                            <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+    const projectId = window.BB_PROJECT_ID;
+
+    let mappedWorkflows = [];
+    let platformWorkflows = [];
+    let currentPolicyWf = { id: null, name: '' };   // workflow the policy modal is open for
+
+    // Reject non-2xx with the server's detail message when present
+    function throwIfError(r) {
+        if (r.ok) return r;
+        return r.text().then(t => {
+            let msg = r.statusText;
+            try { const d = JSON.parse(t); msg = d.detail || msg; } catch (e) { /* not JSON */ }
+            throw new Error(msg);
+        });
+    }
+
+    function loadWorkflows() {
+        // Fetch mapped (project-scoped) workflows, including inactive ones.
+        // Never rejects — errors render inline in the mapped table.
+        const mappedLoaded = fetch('/api/workflows?project_id=' + projectId + '&include_inactive=1', { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(data => {
+                mappedWorkflows = data;
+                renderMapped();
+            })
+            .catch(err => {
+                document.getElementById('wf-mapped-tbody').innerHTML =
+                    '<tr><td colspan="6" class="text-center text-danger">' + esc(err.message) + '</td></tr>';
+            });
+
+        // Fetch available platform workflows, waiting for the mapped list so
+        // the (name, version) exclusion is correct even if it loads faster.
+        fetch('/api/workflows?project_id=__platform__', { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(data => mappedLoaded.then(() => data))
+            .then(data => {
+                // Exclude workflows whose (name, version) already exist in the project
+                const mappedKeys = new Set(mappedWorkflows.map(w => `${w.name}::${w.version}`));
+                platformWorkflows = data.filter(w => !mappedKeys.has(`${w.name}::${w.version}`));
+                renderPlatform();
+            })
+            .catch(err => {
+                document.getElementById('wf-platform-list').innerHTML =
+                    '<p class="text-center text-danger">' + esc(err.message) + '</p>';
+            });
+    }
+
+    function renderMapped() {
+        const tbody = document.getElementById('wf-mapped-tbody');
+        if (!mappedWorkflows.length) {
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No workflows mapped yet. Map one from the right panel.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = mappedWorkflows.map(w => {
+            const parsed = w.parsed;
+            const stepCount = parsed ? parsed.steps.length : '—';
+            const policyBadge = w.policy_count > 0
+                ? `<button class="btn btn-sm p-0 border-0 align-baseline" title="View policies"
+                           onclick="BBConfig.workflows.openPolicies('${w.id}', '${escJs(w.name)}')">
+                       <span class="badge rounded-pill bg-info">${w.policy_count}</span>
+                   </button>`
+                : '<span class="badge rounded-pill bg-secondary">0</span>';
+            const activeBadge = w.is_active
+                ? '<span class="badge rounded-pill bg-success">active</span>'
+                : '<span class="badge rounded-pill bg-dark">inactive</span>';
+            const editUrl = '/projects/' + projectId + '/config/workflows/' + w.id;
+            return `
+                <tr>
+                    <td>
+                        <a href="${editUrl}" class="text-decoration-none fw-bold">${esc(w.name)}</a>
+                    </td>
+                    <td>v${w.version}</td>
+                    <td>${stepCount}</td>
+                    <td>${policyBadge}</td>
+                    <td>${activeBadge}</td>
+                    <td class="text-end">
+                        <a href="${editUrl}" class="btn btn-info btn-sm" title="Edit"><i class="ti-pencil"></i></a>
+                        <button class="btn btn-danger btn-sm" onclick="BBConfig.workflows.unlinkWorkflow('${w.id}', '${escJs(w.name)}')" title="Remove from project"><i class="ti-unlink"></i></button>
+                    </td>
+                </tr>`;
+        }).join('');
+    }
+
+    function renderPlatform() {
+        const container = document.getElementById('wf-platform-list');
+        if (!platformWorkflows.length) {
+            container.innerHTML = '<p class="text-center text-muted">All platform workflows are already mapped.</p>';
+            return;
+        }
+        container.innerHTML = platformWorkflows.map(w => {
+            const parsed = w.parsed;
+            const stepCount = parsed ? parsed.steps.length : '—';
+            return `
+                <div class="d-flex align-items-center justify-content-between mb-2 p-2 border rounded">
+                    <div>
+                        <strong>${esc(w.name)}</strong>
+                        <span class="badge rounded-pill bg-primary ms-1">v${w.version}</span>
+                        <span class="badge rounded-pill bg-dark ms-1">${stepCount} steps</span>
+                        ${w.policy_count > 0 ? `<span class="badge rounded-pill bg-info ms-1">${w.policy_count} policies</span>` : ''}
+                    </div>
+                    <button class="btn btn-outline-primary btn-sm" onclick="BBConfig.workflows.mapWorkflow('${w.id}', '${escJs(w.name)}')">
+                        <i class="ti-plus"></i> Map
+                    </button>
+                </div>`;
+        }).join('');
+    }
+
+    function mapWorkflow(wfId, wfName) {
+        if (!confirm(`Map "${wfName}" to this project? A project-specific copy will be created.`)) return;
+
+        fetch('/api/workflows/' + wfId + '/copy-to-project', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ project_id: projectId })
+        })
+        .then(throwIfError)
+        .then(() => {
+            loadWorkflows();
+        })
+        .catch(err => alert('Error: ' + err.message));
+    }
+
+    function unlinkWorkflow(wfId, wfName) {
+        if (!confirm(`Remove "${wfName}" from this project? This deletes the project copy (not the platform template).`)) return;
+
+        fetch('/api/workflows/' + wfId, { method: 'DELETE', headers: authHeaders() })
+            .then(throwIfError)
+            .then(() => {
+                loadWorkflows();
+            })
+            .catch(err => alert('Error: ' + err.message));
+    }
+
+    // ── Policy list modal ─────────────────────────────────────────────────
+
+    function showPoliciesModal() {
+        const el = document.getElementById('wf-policies-modal');
+        if (window.bootstrap && bootstrap.Modal.getOrCreateInstance) {
+            bootstrap.Modal.getOrCreateInstance(el).show();
+        } else {
+            new bootstrap.Modal(el).show();
+        }
+    }
+
+    function openPolicies(wfId, wfName) {
+        currentPolicyWf = { id: wfId, name: wfName };
+        const tbody = document.getElementById('wf-policies-tbody');
+        document.getElementById('wf-policies-title').textContent = wfName;
+        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>';
+        showPoliciesModal();
+        // include_inactive=1 needs the PM role — this whole config sub-tab is
+        // project-manager gated, so the request succeeds; on 403 the error
+        // renders inline in the modal instead of crashing the tab.
+        fetch('/api/workflows/' + wfId + '/policies?include_inactive=1', { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(data => renderPolicies(data))
+            .catch(err => {
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center text-danger">' + esc(err.message) + '</td></tr>';
+            });
+    }
+
+    function renderPolicies(policies) {
+        const tbody = document.getElementById('wf-policies-tbody');
+        if (!policies.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No policies defined yet — open the workflow editor to create one.</td></tr>';
+            return;
+        }
+        // ?tab=policy makes the editor land on the Policy tab directly.
+        const editUrl = '/projects/' + projectId + '/config/workflows/' + currentPolicyWf.id + '?tab=policy';
+        tbody.innerHTML = policies.map(p => {
+            const gates = p.parsed && p.parsed.gates ? p.parsed.gates : {};
+            const gateSteps = Object.keys(gates).length;
+            let gated = 0;
+            Object.values(gates).forEach(g => { if (g.review === 'required') gated++; });
+            const status = p.is_active
+                ? '<span class="badge rounded-pill bg-success">active</span>'
+                : '<span class="badge rounded-pill bg-dark">inactive</span>';
+            const gateText = gateSteps
+                ? `${gated} of ${gateSteps} gated steps pause for a human`
+                : 'no gates';
+            return `
+                <tr>
+                    <td class="fw-bold">${esc(p.name)}</td>
+                    <td>v${p.version}</td>
+                    <td>${status}</td>
+                    <td class="small text-muted">${esc(gateText)}</td>
+                    <td class="text-end">
+                        <a href="${editUrl}" class="btn btn-info btn-sm" title="Edit in workflow editor"><i class="ti-pencil"></i></a>
+                        <button class="btn btn-danger btn-sm" title="Delete policy"
+                                onclick="BBConfig.workflows.deletePolicy('${p.id}', '${escJs(p.name)}')">
+                            <i class="ti-trash"></i>
+                        </button>
+                    </td>
+                </tr>`;
+        }).join('');
+    }
+
+    function deletePolicy(policyId, policyName) {
+        if (!confirm(`Delete policy "${policyName}"?`)) return;
+        fetch('/api/policies/' + policyId, { method: 'DELETE', headers: authHeaders() })
+            .then(throwIfError)
+            .then(() => {
+                loadWorkflows();   // refresh the badge counts in the mapped table
+                if (currentPolicyWf.id) {
+                    openPolicies(currentPolicyWf.id, currentPolicyWf.name);   // refresh the modal list
+                }
+            })
+            .catch(err => alert('Error: ' + err.message));
+    }
+
+    function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+    // Escape for use inside an inline onclick="..." string literal
+    function escJs(s) { return s ? String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;') : ''; }
+
+    function activate() {
+        loadWorkflows();
+    }
+
+    window.BBConfig = window.BBConfig || {};
+    window.BBConfig.workflows = {
+        activate: activate,
+        loadWorkflows: loadWorkflows,
+        mapWorkflow: mapWorkflow,
+        unlinkWorkflow: unlinkWorkflow,
+        openPolicies: openPolicies,
+        deletePolicy: deletePolicy,
+    };
+})();
+</script>

@@ -1,10 +1,20 @@
-"""S3 object storage — first ObjectStorage backend (ADR-011)."""
+"""S3 object storage — first ObjectStorage backend (ADR-011).
 
-from typing import AsyncIterator
+AWS credentials come from boto3's default credential chain — env vars /
+shared credentials file / IAM instance role — never from application config.
+The engine (upload) and the platform (read) should get separate IAM policies;
+the agent containers get no AWS credentials at all.
+"""
+
+from collections.abc import AsyncIterator
 
 import boto3
 
-from bheembhai.protocols.storage import ObjectStorage, PresignedUrl, StoredObject
+from bheembhai.protocols.storage import (
+    PresignedUrl,
+    StoredHead,
+    StoredObject,
+)
 
 
 class S3Storage:
@@ -39,6 +49,16 @@ class S3Storage:
             **extra_args,
         )
 
+    async def put_file(
+        self, key: str, path: str, content_type: str | None = None
+    ) -> None:
+        # upload_file streams from disk (multipart for large logs) — no
+        # buffering of a 10 MB agent.log in process memory.
+        extra_args = {"ContentType": content_type} if content_type else None
+        self._client.upload_file(
+            path, self.bucket, key, ExtraArgs=extra_args
+        )
+
     async def get(self, key: str) -> StoredObject | None:
         import botocore.exceptions
         try:
@@ -52,6 +72,34 @@ class S3Storage:
         except botocore.exceptions.ClientError as e:
             if e.response["Error"]["Code"] == "NoSuchKey":
                 return None
+            raise
+
+    async def head(self, key: str) -> StoredHead | None:
+        import botocore.exceptions
+        try:
+            resp = self._client.head_object(Bucket=self.bucket, Key=key)
+            return StoredHead(key=key, size=int(resp.get("ContentLength", 0)))
+        except botocore.exceptions.ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                return None
+            raise
+
+    async def get_range(
+        self, key: str, start: int = 0, end: int | None = None
+    ) -> bytes:
+        import botocore.exceptions
+        if end is not None and end < start:
+            return b""
+        rng = f"bytes={start}-{end if end is not None else ''}"
+        try:
+            resp = self._client.get_object(
+                Bucket=self.bucket, Key=key, Range=rng
+            )
+            return resp["Body"].read()
+        except botocore.exceptions.ClientError as e:
+            code = e.response["Error"]["Code"]
+            if code in ("404", "NoSuchKey", "InvalidRange"):
+                return b""
             raise
 
     async def presigned_get_url(

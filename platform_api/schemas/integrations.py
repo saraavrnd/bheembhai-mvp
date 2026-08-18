@@ -65,5 +65,6 @@ class IntegrationResponse(BaseModel):
     config: dict
     verified_at: datetime | None
     created_at: datetime
+    status: str = "unconfigured"  # connected | warning | unconfigured
 
     model_config = {"from_attributes": True}

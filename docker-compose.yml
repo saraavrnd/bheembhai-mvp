@@ -7,7 +7,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bheembhai}
       POSTGRES_DB: ${POSTGRES_DB:-bheembhai}
     ports:
-      - "5432:5432"
+      - "5555:5432"   # host 5555 → container 5432 (tests connect on localhost:5555)
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,7 @@ services:
       context: .
       dockerfile: platform_api/Dockerfile
     ports:
-      - "8000:8000"
+      - "9000:8000"   # host 9000 → container 8000 (UI + API on :9000)
     env_file:
       - .env
     environment: &app-env
@@ -32,34 +32,77 @@ services:
       DEV_AUTH_BYPASS: ${DEV_AUTH_BYPASS:-false}
       AUTH_PROVIDER: ${AUTH_PROVIDER:-cognito}
       COGNITO_REGION: ${COGNITO_REGION:-us-east-1}
-      STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+      # Object storage (ADR-011): step attempt logs. Dev default "local" needs
+      # no AWS; switch to s3 by setting STORAGE_BACKEND=s3 in .env. AWS creds
+      # (s3 backend) come from boto3's default chain — env vars or the EC2
+      # instance role — and NEVER enter agent containers.
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      # Both services must see the same log tree at the same absolute path
+      # (like BB_WORKDIR): under the workdir bind, so no extra volume needed.
+      LOCAL_STORAGE_PATH: ${LOCAL_STORAGE_PATH:-${BB_WORKDIR:-${PWD}/bb-workdir}/storage}
+      S3_BUCKET: ${S3_BUCKET:-bheembhai-artifacts-dev}
       S3_REGION: ${S3_REGION:-us-east-1}
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-}
       SECURE_STORAGE_BACKEND: ${SECURE_STORAGE_BACKEND:-env}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       ENGINE_ID: ${ENGINE_ID:-engine-1}
+      # Seeding overwrites DB catalogs — opt-in only (e.g. fresh DB first boot):
+      # BB_SEED_ON_STARTUP=1 docker-compose up
+      BB_SEED_ON_STARTUP: ${BB_SEED_ON_STARTUP:-false}
+      # Engine workdir — the clone/result tree both services read. Must be the
+      # same absolute path on the host, in the engine (daemon-side mounts) and
+      # in the platform (artifact viewer), so bind it identically everywhere.
+      BB_WORKDIR: ${BB_WORKDIR:-${PWD}/bb-workdir}
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ./:/app  # live-reload source during dev
-    command: uvicorn platform_api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+      # Artifact viewer reads the engine's clone tree — same absolute path both
+      # sides (path parity with the engine's BB_WORKDIR mount).
+      - ${BB_WORKDIR:-${PWD}/bb-workdir}:${BB_WORKDIR:-${PWD}/bb-workdir}
+    # --reload-dir scopes the watcher to real source dirs: watching /app (the
+    # whole repo via ./:/app) made every agent clone/commit under bb-workdir
+    # restart the server mid-dispatch and orphan the in-flight run.
+    command: uvicorn platform_api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug --reload-dir platform_api --reload-dir shared
 
   engine-service:
     build:
       context: .
       dockerfile: engine_service/Dockerfile
     ports:
-      - "8001:8001"
+      - "9001:8001"   # host 9001 → container 8001 (engine health on :9001)
     env_file:
       - .env
     environment:
       <<: *app-env
+      # ── Engine runtime (ADR-013 §4) ──────────────────────────
+      BB_RUNTIME: ${BB_RUNTIME:-docker}
+      BB_AGENT_IMAGE: ${BB_AGENT_IMAGE:-bheembhai/agent:latest}
+      # Path parity, not just "under the repo mount": the engine hands workdir
+      # paths to the docker daemon, which resolves them on the HOST. /app only
+      # exists inside this container (compose mount), so the daemon silently
+      # created a root-owned 0755 /app/bb-workdir tree on the host and the step
+      # containers mounted THAT — unwritable by the agent's `node` user.
+      # BB_WORKDIR is bound below at the same absolute path, so the engine's
+      # view and the daemon's view are one tree.
+      BB_WORKDIR: ${BB_WORKDIR:-${PWD}/bb-workdir}
+      PLATFORM_API_URL: http://platform-api:8000
+      BB_WEBHOOK_SECRET: ${BB_WEBHOOK_SECRET:-dev-secret}
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - ./:/app
-    command: uvicorn engine_service.main:app --host 0.0.0.0 --port 8001 --reload
+      # Same absolute path on the host and inside the container (see BB_WORKDIR
+      # above): engine-side mkdir/chmod and daemon-side mounts hit one tree.
+      - ${BB_WORKDIR:-${PWD}/bb-workdir}:${BB_WORKDIR:-${PWD}/bb-workdir}
+      # The engine launches sibling step containers on the same docker host
+      # (local dev only — FargateRuntime is the prod answer, no socket there).
+      - /var/run/docker.sock:/var/run/docker.sock
+    # See platform-api comment: bb-workdir is never watched, so clone/commit
+    # activity can't kill a live dispatch.
+    command: uvicorn engine_service.main:app --host 0.0.0.0 --port 8001 --reload --reload-dir engine_service --reload-dir shared
 
 volumes:
   pgdata:

@@ -7,7 +7,7 @@ kept in memory only; they are never logged, serialised, or returned to callers.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -44,7 +44,7 @@ class ResolvedIntegration:
 
 
 async def resolve_credentials(
-    integrations: list["ProjectIntegration"],
+    integrations: list[ProjectIntegration],
     secure_storage,
 ) -> list[ResolvedIntegration]:
     """Resolve every integration's credential_ref against SecureStorage.

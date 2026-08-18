@@ -2,13 +2,25 @@
 
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from sqlalchemy import (UUID, BigInteger, CheckConstraint, DateTime, ForeignKey,
-                        String, Text, func)
+from sqlalchemy import (
+    UUID,
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bheembhai.models.base import Base
+
+if TYPE_CHECKING:
+    from bheembhai.models.run import Run
 
 
 class WorkQueueItem(Base):
@@ -16,7 +28,7 @@ class WorkQueueItem(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     run_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("runs.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("runs.id", ondelete="CASCADE"), nullable=False
     )
     action: Mapped[str] = mapped_column(
         Text, nullable=False
@@ -43,7 +55,7 @@ class WorkQueueItem(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "action IN ('start', 'continue')",
+            "action IN ('start', 'continue', 'cancel')",
             name="ck_work_queue_action",
         ),
         CheckConstraint(

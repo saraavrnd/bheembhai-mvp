@@ -1,7 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block title %}Dashboard{% endblock %}
-{% block nav_dashboard %}{% endblock %}
+{% block nav_dashboard %}active menu-open{% endblock %}
 
 {% block content %}
 <div class="row">
@@ -83,7 +83,18 @@ fetch('/api/admin/users')
     })
     .catch(() => { document.getElementById('stat-users').textContent = '!'; });
 
-document.getElementById('stat-workflows').textContent = '—';
-document.getElementById('stat-runs').textContent = '—';
+fetch('/api/admin/workflows')
+    .then(r => r.json())
+    .then(workflows => {
+        document.getElementById('stat-workflows').textContent = workflows.length;
+    })
+    .catch(() => { document.getElementById('stat-workflows').textContent = '!'; });
+
+fetch('/api/admin/runs')
+    .then(r => r.json())
+    .then(runs => {
+        document.getElementById('stat-runs').textContent = runs.length;
+    })
+    .catch(() => { document.getElementById('stat-runs').textContent = '!'; });
 </script>
 {% endblock %}

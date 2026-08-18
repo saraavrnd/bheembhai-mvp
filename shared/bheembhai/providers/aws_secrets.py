@@ -2,7 +2,7 @@
 
 import boto3
 
-from bheembhai.protocols.secrets import Credential, SecureStorage
+from bheembhai.protocols.secrets import Credential
 
 
 class AWSSecretsManager:

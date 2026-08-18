@@ -1,10 +1,9 @@
 """Platform API — user-facing FastAPI application."""
 
 import logging
-import os
 import time
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -20,14 +19,34 @@ logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 logging.getLogger("uvicorn").setLevel(logging.DEBUG)
 
 from bheembhai.config import load_config
-from bheembhai.database import close_database, init_database, run_migrations, seed_default_roles
+from bheembhai.database import (
+    close_database,
+    init_database,
+    run_migrations,
+    seed_default_roles,
+    seed_default_skills,
+    seed_default_workflows,
+)
+from bheembhai.providers import build_object_store
 from bheembhai.providers.aws_secrets import AWSSecretsManager
 from bheembhai.providers.aws_ssm import AWSSSMParameterStore
 from bheembhai.providers.cognito import CognitoProvider
 from bheembhai.providers.cognito_auth import CognitoAuthService
 from bheembhai.providers.env_secrets import EnvSecureStorage
 
-from platform_api.routers import admin, auth, health, integrations, projects, runs, workflows
+from platform_api.routers import (
+    admin,
+    auth,
+    health,
+    integrations,
+    policies,
+    project_skills,
+    projects,
+    refdata,
+    runs,
+    webhooks,
+    workflows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +62,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_database(config.database)
     await run_migrations()
     await seed_default_roles()
+    if config.engine.seed_on_startup:
+        # OPT-IN (BB_SEED_ON_STARTUP): both seeds are upserts that OVERWRITE DB
+        # rows — never seed by default, a running instance must not clobber
+        # user-edited skills/workflows.
+        await seed_default_skills()
+        await seed_default_workflows()
 
     # ── Wire Cognito auth service (boto3 — login/refresh/signup) ──
     auth_cfg = config.auth
@@ -87,6 +112,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             secure_cfg.backend,
         )
 
+    # ── Wire ObjectStorage provider (ADR-011) ──────────────────
+    # Same backend selection as the engine: both services share the store
+    # (local path under BB_WORKDIR, or the same S3 bucket). The platform only
+    # READS — serve logs from run_logs references, never scan storage.
+    app.state.object_store = build_object_store(config.storage)
+    logger.info("Object storage wired: backend=%s",
+                getattr(app.state.object_store, "backend_name", "?"))
+
     yield
 
     await close_database()
@@ -113,37 +146,112 @@ async def log_requests(request: Request, call_next):
 @app.get("/")
 async def root(request: Request):
     """Root page — user dashboard with project selector."""
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "dashboard.html", {"request": request})
 
 
 @app.get("/dashboard")
 async def dashboard(request: Request):
     """User dashboard — project selector landing page."""
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "dashboard.html", {"request": request})
+
+
+@app.get("/projects/{project_id}", include_in_schema=False)
+async def project_page(project_id: str, request: Request):
+    """User project workspace — dashboard, runs and configuration tabs."""
+    return templates.TemplateResponse(
+        request, "project.html", {"request": request, "project_id": project_id}
+    )
+
+
+@app.get("/projects/{project_id}/runs/{run_id}", include_in_schema=False)
+async def run_detail_page(project_id: str, run_id: str, request: Request):
+    """Run detail — stage rail, output viewer, review gates."""
+    return templates.TemplateResponse(
+        request, "run_detail.html",
+        {"request": request, "project_id": project_id, "run_id": run_id},
+    )
+
+
+@app.get("/projects/{project_id}/config/workflows/{workflow_id}", include_in_schema=False)
+async def project_workflow_edit_page(project_id: str, workflow_id: str, request: Request):
+    """Project-manager workflow editor — same editor as admin, project-scoped API."""
+    return templates.TemplateResponse(
+        request, "project_workflow_edit.html",
+        {"request": request, "project_id": project_id, "workflow_id": workflow_id},
+    )
+
+
+@app.get("/projects/{project_id}/config/skills/{skill_id}", include_in_schema=False)
+async def project_skill_edit_page(project_id: str, skill_id: str, request: Request):
+    """Project-manager skill editor — same editor as admin, project-scoped API."""
+    return templates.TemplateResponse(
+        request, "project_skill_edit.html",
+        {"request": request, "project_id": project_id, "skill_id": skill_id},
+    )
 
 
 @app.get("/admin", include_in_schema=False)
 async def admin_index(request: Request):
     """Admin dashboard — overview page."""
-    return templates.TemplateResponse("admin/dashboard.html", {"request": request})
+    return templates.TemplateResponse(request, "admin/dashboard.html", {"request": request})
 
 
 @app.get("/admin/projects", include_in_schema=False)
 async def admin_projects(request: Request):
     """Admin projects management page."""
-    return templates.TemplateResponse("admin/projects.html", {"request": request})
+    return templates.TemplateResponse(request, "admin/projects.html", {"request": request})
 
 
 @app.get("/admin/projects/{project_id}/members", include_in_schema=False)
 async def admin_project_members(project_id: str, request: Request):
     """Admin project members management page."""
-    return templates.TemplateResponse("admin/project_members.html", {"request": request})
+    return templates.TemplateResponse(request, "admin/project_members.html", {"request": request})
+
+
+@app.get("/admin/projects/{project_id}/workflows", include_in_schema=False)
+async def admin_project_workflows(project_id: str, request: Request):
+    """Admin project workflow mapping page."""
+    return templates.TemplateResponse(request, "admin/project_workflows.html", {"request": request})
+
+
+@app.get("/admin/projects/{project_id}/integrations", include_in_schema=False)
+async def admin_project_integrations(project_id: str, request: Request):
+    """Admin project integrations management page."""
+    return templates.TemplateResponse(request, "admin/project_integrations.html", {"request": request})
 
 
 @app.get("/admin/users", include_in_schema=False)
 async def admin_users(request: Request):
     """Admin users management page."""
-    return templates.TemplateResponse("admin/users.html", {"request": request})
+    return templates.TemplateResponse(request, "admin/users.html", {"request": request})
+
+
+@app.get("/admin/skills", include_in_schema=False)
+async def admin_skills(request: Request):
+    """Admin skills library — list page."""
+    return templates.TemplateResponse(request, "admin/skills.html", {"request": request})
+
+
+@app.get("/admin/skills/{skill_id}", include_in_schema=False)
+async def admin_skill_edit(skill_id: str, request: Request):
+    """Admin skills library — detail/edit page."""
+    return templates.TemplateResponse(
+        request, "admin/skill_edit.html", {"request": request, "skill_id": skill_id}
+    )
+
+
+@app.get("/admin/workflows", include_in_schema=False)
+async def admin_workflows(request: Request):
+    """Admin workflow management — list page."""
+    return templates.TemplateResponse(request, "admin/workflows.html", {"request": request})
+
+
+@app.get("/admin/workflows/{workflow_id}", include_in_schema=False)
+async def admin_workflow_edit(workflow_id: str, request: Request):
+    """Admin workflow management — detail/edit page."""
+    return templates.TemplateResponse(
+        request, "admin/workflow_edit.html", {"request": request, "workflow_id": workflow_id}
+    )
 
 
 # Routers
@@ -153,7 +261,11 @@ app.include_router(admin.router)
 app.include_router(integrations.router)
 app.include_router(projects.router)
 app.include_router(workflows.router)
+app.include_router(policies.router)
+app.include_router(project_skills.router)
+app.include_router(refdata.router)
 app.include_router(runs.router)
+app.include_router(webhooks.router)
 
 # Static files (theme, Alpine.js, Mermaid.js)
 app.mount("/static", StaticFiles(directory="platform_api/static"), name="static")

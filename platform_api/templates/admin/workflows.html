@@ -1,0 +1,254 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Workflows{% endblock %}
+{% block nav_workflows %}active menu-open{% endblock %}
+
+{% block page_title %}Workflows{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item active" aria-current="page">Workflows</li>
+{% endblock %}
+
+{% block content %}
+<div class="box">
+    <div class="box-header with-border">
+        <h4 class="box-title">Workflows</h4>
+        <div class="box-controls pull-right">
+            <button class="btn btn-primary btn-sm" onclick="showCreateModal()"><i class="ti-plus"></i> Create Workflow</button>
+        </div>
+    </div>
+    <div class="box-body">
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Project</th>
+                        <th>Steps</th>
+                        <th>Start Step</th>
+                        <th>Policies</th>
+                        <th>Used By</th>
+                        <th>Active</th>
+                        <th>Version</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="workflows-tbody">
+                    <tr><td colspan="9" class="text-center text-muted">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Create Workflow Modal -->
+<div class="modal fade" id="workflowModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="modal-title">Create Workflow</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="wf-id">
+                <div class="row g-3">
+                    <div class="col-md-12">
+                        <label class="form-label">Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control form-control-sm" id="wf-name" placeholder="e.g. story-delivery">
+                    </div>
+                </div>
+                <div class="row g-3 mt-1">
+                    <div class="col-12">
+                        <label class="form-label">Description <span class="text-muted">(optional)</span></label>
+                        <textarea class="form-control form-control-sm" id="wf-desc" rows="3" placeholder="What this workflow does" style="resize:vertical;"></textarea>
+                        <small class="text-muted">Steps and routing are configured in the visual editor after creation.</small>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveWorkflow()"><i class="ti-save-alt"></i> Save Workflow</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Copy to Project Modal -->
+<div class="modal fade" id="copyProjectModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-sm">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Copy to Project</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="copy-wf-id">
+                <p class="small text-muted">Clone "<span id="copy-wf-name"></span>" and its policies to:</p>
+                <select class="form-select form-select-sm" id="copy-project-select">
+                    <option value="">— Select a project —</option>
+                </select>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="confirmCopyToProject()"><i class="ti-files"></i> Copy</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let workflowsData = [];
+let projectsList = [];
+
+function loadWorkflows() {
+    fetch('/api/admin/workflows')
+        .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+        .then(data => {
+            workflowsData = data;
+            renderTable();
+        })
+        .catch(err => {
+            document.getElementById('workflows-tbody').innerHTML =
+                `<tr><td colspan="9" class="text-center text-danger">Failed to load workflows: ${err.message}</td></tr>`;
+        });
+}
+
+function loadProjects() {
+    return fetch('/api/admin/projects')
+        .then(r => r.json())
+        .then(data => { projectsList = data; });
+}
+
+function renderTable() {
+    const tbody = document.getElementById('workflows-tbody');
+    if (!workflowsData.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No workflows yet. Create one!</td></tr>';
+        return;
+    }
+    tbody.innerHTML = workflowsData.map(w => {
+        const parsed = w.parsed;
+        const stepCount = parsed ? parsed.steps.length : '—';
+        const startStep = parsed ? parsed.start : '—';
+        const policyBadge = w.policy_count > 0
+            ? `<span class="badge rounded-pill bg-info">${w.policy_count} policy${w.policy_count !== 1 ? 'ies' : ''}</span>`
+            : '<span class="badge rounded-pill bg-secondary">none</span>';
+        const activeBadge = w.is_active
+            ? '<span class="badge rounded-pill bg-success">active</span>'
+            : '<span class="badge rounded-pill bg-dark">inactive</span>';
+
+        // Project column: platform vs project-specific
+        const isPlatform = !w.project_id;
+        const projectCell = isPlatform
+            ? '<span class="badge rounded-pill bg-primary">Platform</span>'
+            : `<a href="#" class="text-decoration-none small">${esc(w.project_name || w.project_id)}</a>`;
+
+        // Actions: always edit + delete; Copy to Project only for platform workflows
+        let copyBtn = '';
+        if (isPlatform) {
+            copyBtn = `<button class="btn btn-outline-primary btn-sm" onclick="showCopyModal('${w.id}', '${esc(w.name.replace(/'/g, "\\'"))}')" title="Copy to Project"><i class="ti-files"></i></button>`;
+        }
+
+        return `
+            <tr>
+                <td>
+                    <a href="/admin/workflows/${w.id}" class="text-decoration-none fw-bold">${esc(w.name)}</a>
+                </td>
+                <td>${projectCell}</td>
+                <td>${stepCount}</td>
+                <td><code>${esc(String(startStep))}</code></td>
+                <td>${policyBadge}</td>
+                <td><span class="badge rounded-pill bg-dark">${w.run_count} runs</span></td>
+                <td>${activeBadge}</td>
+                <td>v${w.version}</td>
+                <td class="text-end">
+                    ${copyBtn}
+                    <a href="/admin/workflows/${w.id}" class="btn btn-info btn-sm" title="Edit"><i class="ti-pencil"></i></a>
+                    <button class="btn btn-danger btn-sm" onclick="deleteWorkflow('${w.id}', '${esc(w.name.replace(/'/g, "\\'"))}')" title="Delete"><i class="ti-trash"></i></button>
+                </td>
+            </tr>`;
+    }).join('');
+}
+
+// ── Create ──
+
+function showCreateModal() {
+    document.getElementById('modal-title').textContent = 'Create Workflow';
+    document.getElementById('wf-id').value = '';
+    document.getElementById('wf-name').value = '';
+    document.getElementById('wf-desc').value = '';
+    new bootstrap.Modal(document.getElementById('workflowModal')).show();
+}
+
+function saveWorkflow() {
+    const id = document.getElementById('wf-id').value;
+    const name = document.getElementById('wf-name').value.trim();
+    const description = document.getElementById('wf-desc').value.trim();
+
+    if (!name) { alert('Name is required.'); return; }
+
+    const isCreate = !id;
+    const url = isCreate ? '/api/admin/workflows' : `/api/admin/workflows/${id}`;
+    const method = isCreate ? 'POST' : 'PATCH';
+    const body = isCreate ? { name, description } : { name };
+
+    fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+        .then(data => {
+            bootstrap.Modal.getInstance(document.getElementById('workflowModal')).hide();
+            if (isCreate) {
+                // Redirect to the visual editor so the user can build steps & routing
+                window.location.href = `/admin/workflows/${data.id}`;
+            } else {
+                loadWorkflows();
+            }
+        })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+// ── Copy to Project ──
+
+function showCopyModal(wfId, wfName) {
+    document.getElementById('copy-wf-id').value = wfId;
+    document.getElementById('copy-wf-name').textContent = wfName;
+    // Populate project dropdown
+    const sel = document.getElementById('copy-project-select');
+    sel.innerHTML = '<option value="">— Select a project —</option>' +
+        projectsList.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    new bootstrap.Modal(document.getElementById('copyProjectModal')).show();
+}
+
+function confirmCopyToProject() {
+    const wfId = document.getElementById('copy-wf-id').value;
+    const projectId = document.getElementById('copy-project-select').value;
+    if (!projectId) { alert('Please select a project.'); return; }
+
+    fetch(`/api/admin/workflows/${wfId}/copy-to-project`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: projectId })
+    })
+    .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+    .then(() => {
+        bootstrap.Modal.getInstance(document.getElementById('copyProjectModal')).hide();
+        loadWorkflows();
+    })
+    .catch(err => alert('Error: ' + err.message));
+}
+
+// ── Delete ──
+
+function deleteWorkflow(id, name) {
+    if (!confirm(`Delete workflow "${name}"? This will also remove all associated policies and runs.`)) return;
+    fetch(`/api/admin/workflows/${id}`, { method: 'DELETE' })
+        .then(r => { if (!r.ok) throw new Error(r.statusText); loadWorkflows(); })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+// Load projects for the copy modal, then workflows
+loadProjects().then(() => loadWorkflows());
+</script>
+{% endblock %}

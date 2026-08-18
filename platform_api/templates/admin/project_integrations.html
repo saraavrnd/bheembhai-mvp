@@ -1,0 +1,484 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Project Integrations{% endblock %}
+{% block nav_projects %}active menu-open{% endblock %}
+
+{% block page_title %}Project Integrations{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a href="/admin/projects">Projects</a></li>
+<li class="breadcrumb-item active" id="breadcrumb-project">Integrations</li>
+{% endblock %}
+
+{% block content %}
+<style>
+    /* Integration enable toggle — grey OFF, green ON */
+    .integration-toggle.switch-success .switch-indicator {
+        background: #ced4da;  /* grey when OFF */
+    }
+    .integration-toggle.switch-success input:checked + .switch-indicator {
+        background: #28a745;  /* green when ON */
+    }
+    /* Integration row — clickable affordance */
+    .integration-row {
+        cursor: pointer;
+        transition: background 0.15s;
+    }
+    .integration-row:hover {
+        background: #f5f6f8 !important;
+    }
+    .integration-row.selected {
+        background: #f0f2f5;
+    }
+</style>
+<div class="row">
+    <!-- Left: Integration list -->
+    <div class="col-md-5">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Integrations — <span id="project-name-display">...</span></h4>
+            </div>
+            <div class="box-body p-0">
+                <div id="integration-list">
+                    <p class="text-center text-muted p-3">Loading...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Right: Credential form -->
+    <div class="col-md-7">
+        <div class="box" id="form-box">
+            <div class="box-header with-border">
+                <h4 class="box-title" id="form-title">Tool Configuration</h4>
+            </div>
+            <div class="box-body" id="form-body">
+                <p class="text-muted text-center" id="form-placeholder">
+                    ← Turn ON the Checkbox to enable the tool and enter the credentials.
+                </p>
+                <div id="form-content" style="display:none;">
+                    <p class="small text-muted mb-3" id="form-description"></p>
+                    <div id="form-fields"></div>
+                    <hr>
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div>
+                            <button class="btn btn-primary btn-sm" onclick="saveIntegration()">
+                                <i class="ti-save-alt"></i> Save
+                            </button>
+                            <button class="btn btn-outline-info btn-sm ms-2" onclick="testConnection()" id="test-btn">
+                                <i class="ti-shine"></i> Test connection
+                            </button>
+                            <button class="btn btn-outline-danger btn-sm ms-2" id="delete-btn" style="display:none;" onclick="deleteIntegration()">
+                                <i class="ti-trash"></i> Remove
+                            </button>
+                        </div>
+                        <span class="small text-muted" id="test-result"></span>
+                    </div>
+                    <p class="small text-muted mt-3 mb-0">
+                        <i class="ti-lock"></i> Secrets are write-only — stored encrypted.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectId = window.location.pathname.split('/')[3]; // /admin/projects/{id}/integrations
+
+// Integration type registry — maps type key → {icon, label, category, description, fields}
+const INTEGRATION_TYPES = {
+    jira:     { icon: 'JR', label: 'Jira',    category: 'TOOLS',       description: 'Jira issue tracking integration',
+                fields: [
+                    {name:'url', label:'Jira URL', type:'text', required:true, placeholder:'https://your-domain.atlassian.net'},
+                    {name:'username', label:'Username (email)', type:'text', required:true, placeholder:'you@example.com'},
+                    {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
+                    {name:'project_key', label:'Project key', type:'text', required:false, placeholder:'PROJ'},
+                    {name:'default_issue_type', label:'Default issue type', type:'text', required:false, placeholder:'Task'}
+                ]},
+    github:   { icon: 'GH', label: 'GitHub',  category: 'TOOLS',       description: 'GitHub source control and PR integration',
+                fields: [
+                    {name:'url', label:'GitHub URL', type:'text', required:false, placeholder:'https://github.com'},
+                    {name:'username', label:'Username', type:'text', required:false, placeholder:'your-username'},
+                    {name:'access_token', label:'Access token', type:'secret', required:true, placeholder:''},
+                    {name:'repository', label:'Repository', type:'text', required:false, placeholder:'owner/repo'},
+                    {name:'base_branch', label:'Base branch', type:'text', required:false, placeholder:'main'}
+                ]},
+    openai:   { icon: 'OA', label: 'OpenAI',  category: 'AI VENDORS',  description: 'Model tiers let each stage pick the cheapest model',
+                fields: [
+                    {name:'base_url', label:'Base URL', type:'text', required:true, placeholder:'https://api.openai.com/v1'},
+                    {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
+                    {name:'organisation', label:'Organisation', type:'text', required:false, placeholder:'org-...'},
+                    {name:'model_high', label:'High-end model', type:'select', required:true, options:[{v:'gpt-5-pro',l:'gpt-5-pro'},{v:'gpt-5',l:'gpt-5'}]},
+                    {name:'model_medium', label:'Medium model', type:'select', required:true, options:[{v:'gpt-5',l:'gpt-5'},{v:'gpt-5-mini',l:'gpt-5-mini'}]},
+                    {name:'model_low', label:'Low-tier model', type:'select', required:true, options:[{v:'gpt-5-mini',l:'gpt-5-mini'}]},
+                    {name:'timeout', label:'Request timeout', type:'text', required:false, placeholder:'120s'}
+                ]},
+    claude:   { icon: 'CL', label: 'Claude',  category: 'AI VENDORS',  description: 'Anthropic Claude model tiers',
+                fields: [
+                    {name:'base_url', label:'Base URL', type:'text', required:true, placeholder:'https://api.anthropic.com/v1'},
+                    {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
+                    {name:'organisation', label:'Organisation', type:'text', required:false, placeholder:''},
+                    {name:'model_high', label:'High-end model', type:'select', required:true, options:[{v:'claude-opus-5',l:'claude-opus-5'},{v:'claude-sonnet-5',l:'claude-sonnet-5'}]},
+                    {name:'model_medium', label:'Medium model', type:'select', required:true, options:[{v:'claude-sonnet-5',l:'claude-sonnet-5'},{v:'claude-haiku-4-5',l:'claude-haiku-4-5'}]},
+                    {name:'model_low', label:'Low-tier model', type:'select', required:true, options:[{v:'claude-haiku-4-5',l:'claude-haiku-4-5'}]},
+                    {name:'timeout', label:'Request timeout', type:'text', required:false, placeholder:'120s'}
+                ]},
+    kimi:     { icon: 'KM', label: 'Kimi',    category: 'AI VENDORS',  description: 'Moonshot Kimi model tiers',
+                fields: [
+                    {name:'base_url', label:'Base URL', type:'text', required:true, placeholder:'https://api.moonshot.cn/v1'},
+                    {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
+                    {name:'organisation', label:'Organisation', type:'text', required:false, placeholder:''},
+                    {name:'model_high', label:'High-end model', type:'select', required:true, options:[{v:'kimi-k2',l:'kimi-k2'}]},
+                    {name:'model_medium', label:'Medium model', type:'select', required:true, options:[{v:'kimi-k2',l:'kimi-k2'}]},
+                    {name:'model_low', label:'Low-tier model', type:'select', required:true, options:[{v:'kimi-k2',l:'kimi-k2'}]},
+                    {name:'timeout', label:'Request timeout', type:'text', required:false, placeholder:'120s'}
+                ]},
+    deepseek: { icon: 'DS', label: 'DeepSeek',category: 'AI VENDORS',  description: 'DeepSeek model tiers',
+                fields: [
+                    {name:'base_url', label:'Base URL', type:'text', required:true, placeholder:'https://api.deepseek.com/v1'},
+                    {name:'api_token', label:'API token', type:'secret', required:true, placeholder:''},
+                    {name:'organisation', label:'Organisation', type:'text', required:false, placeholder:''},
+                    {name:'model_high', label:'High-end model', type:'select', required:true, options:[{v:'deepseek-v4-pro',l:'deepseek-v4-pro'},{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
+                    {name:'model_medium', label:'Medium model', type:'select', required:true, options:[{v:'deepseek-v4-pro',l:'deepseek-v4-pro'},{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
+                    {name:'model_low', label:'Low-tier model', type:'select', required:true, options:[{v:'deepseek-v4-flash',l:'deepseek-v4-flash'}]},
+                    {name:'timeout', label:'Request timeout', type:'text', required:false, placeholder:'120s'}
+                ]}
+};
+
+// Category display order
+const CATEGORY_ORDER = ['TOOLS', 'AI VENDORS'];
+
+let allIntegrations = {};   // type_key → IntegrationAdminResponse
+let enabledSet = {};         // type_key → true when checkbox is on
+let selectedType = null;    // currently selected type_key
+let integrationId = null;   // DB id when configured, null when placeholder
+
+if (!projectId || projectId === 'undefined') {
+    document.getElementById('integration-list').innerHTML = '<p class="text-center text-danger p-3">No project ID in URL.</p>';
+} else {
+    loadAll();
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+
+function loadAll() {
+    // Fetch project name
+    fetch(`/api/admin/projects/${projectId}`)
+        .then(r => r.json())
+        .then(project => {
+            document.getElementById('breadcrumb-project').textContent = project.name;
+            document.getElementById('project-name-display').textContent = project.name;
+        })
+        .catch(() => {
+            document.getElementById('breadcrumb-project').textContent = 'Integrations';
+        });
+
+    // Fetch integrations
+    fetch(`/api/admin/projects/${projectId}/integrations`)
+        .then(r => r.json())
+        .then(data => {
+            allIntegrations = {};
+            data.forEach(integ => { allIntegrations[integ.type] = integ; });
+            // Initialise enabledSet from configured integrations
+            enabledSet = {};
+            data.forEach(integ => {
+                if (integ.status !== 'unconfigured') enabledSet[integ.type] = true;
+            });
+            renderList();
+            // Re-select if previously selected and still enabled
+            if (selectedType && enabledSet[selectedType]) showForm(selectedType);
+            else hideForm();
+        })
+        .catch(() => {
+            document.getElementById('integration-list').innerHTML = '<p class="text-center text-danger p-3">Failed to load integrations.</p>';
+        });
+}
+
+// ── List rendering ────────────────────────────────────────────────────────────
+
+function renderList() {
+    const container = document.getElementById('integration-list');
+    let html = '';
+
+    CATEGORY_ORDER.forEach(cat => {
+        html += `<div class="px-3 pt-3 pb-1"><small class="text-uppercase text-muted fw-bold">${esc(cat)}</small></div>`;
+        const typesInCat = Object.keys(INTEGRATION_TYPES).filter(k => INTEGRATION_TYPES[k].category === cat);
+        typesInCat.forEach(typeKey => {
+            const meta = INTEGRATION_TYPES[typeKey];
+            const integ = allIntegrations[typeKey];
+            const isConfigured = integ && integ.status !== 'unconfigured';
+            const status = integ ? integ.status : 'unconfigured';
+            const isEnabled = !!enabledSet[typeKey];
+
+            // Status dot
+            let dotColor = '#adb5bd'; // grey
+            if (status === 'connected') dotColor = '#28a745'; // sage green
+            else if (status === 'warning') dotColor = '#e8614c'; // terracotta
+
+            // Subtitle
+            let subtitle = '';
+            if (isConfigured && integ.config) {
+                const c = integ.config;
+                subtitle = esc(c.url || c.base_url || c.repository || integ.label || '');
+                if (subtitle.length > 28) subtitle = subtitle.substring(0, 28) + '...';
+            }
+
+            html += `<div class="integration-row d-flex align-items-center px-3 py-2 ${isEnabled ? 'selected' : ''}"
+                         style="cursor:pointer; ${isEnabled ? 'background:#f0f2f5;' : ''}"
+                         onclick="selectAndEnable('${typeKey}')"
+                         data-type="${typeKey}">
+                <span class="badge rounded-pill bg-dark me-2" style="min-width:32px;font-weight:700;">${meta.icon}</span>
+                <div class="flex-grow-1 min-width-0">
+                    <strong style="font-size:0.9rem;">${esc(meta.label)}</strong>
+                    ${subtitle ? `<br><small class="text-muted">${subtitle}</small>` : ''}
+                </div>
+                <label class="switch switch-border switch-success integration-toggle mb-0 me-2" style="--bs-switch-width:38px;--bs-switch-height:20px;" onclick="event.stopPropagation()">
+                    <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleIntegration('${typeKey}', this.checked)" data-type="${typeKey}">
+                    <span class="switch-indicator"></span>
+                </label>
+                <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${dotColor};flex-shrink:0;" title="${status}"></span>
+            </div>`;
+        });
+    });
+
+    // Hint at bottom
+    html += `<div class="px-3 py-3">
+        <small class="text-muted">Turn ON the Checkbox to enable the tool and enter the credentials.</small>
+    </div>`;
+
+    container.innerHTML = html;
+}
+
+// ── Row click: enable + show form ──────────────────────────────────────────────
+
+function selectAndEnable(typeKey) {
+    // Turn ON the checkbox and show the form
+    enabledSet[typeKey] = true;
+    selectedType = typeKey;
+    showForm(typeKey);
+    renderList();  // re-render so checkbox reflects enabled state
+}
+
+// ── Toggle integration on/off (checkbox change) ────────────────────────────────
+
+function toggleIntegration(typeKey, checked) {
+    if (checked) {
+        enabledSet[typeKey] = true;
+        selectedType = typeKey;
+        showForm(typeKey);
+    } else {
+        delete enabledSet[typeKey];
+        if (selectedType === typeKey) {
+            selectedType = null;
+            integrationId = null;
+            hideForm();
+        }
+    }
+    renderList();
+}
+
+function showForm(typeKey) {
+    selectedType = typeKey;
+    integrationId = null;
+
+    const integ = allIntegrations[typeKey];
+    const meta = INTEGRATION_TYPES[typeKey];
+    if (!meta) return;
+
+    if (integ && integ.status !== 'unconfigured') {
+        integrationId = integ.id;
+    }
+
+    // Show form
+    document.getElementById('form-placeholder').style.display = 'none';
+    document.getElementById('form-content').style.display = '';
+    document.getElementById('form-title').textContent = `(${meta.icon}) ${meta.label}`;
+    document.getElementById('form-description').textContent = meta.description;
+    document.getElementById('delete-btn').style.display = integrationId ? '' : 'none';
+    document.getElementById('test-btn').style.display = integrationId ? '' : 'none';
+    document.getElementById('test-result').textContent = '';
+
+    // Status text
+    if (integ && integ.status === 'connected') {
+        document.getElementById('test-result').innerHTML = '<span class="text-success"><i class="ti-check"></i> Connected</span>';
+    } else if (integ && integ.status === 'warning') {
+        document.getElementById('test-result').innerHTML = '<span class="text-warning"><i class="ti-alert"></i> Not verified recently</span>';
+    }
+
+    // Build fields
+    const fieldsContainer = document.getElementById('form-fields');
+    let fieldsHtml = '';
+    meta.fields.forEach(f => {
+        const existingVal = (integ && integ.config && integ.config[f.name] !== undefined) ? integ.config[f.name] : '';
+        const fid = `field-${f.name}`;
+
+        fieldsHtml += `<div class="form-group row align-items-center mb-2">
+            <label class="col-sm-4 col-form-label col-form-label-sm" for="${fid}">${esc(f.label)}</label>
+            <div class="col-sm-8">`;
+
+        if (f.type === 'secret') {
+            fieldsHtml += `<div class="input-group input-group-sm">
+                <input type="password" class="form-control form-control-sm" id="${fid}" value="${existingVal ? '************' : ''}" data-real="${esc(existingVal)}" placeholder="${esc(f.placeholder||'')}" readonly>
+                <button class="btn btn-outline-secondary btn-sm" type="button" onclick="replaceSecret('${f.name}')">Replace</button>
+            </div>`;
+        } else if (f.type === 'select' && f.options) {
+            fieldsHtml += `<select class="form-select form-select-sm" id="${fid}">`;
+            f.options.forEach(opt => {
+                const sel = (existingVal === opt.v) ? ' selected' : '';
+                fieldsHtml += `<option value="${esc(opt.v)}"${sel}>${esc(opt.l)}</option>`;
+            });
+            fieldsHtml += `</select>`;
+        } else {
+            fieldsHtml += `<input type="text" class="form-control form-control-sm" id="${fid}" value="${esc(existingVal)}" placeholder="${esc(f.placeholder||'')}">`;
+        }
+
+        fieldsHtml += `</div></div>`;
+    });
+
+    fieldsContainer.innerHTML = fieldsHtml;
+}
+
+function hideForm() {
+    selectedType = null;
+    integrationId = null;
+    document.getElementById('form-placeholder').style.display = '';
+    document.getElementById('form-content').style.display = 'none';
+    document.getElementById('form-title').textContent = 'Tool Configuration';
+    document.getElementById('test-result').textContent = '';
+}
+
+// ── Secret replace ────────────────────────────────────────────────────────────
+
+function replaceSecret(fieldName) {
+    const fid = `field-${fieldName}`;
+    const input = document.getElementById(fid);
+    if (!input) return;
+    input.readOnly = false;
+    input.type = 'text';
+    input.value = '';
+    input.placeholder = 'Paste new token...';
+    input.focus();
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────────
+
+function saveIntegration() {
+    if (!selectedType) return;
+    const meta = INTEGRATION_TYPES[selectedType];
+    if (!meta) return;
+
+    const config = {};
+    let credentialValue = '';
+
+    meta.fields.forEach(f => {
+        const fid = `field-${f.name}`;
+        const el = document.getElementById(fid);
+        if (!el) return;
+
+        if (f.type === 'secret') {
+            // If the input was activated (not readonly), grab the new value
+            if (!el.readOnly && el.value && el.value !== '************') {
+                credentialValue = el.value;
+            }
+            // Don't store secret values in config — they go to SecureStorage
+            // Store non-secret placeholder instead
+            config[f.name] = el.dataset.real || '••••••••';
+        } else {
+            config[f.name] = el.value;
+        }
+    });
+
+    const label = `${selectedType}-default`;
+
+    const payload = {
+        type: selectedType,
+        label: label,
+        config: config,
+        credential_value: credentialValue,
+    };
+
+    const isCreate = !integrationId;
+    const url = isCreate
+        ? `/api/admin/projects/${projectId}/integrations`
+        : `/api/admin/projects/${projectId}/integrations/${integrationId}`;
+    const method = isCreate ? 'POST' : 'PATCH';
+    const body = isCreate ? payload : { config, credential_value: credentialValue || undefined };
+
+    fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    })
+    .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+    .then(data => {
+        allIntegrations[data.type] = data;
+        integrationId = data.id;
+        document.getElementById('delete-btn').style.display = '';
+        document.getElementById('test-btn').style.display = '';
+        if (data.status === 'connected') {
+            document.getElementById('test-result').innerHTML = '<span class="text-success"><i class="ti-check"></i> Connected</span>';
+        }
+        renderList();
+        showForm(selectedType);
+    })
+    .catch(err => alert('Error: ' + err.message));
+}
+
+// ── Test connection ───────────────────────────────────────────────────────────
+
+function testConnection() {
+    if (!integrationId) return;
+
+    const btn = document.getElementById('test-btn');
+    const resultEl = document.getElementById('test-result');
+    btn.disabled = true;
+    resultEl.innerHTML = '<span class="text-muted"><i class="ti-reload fa-spin"></i> Testing...</span>';
+
+    fetch(`/api/admin/projects/${projectId}/integrations/${integrationId}/test`, { method: 'POST' })
+        .then(r => r.json())
+        .then(result => {
+            btn.disabled = false;
+            if (result.ok) {
+                resultEl.innerHTML = `<span class="text-success"><i class="ti-check"></i> ${esc(result.message)}</span>`;
+                // Refresh integration data
+                if (allIntegrations[selectedType]) {
+                    allIntegrations[selectedType].status = 'connected';
+                }
+                renderList();
+            } else {
+                resultEl.innerHTML = `<span class="text-danger"><i class="ti-close"></i> ${esc(result.message)}</span>`;
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            resultEl.innerHTML = `<span class="text-danger"><i class="ti-close"></i> ${esc(err.message)}</span>`;
+        });
+}
+
+// ── Delete ────────────────────────────────────────────────────────────────────
+
+function deleteIntegration() {
+    if (!integrationId) return;
+    const meta = INTEGRATION_TYPES[selectedType];
+    if (!confirm(`Remove the ${meta ? meta.label : selectedType} integration from this project?`)) return;
+
+    fetch(`/api/admin/projects/${projectId}/integrations/${integrationId}`, { method: 'DELETE' })
+        .then(r => { if (!r.ok) throw new Error(r.statusText); })
+        .then(() => {
+            delete allIntegrations[selectedType];
+            delete enabledSet[selectedType];
+            integrationId = null;
+            renderList();
+            hideForm();
+        })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+</script>
+{% endblock %}

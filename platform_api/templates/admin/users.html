@@ -1,7 +1,7 @@
 {% extends "admin_base.html" %}
 
 {% block title %}Users{% endblock %}
-{% block nav_users %}{% endblock %}
+{% block nav_users %}active menu-open{% endblock %}
 
 {% block page_title %}Users{% endblock %}
 {% block breadcrumb %}
@@ -15,6 +15,14 @@
         <div class="box">
             <div class="box-header with-border">
                 <h4 class="box-title">Platform Users</h4>
+                <div class="box-controls pull-right">
+                    <div class="input-group input-group-sm" style="width: 260px;">
+                        <input type="text" class="form-control" id="user-search" placeholder="Search by name or email..." oninput="filterUsers()">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
             </div>
             <div class="box-body">
                 <div class="table-responsive">
@@ -24,7 +32,7 @@
                                 <th>Name</th>
                                 <th>Email</th>
                                 <th>Platform Role</th>
-                                <th>Projects</th>
+                                <th>Status</th>
                                 <th>Joined</th>
                                 <th>Actions</th>
                             </tr>
@@ -34,6 +42,10 @@
                         </tbody>
                     </table>
                 </div>
+                <div id="no-results" class="text-center text-muted py-4" style="display: none;">
+                    <i class="ti-search fs-24 d-block mb-2"></i>
+                    No users match your search.
+                </div>
             </div>
         </div>
     </div>
@@ -42,40 +54,96 @@
 
 {% block scripts %}
 <script>
+let allUsers = [];
+
 function loadUsers() {
     fetch('/api/admin/users')
         .then(r => r.json())
         .then(users => {
-            const tbody = document.getElementById('users-tbody');
-            if (!users.length) {
-                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No users found.</td></tr>';
-                return;
-            }
-            tbody.innerHTML = users.map(u => `
-                <tr>
-                    <td><strong>${esc(u.display_name)}</strong></td>
-                    <td>${esc(u.email)}</td>
-                    <td>
-                        <span class="badge badge-pill ${u.platform_role === 'ADMIN' ? 'badge-danger' : 'badge-secondary'}">${esc(u.platform_role)}</span>
-                    </td>
-                    <td>
-                        ${u.memberships.length
-                            ? u.memberships.map(m => `<span class="badge badge-pill badge-info me-1">${esc(m.project_name)}: ${esc(m.role)}</span>`).join('<br>')
-                            : '<span class="text-muted">None</span>'}
-                    </td>
-                    <td>${u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}</td>
-                    <td>
-                        <button class="btn btn-${u.platform_role === 'ADMIN' ? 'warning' : 'success'} btn-sm" onclick="toggleRole('${u.id}', '${esc(u.display_name)}', '${u.platform_role}')">
-                            <i class="${u.platform_role === 'ADMIN' ? 'ti-arrow-down' : 'ti-arrow-up'}"></i>
-                            ${u.platform_role === 'ADMIN' ? 'Demote to USER' : 'Promote to ADMIN'}
-                        </button>
-                    </td>
-                </tr>
-            `).join('');
+            allUsers = users;
+            renderTable(users);
         })
         .catch(() => {
             document.getElementById('users-tbody').innerHTML = '<tr><td colspan="6" class="text-center text-danger">Failed to load users.</td></tr>';
         });
+}
+
+function renderTable(users) {
+    const tbody = document.getElementById('users-tbody');
+    const noResults = document.getElementById('no-results');
+
+    if (!users.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No users found.</td></tr>';
+        noResults.style.display = 'none';
+        return;
+    }
+
+    tbody.innerHTML = users.map(u => {
+        const roleBadge = u.platform_role === 'ADMIN'
+            ? '<span class="badge rounded-pill bg-danger">ADMIN</span>'
+            : '<span class="badge rounded-pill bg-secondary">USER</span>';
+
+        const statusBadge = u.is_enabled
+            ? '<span class="badge rounded-pill bg-success">Enabled</span>'
+            : '<span class="badge rounded-pill bg-dark">Disabled</span>';
+
+        const roleAction = u.platform_role === 'ADMIN'
+            ? `<button class="btn btn-warning btn-sm" onclick="toggleRole('${u.id}', '${esc(u.display_name)}', 'ADMIN')" title="Demote to USER">
+                   <i class="ti-arrow-down"></i> Demote
+               </button>`
+            : `<button class="btn btn-success btn-sm" onclick="toggleRole('${u.id}', '${esc(u.display_name)}', 'USER')" title="Promote to ADMIN">
+                   <i class="ti-arrow-up"></i> Promote
+               </button>`;
+
+        const enableAction = u.is_enabled
+            ? `<button class="btn btn-dark btn-sm" onclick="toggleEnabled('${u.id}', '${esc(u.display_name)}', false)" title="Disable user">
+                   <i class="ti-na"></i> Disable
+               </button>`
+            : `<button class="btn btn-success btn-sm" onclick="toggleEnabled('${u.id}', '${esc(u.display_name)}', true)" title="Enable user">
+                   <i class="ti-check"></i> Enable
+               </button>`;
+
+        return `
+            <tr class="${u.is_enabled ? '' : 'table-secondary'}">
+                <td><strong>${esc(u.display_name)}</strong></td>
+                <td>${esc(u.email)}</td>
+                <td>${roleBadge}</td>
+                <td>${statusBadge}</td>
+                <td>${u.created_at ? new Date(u.created_at).toLocaleDateString() : ''}</td>
+                <td>
+                    <div class="btn-group btn-group-sm">
+                        ${roleAction}
+                        ${enableAction}
+                    </div>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    noResults.style.display = 'none';
+}
+
+function filterUsers() {
+    const query = document.getElementById('user-search').value.toLowerCase().trim();
+    const tbody = document.getElementById('users-tbody');
+    const noResults = document.getElementById('no-results');
+
+    if (!query) {
+        renderTable(allUsers);
+        return;
+    }
+
+    const filtered = allUsers.filter(u =>
+        (u.display_name || '').toLowerCase().includes(query) ||
+        (u.email || '').toLowerCase().includes(query)
+    );
+
+    if (filtered.length) {
+        renderTable(filtered);
+    } else {
+        tbody.innerHTML = '';
+        noResults.style.display = 'block';
+    }
 }
 
 function toggleRole(userId, name, currentRole) {
@@ -87,6 +155,20 @@ function toggleRole(userId, name, currentRole) {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ platform_role: newRole })
+    })
+    .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+    .then(() => loadUsers())
+    .catch(err => alert('Error: ' + err.message));
+}
+
+function toggleEnabled(userId, name, enable) {
+    const action = enable ? 'Enable' : 'Disable';
+    if (!confirm(`${action} "${name}"?`)) return;
+
+    fetch(`/api/admin/users/${userId}/enabled`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_enabled: enable })
     })
     .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
     .then(() => loadUsers())

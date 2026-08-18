@@ -1,0 +1,19 @@
+{% extends "user_base.html" %}
+
+{% block title %}Workflow Editor{% endblock %}
+
+{% block page_title %}Edit Workflow{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a href="/projects/{{ project_id }}?tab=config" id="breadcrumb-config-link">Configuration</a></li>
+<li class="breadcrumb-item"><a href="/projects/{{ project_id }}?tab=config&sub=workflows" id="breadcrumb-workflows-link">Workflows</a></li>
+<li class="breadcrumb-item active" aria-current="page" id="breadcrumb-name">...</li>
+{% endblock %}
+
+{% block head %}
+<script>window.WF_API_BASE = '/api'; window.WF_WRAPPER = 'pm'; window.BB_PROJECT_ID = '{{ project_id }}';</script>
+{% endblock %}
+
+{% block content %}
+{% include "_workflow_editor.html" %}
+{% endblock %}

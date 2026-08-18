@@ -1,0 +1,830 @@
+<!-- ══════════ Shared workflow editor (admin + project-manager) ══════════
+     Plain markup + one script — included inside a wrapper page's content block.
+     Wrapper contract (set BEFORE this include renders its script):
+       window.WF_API_BASE  → the admin API base (admin wrapper) or '/api' (PM wrapper)
+       window.WF_WRAPPER   → 'admin' | 'pm'
+       window.BB_PROJECT_ID → project id (PM wrapper only, for the back link)
+     The wrapper's breadcrumb must contain #breadcrumb-workflows-link and
+     #breadcrumb-name — this script adjusts their href/text after load. -->
+
+<div id="wf-loader" class="text-center py-5"><div class="spinner-border text-primary" role="status"></div><p class="text-muted mt-2">Loading workflow...</p></div>
+
+<div id="wf-editor" style="display:none;">
+
+    <!-- Top bar -->
+    <div class="box">
+        <div class="box-body d-flex align-items-center justify-content-between py-2">
+            <div class="d-flex align-items-center gap-3">
+                <div>
+                    <label class="form-label mb-0 small text-muted">Start Step</label>
+                    <select class="form-select form-select-sm" id="start-step-select" style="width:auto;min-width:180px;"></select>
+                </div>
+                <div>
+                    <span class="badge rounded-pill bg-info" id="step-count-badge">0 steps</span>
+                </div>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <span id="wf-saved" class="text-success me-2" style="display:none;">✓ Saved</span>
+                <button class="btn btn-primary btn-sm" onclick="saveWorkflow()"><i class="ti-save-alt"></i> Save Workflow</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="box">
+        <div class="box-body p-0">
+            <ul class="nav nav-tabs" id="wf-tabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="tab-steps" data-bs-toggle="tab" data-bs-target="#pane-steps" type="button" role="tab">Steps &amp; Routing</button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="tab-policy" data-bs-toggle="tab" data-bs-target="#pane-policy" type="button" role="tab">Policy <span class="badge rounded-pill bg-warning ms-1" id="policy-tab-badge" style="display:none;">0</span></button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="tab-yaml" data-bs-toggle="tab" data-bs-target="#pane-yaml" type="button" role="tab">YAML</button>
+                </li>
+            </ul>
+
+            <div class="tab-content p-3" id="wf-tab-content">
+
+                <!-- ═══ TAB 1: Steps & Routing ═══ -->
+                <div class="tab-pane fade show active" id="pane-steps" role="tabpanel">
+                    <div class="row">
+                        <!-- Left: Step cards -->
+                        <div class="col-md-7">
+                            <div id="steps-list" style="max-height:65vh;overflow-y:auto;">
+                                <p class="text-muted text-center py-3">No steps yet. Add one below.</p>
+                            </div>
+                            <button class="btn btn-outline-primary btn-sm mt-2 w-100" onclick="addStep()"><i class="ti-plus"></i> Add Step</button>
+                        </div>
+
+                        <!-- Right: Step editor -->
+                        <div class="col-md-5">
+                            <div id="step-editor-placeholder" class="text-center text-muted py-5">
+                                <i class="mdi mdi-arrow-left" style="font-size:2rem;"></i>
+                                <br>Select a step from the left panel to edit
+                            </div>
+                            <div id="step-editor" style="display:none;">
+                                <input type="hidden" id="edit-step-idx">
+                                <div class="row g-2">
+                                    <div class="col-md-7">
+                                        <label class="form-label small">Step ID <span class="text-muted">(auto)</span></label>
+                                        <input type="text" class="form-control form-control-sm" id="edit-step-id" readonly style="background:#e9ecef;cursor:not-allowed;">
+                                    </div>
+                                    <div class="col-md-5">
+                                        <label class="form-label small">Skill</label>
+                                        <select class="form-select form-select-sm" id="edit-step-skill"></select>
+                                    </div>
+                                </div>
+                                <div class="row g-2 mt-1">
+                                    <div class="col-md-10">
+                                        <label class="form-label small">Label</label>
+                                        <input type="text" class="form-control form-control-sm" id="edit-step-label" placeholder="Human-readable label">
+                                    </div>
+                                    <div class="col-md-2">
+                                        <label class="form-label small">Deadline (s)</label>
+                                        <input type="number" class="form-control form-control-sm" id="edit-step-deadline" value="900" min="60" step="60">
+                                    </div>
+                                </div>
+                                <div class="row g-2 mt-1">
+                                    <div class="col-12">
+                                        <label class="form-label small">Model</label>
+                                        <input type="text" class="form-control form-control-sm" id="edit-step-model" placeholder="medium">
+                                    </div>
+                                </div>
+
+                                <!-- Routes -->
+                                <div class="mt-3">
+                                    <label class="form-label small">Routes <span class="text-muted">(status → next step)</span></label>
+                                    <div id="edit-step-routes"></div>
+                                    <div class="input-group input-group-sm mt-1">
+                                        <select class="form-select form-select-sm" id="new-route-status" style="max-width:160px;">
+                                            <option value="completed">completed</option>
+                                            <option value="BLOCK">BLOCK</option>
+                                            <option value="changes_requested">changes_requested</option>
+                                            <option value="escalation_required">escalation_required</option>
+                                            <option value="failed_execution">failed_execution</option>
+                                            <option value="failed_timeout">failed_timeout</option>
+                                        </select>
+                                        <select class="form-select form-select-sm" id="new-route-target">
+                                            <option value="DONE">DONE</option>
+                                        </select>
+                                        <button class="btn btn-outline-primary btn-sm" onclick="addRoute()"><i class="ti-plus"></i></button>
+                                    </div>
+                                </div>
+
+                                <div class="d-flex gap-2 mt-3">
+                                    <button class="btn btn-primary btn-sm" onclick="saveStep()"><i class="ti-save-alt"></i> Save Step</button>
+                                    <button class="btn btn-danger btn-sm" onclick="deleteStep()"><i class="ti-trash"></i> Delete Step</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ TAB 2: Policy ═══ -->
+                <div class="tab-pane fade" id="pane-policy" role="tabpanel">
+                    <!-- Policy switcher: ALL policies of the workflow (active +
+                         inactive) are selectable — not just the first one. -->
+                    <div class="d-flex align-items-center gap-2 mb-2" id="policy-toolbar" style="display:none;">
+                        <label class="small text-muted mb-0">Policy</label>
+                        <select class="form-select form-select-sm" id="policy-switcher"
+                                style="width:auto;min-width:260px;" onchange="switchPolicy(this.value)"></select>
+                        <span class="badge rounded-pill bg-success" id="policy-active-badge" style="display:none;">active</span>
+                        <span class="badge rounded-pill bg-dark" id="policy-inactive-badge" style="display:none;">inactive</span>
+                        <button class="btn btn-outline-primary btn-sm ms-auto" onclick="createPolicy()"><i class="ti-plus"></i> New Policy</button>
+                    </div>
+                    <div class="row">
+                        <!-- Left: Gates table -->
+                        <div class="col-md-7">
+                            <div id="policy-empty" class="text-center text-muted py-4">
+                                <p>No policy defined for this workflow yet.</p>
+                                <button class="btn btn-primary btn-sm" onclick="createPolicy()"><i class="ti-plus"></i> Create Policy</button>
+                            </div>
+                            <div id="policy-gates" style="display:none;">
+                                <table class="table table-sm table-hover mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>Step</th>
+                                            <th>Review</th>
+                                            <th>Role</th>
+                                            <th>On Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="policy-gates-tbody"></tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- Right: Policy metadata -->
+                        <div class="col-md-5">
+                            <div id="policy-meta" style="display:none;">
+                                <div class="row g-2">
+                                    <div class="col-md-8">
+                                        <label class="form-label small">Policy Name</label>
+                                        <input type="text" class="form-control form-control-sm" id="policy-name">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label small">Version</label>
+                                        <input type="number" class="form-control form-control-sm" id="policy-version" value="1" min="1">
+                                    </div>
+                                </div>
+                                <div class="mt-2">
+                                    <label class="form-label small">Applies To</label>
+                                    <input type="text" class="form-control form-control-sm" id="policy-applies-to" disabled>
+                                </div>
+                                <div class="mt-3">
+                                    <p class="small text-muted mb-1" id="policy-summary"></p>
+                                </div>
+                                <div class="d-flex gap-2 mt-2">
+                                    <button class="btn btn-primary btn-sm" onclick="savePolicy()"><i class="ti-save-alt"></i> Save Policy</button>
+                                    <button class="btn btn-outline-secondary btn-sm" id="policy-active-btn" style="display:none;" onclick="togglePolicyActive()"></button>
+                                    <button class="btn btn-danger btn-sm" id="policy-delete-btn" style="display:none;" onclick="deletePolicy()"><i class="ti-trash"></i> Delete</button>
+                                    <span id="policy-saved" class="text-success ms-2" style="display:none;">✓ Saved</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══ TAB 3: YAML ═══ -->
+                <div class="tab-pane fade" id="pane-yaml" role="tabpanel">
+                    <div class="row">
+                        <div class="col-12">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <span class="small text-muted">Generated YAML — read-only reference</span>
+                                <button class="btn btn-outline-primary btn-sm" onclick="copyYaml()"><i class="ti-clipboard"></i> Copy to Clipboard</button>
+                            </div>
+                            <textarea class="form-control font-monospace" id="yaml-editor" readonly
+                                      style="min-height:60vh;font-size:13px;line-height:1.5;resize:none;background:#f4f4f4;cursor:default;"
+                                      spellcheck="false"></textarea>
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- /.tab-content -->
+        </div><!-- /.box-body -->
+    </div><!-- /.box -->
+
+</div><!-- /#wf-editor -->
+
+<script>
+const WORKFLOW_ID = '{{ workflow_id }}';
+// Set by the wrapper page before this include's script runs:
+//   admin wrapper → window.WF_API_BASE = the admin API base, WF_WRAPPER = 'admin'
+//   PM wrapper    → window.WF_API_BASE = '/api',        WF_WRAPPER = 'pm'
+const API_BASE = window.WF_API_BASE;
+const WF_WRAPPER = window.WF_WRAPPER || 'admin';     // 'admin' | 'pm'
+if (!API_BASE) throw new Error('WF_API_BASE not set by wrapper page');
+// PMs manage inactive policies too; the member-facing variant is active-only.
+const POLICIES_URL = `${API_BASE}/workflows/${WORKFLOW_ID}/policies` +
+    (WF_WRAPPER === 'pm' ? '?include_inactive=1' : '');
+let workflowData = null;
+let parsed = null;       // WorkflowParsed — the live editable state
+let policies = [];       // PolicyResponse[]
+let activePolicy = null; // the first policy (or null)
+let skillsList = [];     // [{id, name}] for dropdowns
+let rolesList = [];      // [{key, label}] for policy role dropdowns
+let selectedStepIdx = -1;
+
+// ── Load ───────────────────────────────────────────────────────────────────
+
+function loadSkills() {
+    // PM wrapper: ask for the project union (project skills shadow platform
+    // names) so the dropdown offers what actually runs for this project.
+    const url = `${API_BASE}/skills/names` +
+        (window.BB_PROJECT_ID ? `?project_id=${window.BB_PROJECT_ID}` : '');
+    return fetch(url)
+        .then(r => r.json())
+        .then(data => { skillsList = data; });
+}
+
+function loadWorkflow() {
+    Promise.all([
+        fetch(`${API_BASE}/workflows/${WORKFLOW_ID}`).then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); }),
+        fetch(POLICIES_URL).then(r => r.json()),
+        loadSkills(),
+        fetch(`${API_BASE}/roles`).then(r => r.json()).then(data => { rolesList = data; })
+    ])
+    .then(([wf, pols]) => {
+        workflowData = wf;
+        policies = pols;
+        activePolicy = pols.length > 0 ? pols[0] : null;
+        parsed = wf.parsed ? JSON.parse(JSON.stringify(wf.parsed)) : { workflow: wf.name, version: wf.version, start: '', steps: [] };
+
+        // If start is empty but there are steps, default to the first step.
+        if (!parsed.start && parsed.steps.length > 0) {
+            parsed.start = parsed.steps[0].id || '';
+        }
+
+        document.getElementById('wf-loader').style.display = 'none';
+        document.getElementById('wf-editor').style.display = '';
+        document.getElementById('breadcrumb-name').textContent = wf.name;
+        document.title = wf.name + (WF_WRAPPER === 'pm' ? ' — BheemBhai' : ' — BheemBhai Admin');
+
+        // Point the breadcrumb back-link at the right list:
+        // PM → the project's Configuration tab; admin → the project's admin
+        // workflow page if the workflow is project-scoped (else the list).
+        const link = document.getElementById('breadcrumb-workflows-link');
+        if (link) {
+            if (WF_WRAPPER === 'pm') {
+                link.href = `/projects/${window.BB_PROJECT_ID}?tab=config`;
+            } else if (wf.project_id) {
+                link.href = `/admin/projects/${wf.project_id}/workflows`;
+            }
+        }
+
+        populateSkillDropdowns();
+        renderAll();
+
+        // Deep link: /config/workflows/<id>?tab=policy lands on the Policy
+        // tab (used by the policy list modal's Edit action).
+        if (new URLSearchParams(window.location.search).get('tab') === 'policy') {
+            const tabEl = document.getElementById('tab-policy');
+            if (window.bootstrap && bootstrap.Tab) {
+                new bootstrap.Tab(tabEl).show();
+            } else {
+                tabEl.click();
+            }
+        }
+    })
+    .catch(err => {
+        document.getElementById('wf-loader').innerHTML =
+            `<div class="text-danger">Failed to load workflow: ${err.message}</div>`;
+    });
+}
+
+function populateSkillDropdowns() {
+    const opts = skillsList.map(s => `<option value="${esc(s.name)}">${esc(s.name)}</option>`).join('');
+    document.getElementById('edit-step-skill').innerHTML = opts;
+}
+
+// ── Tab 1: Steps & Routing ─────────────────────────────────────────────────
+
+function renderAll() {
+    renderStepCards();
+    renderStartStepDropdown();
+    renderPolicyTab();
+    document.getElementById('yaml-editor').value = buildWorkflowYaml();
+    document.getElementById('step-count-badge').textContent = parsed.steps.length + ' steps';
+}
+
+function renderStepCards() {
+    const container = document.getElementById('steps-list');
+    if (!parsed.steps.length) {
+        container.innerHTML = '<p class="text-muted text-center py-3">No steps yet. Add one below.</p>';
+        document.getElementById('step-editor').style.display = 'none';
+        document.getElementById('step-editor-placeholder').style.display = '';
+        return;
+    }
+
+    container.innerHTML = parsed.steps.map((s, idx) => {
+        // Gate indicator — terracotta if this step has a policy gate
+        const gated = activePolicy && activePolicy.parsed && activePolicy.parsed.gates && activePolicy.parsed.gates[s.id];
+        const circleColor = gated ? '#d9534f' : '#5cb85c';
+        const isSelected = idx === selectedStepIdx;
+        const borderStyle = isSelected ? 'border-left: 3px solid #d9534f;' : 'border-left: 3px solid transparent;';
+
+        let routeChips = '';
+        Object.entries(s.on || {}).forEach(([status, target]) => {
+            let chipClass = 'bg-secondary';
+            if (status === 'completed') chipClass = 'bg-success';
+            else if (status === 'BLOCK') chipClass = 'bg-danger';
+            else if (status === 'changes_requested') chipClass = 'bg-warning text-dark';
+            else if (status === 'escalation_required') chipClass = 'bg-info text-dark';
+            routeChips += `<span class="badge rounded-pill ${chipClass} me-1" style="font-size:0.65rem;">${esc(status)} → ${esc(target)}</span>`;
+        });
+
+        return `
+            <div class="card mb-2 step-card" id="step-card-${idx}"
+                 style="cursor:pointer;${borderStyle}"
+                 onclick="selectStep(${idx})">
+                <div class="card-body py-2 px-3">
+                    <div class="d-flex align-items-start gap-2">
+                        <span class="rounded-circle d-inline-flex align-items-center justify-content-center fw-bold text-white flex-shrink-0"
+                              style="width:28px;height:28px;font-size:0.75rem;background:${circleColor};">
+                            ${idx + 1}
+                        </span>
+                        <div class="flex-grow-1 min-w-0">
+                            <div class="d-flex align-items-center gap-2 flex-wrap">
+                                <strong class="small">${esc(s.id)}</strong>
+                                ${s.label ? `<span class="small text-muted">— ${esc(s.label)}</span>` : ''}
+                                <span class="badge rounded-pill bg-primary" style="font-size:0.65rem;">${esc(s.skill || '?')}</span>
+                                <span class="badge rounded-pill bg-dark" style="font-size:0.65rem;">${esc(s.model)}</span>
+                                <span class="small text-muted">${s.deadline}s</span>
+                            </div>
+                            ${routeChips ? `<div class="mt-1">${routeChips}</div>` : ''}
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+    }).join('');
+}
+
+function selectStep(idx) {
+    selectedStepIdx = idx;
+    renderStepCards();
+    showStepEditor(idx);
+}
+
+function showStepEditor(idx) {
+    document.getElementById('step-editor-placeholder').style.display = 'none';
+    document.getElementById('step-editor').style.display = '';
+    document.getElementById('edit-step-idx').value = idx;
+
+    const s = parsed.steps[idx];
+    document.getElementById('edit-step-id').value = s.id;
+    document.getElementById('edit-step-label').value = s.label || '';
+    document.getElementById('edit-step-deadline').value = s.deadline;
+    document.getElementById('edit-step-model').value = s.model;
+    document.getElementById('edit-step-skill').value = s.skill;
+
+    // Render routes
+    const routesDiv = document.getElementById('edit-step-routes');
+    const entries = Object.entries(s.on || {});
+    if (!entries.length) {
+        routesDiv.innerHTML = '<small class="text-muted">No routes defined</small>';
+    } else {
+        routesDiv.innerHTML = entries.map(([status, target]) => `
+            <div class="d-flex align-items-center gap-1 mb-1 route-row">
+                <span class="badge rounded-pill bg-secondary" style="font-size:0.7rem;">${esc(status)}</span>
+                <span class="small">→</span>
+                <code class="small">${esc(target)}</code>
+                <button class="btn btn-sm p-0 text-danger border-0" style="font-size:0.9rem;line-height:1;"
+                        onclick="removeRoute('${esc(status)}')" title="Remove">&times;</button>
+            </div>`).join('');
+    }
+
+    populateRouteTargets();
+}
+
+function _nextStepId() {
+    // Scan existing steps for stepN patterns and return the next available id.
+    let maxN = 0;
+    (parsed.steps || []).forEach(s => {
+        const m = (s.id || '').match(/^step(\d+)$/);
+        if (m) { const n = parseInt(m[1], 10); if (n > maxN) maxN = n; }
+    });
+    return `step${maxN + 1}`;
+}
+
+function _readStepForm(idx) {
+    // Persist the current form state into parsed.steps[idx].  Does NOT
+    // re-render anything — callers decide when to refresh the UI.
+    const s = parsed.steps[idx];
+    s.id = document.getElementById('edit-step-id').value.trim();
+    s.skill = document.getElementById('edit-step-skill').value;
+    s.label = document.getElementById('edit-step-label').value.trim();
+    s.deadline = parseInt(document.getElementById('edit-step-deadline').value) || 900;
+    s.model = document.getElementById('edit-step-model').value.trim() || 'medium';
+}
+
+function addStep() {
+    const newStep = { id: _nextStepId(), skill: '', model: 'medium', label: '', deadline: 900, on: {} };
+    parsed.steps.push(newStep);
+    selectedStepIdx = parsed.steps.length - 1;
+    // Auto-set start to the first real step if it's empty
+    if (!parsed.start && parsed.steps.length === 1) {
+        parsed.start = newStep.id;
+    }
+    renderAll();
+    showStepEditor(selectedStepIdx);
+}
+
+function saveStep() {
+    const idx = parseInt(document.getElementById('edit-step-idx').value);
+    if (isNaN(idx) || idx < 0 || idx >= parsed.steps.length) return;
+
+    _readStepForm(idx);
+    renderAll();
+    showStepEditor(idx);
+}
+
+function deleteStep() {
+    const idx = parseInt(document.getElementById('edit-step-idx').value);
+    if (isNaN(idx) || idx < 0 || idx >= parsed.steps.length) return;
+    if (!confirm(`Delete step "${parsed.steps[idx].id}"?`)) return;
+
+    const deletedId = parsed.steps[idx].id;
+    parsed.steps.splice(idx, 1);
+    selectedStepIdx = -1;
+    // If we deleted the start step, pick the first remaining step.
+    if (parsed.start === deletedId) {
+        parsed.start = parsed.steps.length > 0 ? (parsed.steps[0].id || '') : '';
+    }
+    document.getElementById('step-editor').style.display = 'none';
+    document.getElementById('step-editor-placeholder').style.display = '';
+    renderAll();
+}
+
+function populateRouteTargets() {
+    const sel = document.getElementById('new-route-target');
+    const currentVal = sel.value;
+    sel.innerHTML = '<option value="DONE">DONE</option>' +
+        parsed.steps.filter(s => s.id).map(s => `<option value="${esc(s.id)}">${esc(s.id)}</option>`).join('');
+    // Restore selection if still valid
+    if (currentVal) sel.value = currentVal;
+}
+
+function addRoute() {
+    const idx = parseInt(document.getElementById('edit-step-idx').value);
+    if (isNaN(idx) || idx < 0) return;
+    const status = document.getElementById('new-route-status').value;
+    const target = document.getElementById('new-route-target').value;
+    if (!target) { alert('Target is required.'); return; }
+
+    // Persist any unsaved form edits before we mutate routes, so the
+    // user's id / skill / label edits aren't blown away by the re-render.
+    _readStepForm(idx);
+
+    if (!parsed.steps[idx].on) parsed.steps[idx].on = {};
+    parsed.steps[idx].on[status] = target;
+    showStepEditor(idx);
+    renderStepCards();
+}
+
+function removeRoute(status) {
+    const idx = parseInt(document.getElementById('edit-step-idx').value);
+    if (isNaN(idx) || idx < 0) return;
+    _readStepForm(idx);
+    if (parsed.steps[idx].on) {
+        delete parsed.steps[idx].on[status];
+    }
+    showStepEditor(idx);
+    renderStepCards();
+}
+
+function renderStartStepDropdown() {
+    const sel = document.getElementById('start-step-select');
+    const validSteps = parsed.steps.filter(s => s.id);
+    sel.innerHTML = validSteps.map(s =>
+        `<option value="${esc(s.id)}" ${parsed.start === s.id ? 'selected' : ''}>${esc(s.id)}</option>`
+    ).join('');
+    if (!validSteps.length) {
+        sel.innerHTML = '<option value="">— no steps yet —</option>';
+    }
+    sel.onchange = function() { parsed.start = this.value; };
+}
+
+// ── YAML builder ───────────────────────────────────────────────────────────
+
+function buildWorkflowYaml() {
+    let y = `workflow: ${parsed.workflow}\n`;
+    y += `version: ${parsed.version}\n`;
+    y += `start: ${parsed.start}\n`;
+    y += `steps:\n`;
+    parsed.steps.forEach(s => {
+        y += `  - id: ${s.id}\n`;
+        y += `    skill: ${s.skill}\n`;
+        y += `    model: ${s.model}\n`;
+        if (s.label) y += `    label: ${s.label}\n`;
+        y += `    deadline: ${s.deadline}\n`;
+        const routes = s.on || {};
+        if (Object.keys(routes).length > 0) {
+            y += `    on:\n`;
+            Object.entries(routes).forEach(([k, v]) => {
+                y += `      ${k}: ${v}\n`;
+            });
+        }
+    });
+    return y;
+}
+
+function buildPolicyYaml() {
+    if (!activePolicy) return '';
+    let y = `policy: ${activePolicy.name}\n`;
+    y += `version: ${activePolicy.version}\n`;
+    y += `applies_to: ${activePolicy.applies_to || workflowData.name}\n`;
+    y += `gates:\n`;
+    const gates = activePolicy.parsed ? activePolicy.parsed.gates : {};
+    Object.entries(gates).forEach(([stepId, gate]) => {
+        let line = `  ${stepId}: {review: ${gate.review}, role: ${gate.role}`;
+        if (gate.on_status && gate.on_status.length > 0) {
+            line += `, on_status: [${gate.on_status.join(', ')}]`;
+        }
+        line += `}`;
+        y += line + `\n`;
+    });
+    if (Object.keys(gates).length === 0) {
+        y += `  {}\n`;
+    }
+    return y;
+}
+
+// ── Save Workflow ──────────────────────────────────────────────────────────
+
+function saveWorkflow() {
+    const yaml = buildWorkflowYaml();
+    fetch(`${API_BASE}/workflows/${WORKFLOW_ID}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ yaml_content: yaml })
+    })
+    .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+    .then(data => {
+        workflowData = data;
+        document.getElementById('yaml-editor').value = buildWorkflowYaml();
+        const el = document.getElementById('wf-saved');
+        el.style.display = '';
+        setTimeout(() => { el.style.display = 'none'; }, 2000);
+    })
+    .catch(err => alert('Error: ' + err.message));
+}
+
+// ── Tab 2: Policy ──────────────────────────────────────────────────────────
+
+function renderPolicyTab() {
+    const emptyDiv = document.getElementById('policy-empty');
+    const gatesDiv = document.getElementById('policy-gates');
+    const metaDiv = document.getElementById('policy-meta');
+    const badge = document.getElementById('policy-tab-badge');
+    const deleteBtn = document.getElementById('policy-delete-btn');
+    const toolbar = document.getElementById('policy-toolbar');
+    const switcher = document.getElementById('policy-switcher');
+    const activeBadge = document.getElementById('policy-active-badge');
+    const inactiveBadge = document.getElementById('policy-inactive-badge');
+    const activeBtn = document.getElementById('policy-active-btn');
+
+    badge.textContent = policies.length;
+    badge.style.display = policies.length > 0 ? '' : 'none';
+
+    // Switcher lists EVERY policy — active and inactive — so policies #2..N
+    // are reachable instead of being counted and ignored.
+    toolbar.style.display = policies.length > 0 ? '' : 'none';
+    if (policies.length > 0) {
+        const activeIdx = policies.indexOf(activePolicy);
+        switcher.innerHTML = policies.map((p, i) => {
+            const tag = !p.id ? ' (new, unsaved)' : (p.is_active ? ' (active)' : ' (inactive)');
+            return `<option value="${i}" ${i === activeIdx ? 'selected' : ''}>${esc(p.name)} v${p.version}${tag}</option>`;
+        }).join('');
+    }
+    activeBadge.style.display = activePolicy && activePolicy.is_active ? '' : 'none';
+    inactiveBadge.style.display = activePolicy && activePolicy.id && !activePolicy.is_active ? '' : 'none';
+    if (activePolicy && activePolicy.id) {
+        activeBtn.style.display = '';
+        activeBtn.innerHTML = activePolicy.is_active
+            ? '<i class="ti-check-box"></i> Set inactive'
+            : '<i class="ti-check-box"></i> Set active';
+    } else {
+        activeBtn.style.display = 'none';
+    }
+
+    if (!activePolicy) {
+        emptyDiv.style.display = '';
+        gatesDiv.style.display = 'none';
+        metaDiv.style.display = 'none';
+        deleteBtn.style.display = 'none';
+        return;
+    }
+
+    emptyDiv.style.display = 'none';
+    gatesDiv.style.display = '';
+    metaDiv.style.display = '';
+    deleteBtn.style.display = '';
+
+    document.getElementById('policy-name').value = activePolicy.name;
+    document.getElementById('policy-version').value = activePolicy.version;
+    document.getElementById('policy-applies-to').value = activePolicy.parsed ? activePolicy.parsed.applies_to : workflowData.name;
+
+    // Build gates table
+    const tbody = document.getElementById('policy-gates-tbody');
+    const gates = activePolicy.parsed ? activePolicy.parsed.gates : {};
+
+    if (!parsed.steps.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-muted">No steps in workflow</td></tr>';
+    } else {
+        let totalGated = 0;
+        tbody.innerHTML = parsed.steps.map(s => {
+            const gate = gates[s.id] || { review: 'skip', role: 'any', on_status: null };
+            if (gate.review === 'required') totalGated++;
+            const onStatusChips = (gate.on_status || []).map(st =>
+                `<span class="badge rounded-pill bg-info me-1" style="font-size:0.65rem;">${esc(st)}</span>`
+            ).join('') || '<span class="small text-muted">completed only</span>';
+            return `
+                <tr>
+                    <td><code>${esc(s.id)}</code></td>
+                    <td>
+                        <select class="form-select form-select-sm" onchange="updatePolicyGate('${esc(s.id)}', 'review', this.value)" style="width:auto;">
+                            <option value="required" ${gate.review === 'required' ? 'selected' : ''}>required</option>
+                            <option value="skip" ${gate.review === 'skip' ? 'selected' : ''}>skip</option>
+                        </select>
+                    </td>
+                    <td>
+                        <select class="form-select form-select-sm" onchange="updatePolicyGate('${esc(s.id)}', 'role', this.value)" style="width:auto;">
+                            ${rolesList.map(r => `<option value="${esc(r.key)}" ${gate.role === r.key ? 'selected' : ''}>${esc(r.label)}</option>`).join('')}
+                        </select>
+                    </td>
+                    <td>${onStatusChips}</td>
+                </tr>`;
+        }).join('');
+        document.getElementById('policy-summary').textContent =
+            `${totalGated} of ${parsed.steps.length} steps pause for a human`;
+    }
+}
+
+function updatePolicyGate(stepId, field, value) {
+    if (!activePolicy) return;
+    if (!activePolicy.parsed) {
+        activePolicy.parsed = { policy: activePolicy.name, version: activePolicy.version, applies_to: workflowData.name, gates: {} };
+    }
+    if (!activePolicy.parsed.gates) activePolicy.parsed.gates = {};
+    if (!activePolicy.parsed.gates[stepId]) {
+        activePolicy.parsed.gates[stepId] = { review: 'skip', role: 'any', on_status: null };
+    }
+    activePolicy.parsed.gates[stepId][field] = value;
+    renderStepCards(); // update gate indicators
+    renderPolicySummary();
+}
+
+function renderPolicySummary() {
+    const gates = activePolicy && activePolicy.parsed ? activePolicy.parsed.gates : {};
+    let totalGated = 0;
+    Object.values(gates).forEach(g => { if (g.review === 'required') totalGated++; });
+    document.getElementById('policy-summary').textContent =
+        `${totalGated} of ${parsed.steps.length} steps pause for a human`;
+}
+
+function createPolicy() {
+    // Reuse an existing unsaved draft instead of stacking duplicates.
+    const draft = policies.find(p => !p.id);
+    if (draft) {
+        activePolicy = draft;
+        renderPolicyTab();
+        return;
+    }
+    const newPolicy = {
+        id: null,
+        name: workflowData.name + '-governed',
+        version: 1,
+        applies_to: workflowData.name,
+        is_active: true,
+        parsed: {
+            policy: workflowData.name + '-governed',
+            version: 1,
+            applies_to: workflowData.name,
+            gates: {}
+        }
+    };
+    policies.push(newPolicy);
+    activePolicy = newPolicy;
+    renderPolicyTab();
+}
+
+function switchPolicy(idx) {
+    const i = parseInt(idx, 10);
+    if (isNaN(i) || i < 0 || i >= policies.length) return;
+    activePolicy = policies[i];
+    renderStepCards();   // gate indicators follow the selected policy
+    renderPolicyTab();
+}
+
+function togglePolicyActive() {
+    if (!activePolicy || !activePolicy.id) return;
+    const newActive = !activePolicy.is_active;
+    fetch(`${API_BASE}/policies/${activePolicy.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_active: newActive })
+    })
+        .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+        .then(data => {
+            const idx = policies.findIndex(p => p.id === data.id);
+            if (idx >= 0) policies[idx] = data;
+            if (activePolicy && activePolicy.id === data.id) activePolicy = data;
+            renderPolicyTab();
+        })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+function savePolicy() {
+    if (!activePolicy) return;
+    const name = document.getElementById('policy-name').value.trim();
+    const version = parseInt(document.getElementById('policy-version').value) || 1;
+    if (!name) { alert('Policy name is required.'); return; }
+
+    // Sync name/version into parsed
+    if (!activePolicy.parsed) activePolicy.parsed = { policy: name, version, applies_to: workflowData.name, gates: {} };
+    activePolicy.parsed.policy = name;
+    activePolicy.parsed.version = version;
+    activePolicy.parsed.applies_to = workflowData.name;
+    activePolicy.name = name;
+    activePolicy.version = version;
+
+    const yaml = buildPolicyYaml();
+    const isCreate = !activePolicy.id;
+
+    const url = isCreate ? `${API_BASE}/policies` : `${API_BASE}/policies/${activePolicy.id}`;
+    const method = isCreate ? 'POST' : 'PATCH';
+    const body = isCreate
+        ? { workflow_id: WORKFLOW_ID, name, yaml_content: yaml }
+        : { yaml_content: yaml };
+
+    fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
+        .then(data => {
+            activePolicy = data;
+            // Refresh policy list
+            return fetch(POLICIES_URL).then(r => r.json());
+        })
+        .then(pols => {
+            policies = pols;
+            if (activePolicy && activePolicy.id) {
+                // Re-find the updated policy in the list
+                const found = policies.find(p => p.id === activePolicy.id);
+                if (found) activePolicy = found;
+            }
+            renderStepCards();
+            renderPolicyTab();
+            const el = document.getElementById('policy-saved');
+            el.style.display = '';
+            setTimeout(() => { el.style.display = 'none'; }, 2000);
+        })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+function deletePolicy() {
+    if (!activePolicy) return;
+    if (!activePolicy.id) {
+        // Unsaved draft — just drop it from the list.
+        policies = policies.filter(p => p !== activePolicy);
+        activePolicy = policies.length > 0 ? policies[0] : null;
+        renderStepCards();
+        renderPolicyTab();
+        return;
+    }
+    if (!confirm(`Delete policy "${activePolicy.name}"?`)) return;
+    fetch(`${API_BASE}/policies/${activePolicy.id}`, { method: 'DELETE' })
+        .then(r => { if (!r.ok) throw new Error(r.statusText);
+            policies = policies.filter(p => p.id !== activePolicy.id);
+            activePolicy = policies.length > 0 ? policies[0] : null;
+            renderStepCards();
+            renderPolicyTab();
+        })
+        .catch(err => alert('Error: ' + err.message));
+}
+
+// ── Tab 3: YAML ────────────────────────────────────────────────────────────
+
+function copyYaml() {
+    const ta = document.getElementById('yaml-editor');
+    ta.select();
+    document.execCommand('copy');
+    // Show brief feedback
+    const btn = document.querySelector('#pane-yaml .btn-outline-primary');
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<i class="ti-check"></i> Copied!';
+    btn.classList.remove('btn-outline-primary');
+    btn.classList.add('btn-success');
+    setTimeout(() => {
+        btn.innerHTML = orig;
+        btn.classList.remove('btn-success');
+        btn.classList.add('btn-outline-primary');
+    }, 1500);
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────
+
+function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+
+loadWorkflow();
+</script>

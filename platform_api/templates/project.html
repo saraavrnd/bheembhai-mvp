@@ -1,0 +1,821 @@
+{% extends "user_base.html" %}
+
+{% block title %}Project — BheemBhai{% endblock %}
+
+{% block page_title %}<span id="project-title">Project</span>{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item active" aria-current="page" id="breadcrumb-project">Project</li>
+{% endblock %}
+
+{% block head %}
+<style>
+    /* Theme tints — bg-*-light is referenced by the admin stat cards but not shipped in the CSS */
+    .bg-primary-light { background: #e8eef9 !important; }
+    .bg-info-light { background: #e2f0f6 !important; }
+    .bg-success-light { background: #e6f3ea !important; }
+    .bg-warning-light { background: #fcf1dd !important; }
+    .bg-danger-light { background: #fdeee7 !important; }
+
+    /* ── Filter pills ── */
+    .filter-pills {
+        display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .filter-pill {
+        font-size: 12px; padding: 5px 14px; border-radius: 16px;
+        background: #eaeaef; color: #5a5a6e; cursor: pointer;
+        border: none; font-weight: 500; transition: all 0.15s;
+    }
+    .filter-pill:hover { background: #d5d5dd; }
+    .filter-pill.active { background: #2a62d5; color: #fff; }
+    .filter-pill .count { opacity: 0.7; margin-left: 4px; }
+
+    /* ── Progress bar of stage pills ── */
+    .stage-pills-bar {
+        display: flex; gap: 3px; align-items: center;
+    }
+    .stage-pill-seg {
+        width: 20px; height: 7px; border-radius: 3px; flex-shrink: 0;
+    }
+    .stage-pill-seg.done { background: #5a9e6f; }
+    .stage-pill-seg.current { background: #e07b5a; animation: pulse-bg 2s ease-in-out infinite; }
+    @keyframes pulse-bg {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.55; }
+    }
+    .stage-pill-seg.failed { background: #8b3a2a; }
+    .stage-pill-seg.pending { background: #c5c5d0; }
+    .stage-pill-dots {
+        font-size: 10px; color: #b5b5c3; letter-spacing: 1px;
+    }
+
+    /* ── Run state inline badge ── */
+    .run-state-inline {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-size: 12px; font-weight: 500;
+    }
+    .run-state-dot {
+        width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .run-state-dot.needs-review { background: #e07b5a; }
+    .run-state-dot.running { background: #58a6ff; }
+    .run-state-dot.failed { background: #8b3a2a; }
+    .run-state-dot.completed { background: #5a9e6f; }
+    .run-state-dot.pending { background: #b5b5c3; }
+    .run-state-dot.cancelled { background: #6e7681; }
+
+    /* ── Runs table ── */
+    .runs-table { width: 100%; border-collapse: collapse; }
+    .runs-table th {
+        text-align: left; padding: 8px 12px; font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.04em; color: #6e7681;
+        border-bottom: 2px solid #e8e0d6;
+    }
+    .runs-table td {
+        padding: 10px 12px; border-bottom: 1px solid #f0ebe0;
+        font-size: 13px; color: #3a3a4a; vertical-align: middle;
+    }
+    .runs-table tr { cursor: pointer; transition: background 0.1s; }
+    .runs-table tr:hover { background: rgba(0,0,0,0.02); }
+    .runs-table .story-col { font-weight: 500; }
+    .runs-table .story-col .story-id {
+        font-family: 'JetBrains Mono', monospace; font-size: 12px;
+        color: #58a6ff; font-weight: 600;
+    }
+    .runs-table .story-col .story-title {
+        font-size: 12px; color: #6e7681; margin-top: 1px;
+    }
+    .runs-table .updated-col { font-size: 11px; color: #8a7a6a; white-space: nowrap; }
+    .runs-table .started-col { font-size: 12px; color: #6e7681; }
+
+    /* Empty state */
+    .runs-empty {
+        text-align: center; padding: 40px 20px;
+    }
+    .runs-empty p { color: #8a7a6a; font-size: 13px; }
+
+    /* ── Run description ── */
+    .run-desc {
+        font-size: 11px; color: #6e7681; margin-bottom: 8px;
+        line-height: 1.5;
+    }
+
+    /* ── Configuration sub-tabs (Members / Integrations / Workflows) ── */
+    .config-subnav {
+        display: flex; gap: 8px; flex-wrap: wrap; padding-bottom: 12px;
+        border-bottom: 1px solid #f0ebe0;
+    }
+    .config-subtab {
+        font-size: 12px; padding: 6px 16px; border-radius: 16px;
+        background: #eaeaef; color: #5a5a6e; cursor: pointer;
+        border: none; font-weight: 500; transition: all 0.15s;
+    }
+    .config-subtab:hover { background: #d5d5dd; }
+    .config-subtab.active { background: #2a62d5; color: #fff; }
+
+    /* ── Waiting on you band (terracotta = the product "attention" accent) ── */
+    .bb-waiting-box { background: #fdeee7; border-color: #f2c3ac; }
+    .bb-waiting-box .box-header { border-bottom-color: #f2c3ac !important; }
+    .bb-waiting-box .box-title { color: #b34d2c; }
+    .bb-waiting-card {
+        background: #fff; border: 1px solid #eee5d8; border-radius: 6px;
+        padding: 12px 14px; height: 100%;
+    }
+    .bb-story-chip {
+        font-family: ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
+        font-size: 11px; font-weight: 700; color: #8b3a2a;
+        background: #f3e3d6; border-radius: 4px; padding: 1px 7px; margin-right: 6px;
+    }
+    .bb-waiting-badge { background: #e07b5a; border-color: #e07b5a; color: #fff; }
+    .bb-waiting-badge:hover { background: #b34d2c; border-color: #b34d2c; color: #fff; }
+
+    /* ── Progress segments + state pills (product spec colors, shared with the runs page) ── */
+    .bb-progress { display: flex; gap: 3px; }
+    .bb-seg-pill { width: 13px; height: 7px; border-radius: 2px; display: inline-block; }
+    .bb-seg-pill.done { background: #5a9e6f; }
+    .bb-seg-pill.current { background: #e07b5a; }
+    .bb-seg-pill.failed { background: #8b3a2a; }
+    .bb-seg-pill.pending { background: #e3dacb; }
+    .bb-state-pill {
+        display: inline-block; font-size: 10.5px; font-weight: 700;
+        border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+    }
+    .bb-state-pill.awaiting-me { background: #e07b5a; color: #fff; }
+    .bb-state-pill.awaiting-other { border: 1px solid #d9c9b4; color: #7a6a5a; }
+    .bb-state-pill.running { border: 1px solid #9fc1e8; color: #3f6ea5; }
+    .bb-state-pill.completed { background: #e4f0e8; color: #3f7a53; }
+    .bb-state-pill.failed { background: #f3e0dc; color: #8b3a2a; }
+    .bb-state-pill.pending { border: 1px solid #e3dacb; color: #a3907e; }
+
+    /* ── Runs table (dashboard tab) ── */
+    .bb-runs-table tbody tr { cursor: pointer; }
+    .bb-runs-table tbody tr:hover { background: #f8fafc; }
+    .bb-runs-table th { font-size: 10.5px; letter-spacing: 0.8px; color: #8a7a6a; font-weight: 700; }
+    .bb-story-key {
+        font-family: ui-monospace, 'JetBrains Mono', Menlo, Consolas, monospace;
+        font-size: 12px; font-weight: 700; color: #8b3a2a;
+    }
+
+    /* ── Toast ── */
+    .bb-toast {
+        position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+        background: #3e2f26; color: #fefcf7; padding: 10px 20px; border-radius: 10px;
+        font-size: 12.5px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        animation: bbFade 0.18s ease-out; max-width: 80vw;
+    }
+    @keyframes bbFade { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+    /* ── Modal (same pattern as run_detail send-back modal) ── */
+    .modal-backdrop {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 9999;
+    }
+    .modal-dialog {
+        background: #fff; border-radius: 10px; padding: 24px;
+        width: 400px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    /* The EduAdmin theme's Bootstrap CSS sets .modal-dialog { pointer-events: none },
+       so re-enable interactivity for our custom dialog (higher specificity wins). */
+    .modal-backdrop .modal-dialog { pointer-events: auto; }
+    .modal-dialog h5 { margin: 0 0 6px; font-size: 16px; color: #2a2a3a; }
+    .modal-dialog p { font-size: 13px; color: #6e7681; margin: 0 0 16px; }
+    .modal-dialog .form-group { margin-bottom: 14px; }
+    .modal-actions {
+        display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end;
+    }
+    .modal-actions .btn-cancel {
+        background: #eaeaef; border: none; padding: 8px 16px;
+        border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    .modal-actions .btn-send {
+        background: #2a62d5; color: #fff; border: none;
+        padding: 8px 16px; border-radius: 6px; font-size: 13px;
+        font-weight: 600; cursor: pointer;
+    }
+    .modal-actions .btn-send:disabled {
+        background: #b5b5c3; cursor: not-allowed;
+    }
+
+    /* ── DEMO chip on placeholder stat cards (engine integration pending) ── */
+    .bb-stat-demo-chip {
+        display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
+        color: #8a7a6a; background: #f0e6d8; border: 1px solid #e3d4bc;
+        border-radius: 4px; padding: 1px 6px; margin-left: 8px;
+        vertical-align: middle; cursor: help;
+    }
+</style>
+{% endblock %}
+
+{% block content_header_actions %}
+<button class="btn btn-sm bb-waiting-badge" id="bb-waiting-badge" style="display:none;">
+    <i class="far fa-clock"></i> <span id="bb-waiting-count">0</span> waiting on you
+</button>
+{% endblock %}
+
+{% block content %}
+<!-- Set before the included partial IIFEs run — they capture BB_PROJECT_ID at load time. -->
+<script>window.BB_PROJECT_ID = '{{ project_id }}';</script>
+
+<!-- ── Dashboard Tab (default) ── -->
+<div id="tab-dashboard">
+    {% include "_dashboard_tab.html" %}
+</div>
+
+<!-- ── Runs Tab ── -->
+<div id="tab-runs" style="display:none;">
+    <div class="row mb-15">
+        <div class="col-12">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <h4 class="mb-0"><i class="fa fa-play-circle text-info me-2"></i>List of Runs</h4>
+                </div>
+                <button class="btn btn-primary btn-sm" id="btn-new-run" onclick="createNewRun()">
+                    <i class="fa fa-plus"></i> Start a run
+                </button>
+            </div>
+            <div class="run-desc mt-10" id="run-desc"></div>
+        </div>
+    </div>
+
+    <!-- New Run modal (opened from the Runs tab header / empty state) -->
+    <div class="modal-backdrop" id="new-run-modal" style="display:none;">
+        <div class="modal-dialog" style="width:520px;" role="dialog" aria-modal="true" aria-labelledby="new-run-title">
+            <h5 id="new-run-title"><i class="fa fa-play-circle text-info me-5"></i>Start a New Run</h5>
+            <p>Pick the story, workflow, policy, and the project's verified integrations. The engine cuts a fresh git branch off the source branch you pick (default: the GitHub integration's base branch) and pauses at the gates your policy defines.</p>
+            <div class="form-group">
+                <label class="form-label">Story / Ticket ID</label>
+                <input type="text" class="form-control" id="run-story-id" placeholder="e.g. PROJ-123">
+            </div>
+            <div class="form-group">
+                <label class="form-label">Workflow</label>
+                <select class="form-select" id="run-workflow"></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Policy</label>
+                <select class="form-select" id="run-policy"></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">GitHub Integration <span class="text-danger">*</span></label>
+                <select class="form-select" id="run-github"></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Source Branch</label>
+                <input type="text" class="form-control" id="run-source-branch" placeholder="main">
+                <small class="text-muted">The branch the run branch is cut off. Pre-filled from the GitHub integration's base branch — edit to override.</small>
+            </div>
+            <div class="form-group">
+                <label class="form-label">AI Vendor <span class="text-danger">*</span></label>
+                <select class="form-select" id="run-ai"></select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">Jira Integration <span class="text-muted">(optional)</span></label>
+                <select class="form-select" id="run-jira"></select>
+                <small class="text-muted">Only integrations that passed "Test connection" are listed.</small>
+            </div>
+            <div id="run-create-error" class="text-danger mt-2" style="display:none;"></div>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="cancelNewRun()">Cancel</button>
+                <button class="btn-send" id="btn-start-run" onclick="submitNewRun()"><i class="fa fa-check"></i> Start Run</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filter pills -->
+    <div class="filter-pills" id="filter-pills" style="display:none;">
+        <button class="filter-pill active" data-filter="all">All <span class="count" id="count-all">0</span></button>
+        <button class="filter-pill" data-filter="needs-review">Needs review <span class="count" id="count-review">0</span></button>
+        <button class="filter-pill" data-filter="running">Running <span class="count" id="count-running">0</span></button>
+        <button class="filter-pill" data-filter="failed">Failed <span class="count" id="count-failed">0</span></button>
+    </div>
+
+    <!-- Runs list -->
+    <div class="row">
+        <div class="col-12">
+            <div class="box">
+                <div class="box-body">
+                    <div id="runs-list">
+                        <p class="text-muted">Loading runs...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Configuration Tab (PM only) ── -->
+<div id="tab-config" style="display:none;">
+    <div class="row mb-15">
+        <div class="col-lg-6">
+            <div class="box">
+                <div class="box-header with-border">
+                    <h4 class="box-title"><i class="fa fa-info-circle me-2"></i>Project Info</h4>
+                </div>
+                <div class="box-body" id="project-info">
+                    <p class="text-muted">Loading...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sub-tabs: Members / Integrations / Workflows / Skills -->
+    <div class="config-subnav mb-15" id="config-subnav">
+        <button class="config-subtab active" data-subtab="members"><i class="fa fa-users"></i> Members</button>
+        <button class="config-subtab" data-subtab="integrations"><i class="fa fa-plug"></i> Integrations</button>
+        <button class="config-subtab" data-subtab="workflows"><i class="fa fa-sitemap"></i> Workflows</button>
+        <button class="config-subtab" data-subtab="skills"><i class="fa fa-tasks"></i> Skills</button>
+    </div>
+
+    <div id="config-panel-members">
+        {% include "_config_members.html" %}
+    </div>
+    <div id="config-panel-integrations" style="display:none;">
+        {% include "_config_integrations.html" %}
+    </div>
+    <div id="config-panel-workflows" style="display:none;">
+        {% include "_config_workflows.html" %}
+    </div>
+    <div id="config-panel-skills" style="display:none;">
+        {% include "_config_skills.html" %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.BB_PROJECT_ID = '{{ project_id }}';
+
+let currentTab = 'dashboard';
+let allRuns = [];
+let currentFilter = 'all';
+const activatedSubTabs = {};
+let configProjectLoaded = false;
+
+function showTab(tab) {
+    document.getElementById('tab-dashboard').style.display = (tab === 'dashboard') ? '' : 'none';
+    document.getElementById('tab-runs').style.display = (tab === 'runs') ? '' : 'none';
+    document.getElementById('tab-config').style.display = (tab === 'config') ? '' : 'none';
+    if (tab === 'config' && !configProjectLoaded) {
+        configProjectLoaded = true;
+        loadConfigProject();
+    }
+}
+
+function activateSubTab(name) {
+    if (activatedSubTabs[name]) return;
+    activatedSubTabs[name] = true;
+    if (window.BBConfig && window.BBConfig[name] && typeof window.BBConfig[name].activate === 'function') {
+        window.BBConfig[name].activate();
+    }
+}
+
+function showSubTab(name) {
+    document.getElementById('config-panel-members').style.display = (name === 'members') ? '' : 'none';
+    document.getElementById('config-panel-integrations').style.display = (name === 'integrations') ? '' : 'none';
+    document.getElementById('config-panel-workflows').style.display = (name === 'workflows') ? '' : 'none';
+    document.getElementById('config-panel-skills').style.display = (name === 'skills') ? '' : 'none';
+    activateSubTab(name);
+}
+
+function setActiveSubTab(name) {
+    document.querySelectorAll('#config-subnav .config-subtab').forEach(b => {
+        b.classList.toggle('active', b.dataset.subtab === name);
+    });
+}
+
+function highlightNavPill(tab) {
+    document.querySelectorAll('#navbar-links .nav-pill').forEach(p => p.classList.remove('active'));
+    const activePill = document.querySelector('#navbar-links [data-tab="' + tab + '"]');
+    if (activePill) activePill.classList.add('active');
+}
+
+window.addEventListener('bb:userReady', function(e) {
+    const data = e.detail;
+
+    const membership = (data.memberships || []).find(m => m.project_id === window.BB_PROJECT_ID);
+    if (!membership) {
+        // The dashboard tab (BBDash) shows the not-a-member alert.
+        return;
+    }
+
+    const isPM = membership.role === 'project_manager';
+
+    document.getElementById('project-title').textContent = membership.project_name;
+    document.getElementById('breadcrumb-project').textContent = membership.project_name;
+    document.title = membership.project_name + ' — BheemBhai';
+
+    const params = new URLSearchParams(window.location.search);
+    let tab = params.get('tab') || 'dashboard';
+    if (tab === 'settings') tab = 'config';           // legacy links
+    if (tab === 'config' && !isPM) tab = 'dashboard'; // non-PM deep link fallback
+    currentTab = tab;
+    showTab(currentTab);
+    highlightNavPill(currentTab);
+
+    if (currentTab === 'runs') loadRuns();
+    if (currentTab === 'config') {
+        // ?sub= deep link from editor breadcrumbs (default: members)
+        const sub = ['members', 'integrations', 'workflows', 'skills']
+            .includes(params.get('sub')) ? params.get('sub') : 'members';
+        setActiveSubTab(sub);
+        showSubTab(sub);
+    }
+
+    // ?new=1 deep link (dashboard "Start a run") — auto-open the run form once
+    if (params.get('new') === '1') {
+        currentTab = 'runs';
+        showTab('runs');
+        highlightNavPill('runs');
+        createNewRun();
+        const url = new URL(window.location);
+        url.searchParams.delete('new');
+        window.history.replaceState({}, '', url);
+    }
+
+    document.querySelectorAll('#navbar-links .nav-pill').forEach(pill => {
+        pill.addEventListener('click', function(e) {
+            e.preventDefault();
+            const tab = this.dataset.tab;
+            currentTab = tab;
+            showTab(tab);
+            const url = new URL(window.location);
+            url.searchParams.set('tab', tab);
+            window.history.replaceState({}, '', url);
+            highlightNavPill(tab);
+            if (tab === 'runs') loadRuns();
+            if (tab === 'config') showSubTab('members');
+        });
+    });
+
+    // Filter pill clicks
+    document.querySelectorAll('#filter-pills .filter-pill').forEach(pill => {
+        pill.addEventListener('click', function() {
+            document.querySelectorAll('#filter-pills .filter-pill').forEach(p => p.classList.remove('active'));
+            this.classList.add('active');
+            currentFilter = this.dataset.filter;
+            renderRunsTable(allRuns);
+        });
+    });
+
+    // Config sub-tab clicks
+    document.querySelectorAll('#config-subnav .config-subtab').forEach(btn => {
+        btn.addEventListener('click', function() {
+            setActiveSubTab(this.dataset.subtab);
+            showSubTab(this.dataset.subtab);
+            const url = new URL(window.location);
+            url.searchParams.set('sub', this.dataset.subtab);
+            window.history.replaceState({}, '', url);
+        });
+    });
+});
+
+// ── Runs list ────────────────────────────────────────────────────
+
+function loadRuns() {
+    const pid = window.BB_PROJECT_ID;
+    fetch('/api/runs?project_id=' + pid, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(runs => {
+            allRuns = runs || [];
+
+            // Update filter counts
+            let reviewCount = 0, runningCount = 0, failedCount = 0;
+            allRuns.forEach(r => {
+                if (r.needs_review) reviewCount++;
+                if (r.state === 'running') runningCount++;
+                if (r.state === 'failed') failedCount++;
+            });
+            document.getElementById('count-all').textContent = allRuns.length;
+            document.getElementById('count-review').textContent = reviewCount;
+            document.getElementById('count-running').textContent = runningCount;
+            document.getElementById('count-failed').textContent = failedCount;
+
+            if (allRuns.length > 0) {
+                document.getElementById('filter-pills').style.display = '';
+                // Runs may span different workflows, so describe the list as a
+                // whole — never a single (first) run's workflow.
+                document.getElementById('run-desc').textContent =
+                    allRuns.length + ' run' + (allRuns.length === 1 ? '' : 's') + ' · newest first';
+            } else {
+                document.getElementById('run-desc').textContent = '';
+            }
+
+            renderRunsTable(allRuns);
+        })
+        .catch(err => {
+            document.getElementById('runs-list').innerHTML =
+                '<p class="text-danger">Failed to load runs: ' + esc(err.message) + '</p>';
+        });
+}
+
+function renderRunsTable(runs) {
+    const el = document.getElementById('runs-list');
+
+    // Apply filter
+    let filtered = runs;
+    if (currentFilter === 'needs-review') {
+        filtered = runs.filter(r => r.needs_review);
+    } else if (currentFilter === 'running') {
+        filtered = runs.filter(r => r.state === 'running');
+    } else if (currentFilter === 'failed') {
+        filtered = runs.filter(r => r.state === 'failed');
+    }
+
+    if (!filtered || filtered.length === 0) {
+        const filterLabels = {
+            'all': 'No runs yet for this project.',
+            'needs-review': 'No runs awaiting review.',
+            'running': 'No runs currently running.',
+            'failed': 'No failed runs.',
+        };
+        el.innerHTML = `
+            <div class="runs-empty">
+                <p class="mb-10"><i class="fa fa-inbox" style="font-size:32px;color:#c5c5d0;"></i></p>
+                <p>${filterLabels[currentFilter] || 'No runs match this filter.'}</p>
+                ${currentFilter === 'all' ? '<button class="btn btn-primary btn-sm mt-10" onclick="createNewRun()"><i class="fa fa-plus"></i> Start your first run</button>' : ''}
+            </div>`;
+        return;
+    }
+
+    el.innerHTML = `
+        <div class="table-responsive">
+            <table class="runs-table">
+                <thead>
+                    <tr>
+                        <th>Story</th>
+                        <th>Progress</th>
+                        <th>State</th>
+                        <th>Initiated by</th>
+                        <th>Updated</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${filtered.map(r => renderRunRow(r)).join('')}
+                </tbody>
+            </table>
+        </div>`;
+
+    // Wire click handlers
+    el.querySelectorAll('tr[data-run-id]').forEach(row => {
+        row.addEventListener('click', function() {
+            window.location.href = '/projects/' + window.BB_PROJECT_ID + '/runs/' + this.dataset.runId;
+        });
+    });
+}
+
+function renderRunRow(run) {
+    const stageProgress = run.stage_progress || [];
+    const totalStages = run.total_stages || stageProgress.length || 6;
+
+    // Progress bar
+    let progressHtml = '<div class="stage-pills-bar">';
+    stageProgress.forEach((sp, i) => {
+        progressHtml += '<span class="stage-pill-seg ' + sp.progress_state + '" title="' + esc(sp.label) + ': ' + sp.progress_state + '"></span>';
+    });
+    // Pad to total stages if needed
+    const padCount = totalStages - stageProgress.length;
+    if (padCount > 0) {
+        for (let i = 0; i < padCount; i++) {
+            progressHtml += '<span class="stage-pill-seg pending"></span>';
+        }
+    }
+    progressHtml += '</div>';
+
+    // State
+    let stateHtml = '';
+    if (run.needs_review) {
+        const currentStage = stageProgress.find(sp => sp.progress_state === 'current');
+        const stageLabel = currentStage ? currentStage.label : 'stage';
+        stateHtml = '<span class="run-state-inline">' +
+            '<span class="run-state-dot needs-review"></span>' +
+            '<span style="color:#e07b5a;">Needs review</span>' +
+            '<span style="font-size:10px;color:#8a7a6a;"> · ' + esc(stageLabel) + ' · paused</span>' +
+            '</span>';
+    } else if (run.state === 'running') {
+        const currentStage = stageProgress.find(sp => sp.progress_state === 'current');
+        const stageLabel = currentStage ? currentStage.label : 'stage';
+        stateHtml = '<span class="run-state-inline">' +
+            '<span class="run-state-dot running"></span>' +
+            'Running' +
+            '<span style="font-size:10px;color:#8a7a6a;"> · ' + esc(stageLabel) + ' · container running</span>' +
+            '</span>';
+    } else if (run.state === 'failed') {
+        const failedStage = stageProgress.find(sp => sp.progress_state === 'failed');
+        const stageLabel = failedStage ? failedStage.label : 'stage';
+        stateHtml = '<span class="run-state-inline">' +
+            '<span class="run-state-dot failed"></span>' +
+            '<span style="color:#8b3a2a;">Failed</span>' +
+            '<span style="font-size:10px;color:#8a7a6a;"> · ' + esc(stageLabel) + ' · container exited 1</span>' +
+            '</span>';
+    } else if (run.state === 'completed') {
+        stateHtml = '<span class="run-state-inline">' +
+            '<span class="run-state-dot completed"></span>Completed' +
+            '</span>';
+    } else if (run.state === 'cancelled') {
+        stateHtml = '<span class="run-state-inline">' +
+            '<span class="run-state-dot cancelled"></span>Cancelled' +
+            '</span>';
+    } else {
+        stateHtml = '<span class="run-state-inline">' +
+            '<span class="run-state-dot pending"></span>' + esc(run.state) +
+            '</span>';
+    }
+
+    // Updated time
+    const elapsed = run.elapsed || '';
+    const created = run.created_at ? run.created_at.substring(0, 16).replace('T', ' ') : '';
+
+    // Initiator — display name preferred, email fallback
+    const starter = run.started_by
+        ? (run.started_by.display_name || run.started_by.email)
+        : '—';
+
+    return `
+        <tr data-run-id="${esc(run.id)}">
+            <td class="story-col">
+                <div class="story-id">${esc(run.story_id || run.id.substring(0,8))}</div>
+                <div class="story-title">${esc(run.workflow_name || 'Pipeline run')}</div>
+            </td>
+            <td>${progressHtml}</td>
+            <td>${stateHtml}</td>
+            <td class="started-col">${esc(starter)}</td>
+            <td class="updated-col">${esc(elapsed)}</td>
+        </tr>`;
+}
+
+// ── Create run ──────────────────────────────────────────────────
+
+function createNewRun() {
+    const modal = document.getElementById('new-run-modal');
+    modal.style.display = '';
+    document.getElementById('run-create-error').style.display = 'none';
+    document.getElementById('run-story-id').focus();
+    document.getElementById('run-source-branch').value = '';
+    const pid = window.BB_PROJECT_ID;
+    fetch('/api/workflows?project_id=' + pid, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            // Runs are project-scoped: list only this project's own workflows,
+            // never platform templates (those are copied via Configuration).
+            const projectWorkflows = (data || []).filter(w => w.project_id === pid);
+            const sel = document.getElementById('run-workflow');
+            sel.innerHTML = projectWorkflows.map(w =>
+                `<option value="${w.id}">${esc(w.name)} (v${w.version})</option>`
+            ).join('');
+            const btn = document.getElementById('btn-start-run');
+            if (projectWorkflows.length > 0) {
+                btn.disabled = false;
+                loadPoliciesForWorkflow(projectWorkflows[0].id);
+            } else {
+                btn.disabled = true;
+                const errEl = document.getElementById('run-create-error');
+                errEl.textContent = 'No workflow in this project yet — a project manager must copy one from platform templates in the Configuration tab.';
+                errEl.style.display = '';
+            }
+            sel.onchange = function() { loadPoliciesForWorkflow(this.value); };
+        })
+        .catch(() => {});
+    loadRunIntegrations(pid);
+}
+
+function loadRunIntegrations(pid) {
+    // Verified-only: the modal lists integrations that passed "Test connection".
+    fetch('/api/projects/' + pid + '/integrations', { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            const verified = (data || []).filter(i => i.verified_at);
+            const byType = {};
+            verified.forEach(i => { (byType[i.type] = byType[i.type] || []).push(i); });
+            const aiVendors = ['openai', 'claude', 'deepseek', 'kimi'].flatMap(t => byType[t] || []);
+            const opts = (items, fmt) => items.map(i => `<option value="${i.id}">${fmt(i)}</option>`).join('');
+            const cfg = i => i.config || {};
+
+            document.getElementById('run-github').innerHTML = opts(byType.github || [], i =>
+                `${esc(i.label || 'GitHub')} — ${esc(cfg(i).base_branch || 'main')}`);
+            // Pre-fill the editable source branch from the selected integration,
+            // then keep it in sync as the selection changes (user edits win).
+            const ghSel = document.getElementById('run-github');
+            const srcInput = document.getElementById('run-source-branch');
+            const baseOf = () => {
+                const sel = ghSel.options[ghSel.selectedIndex];
+                const id = sel ? sel.value : null;
+                const int = (byType.github || []).find(i => i.id === id);
+                return int ? (cfg(int).base_branch || 'main') : 'main';
+            };
+            if (!srcInput.value) srcInput.value = baseOf();
+            ghSel.onchange = function() { srcInput.value = baseOf(); };
+            document.getElementById('run-ai').innerHTML = opts(aiVendors, i =>
+                `${esc(i.label || i.type)} — H:${esc(cfg(i).model_high || '?')} M:${esc(cfg(i).model_medium || '?')} L:${esc(cfg(i).model_low || '?')}`);
+            document.getElementById('run-jira').innerHTML = '<option value="">— none —</option>'
+                + opts(byType.jira || [], i => `${esc(i.label || 'Jira')} — ${esc(cfg(i).url || '')}`);
+
+            if (!(byType.github || []).length || !aiVendors.length) {
+                const errEl = document.getElementById('run-create-error');
+                errEl.textContent = 'No verified GitHub or AI-vendor integration — verify them in the Configuration tab first.';
+                errEl.style.display = '';
+            }
+        })
+        .catch(() => {});
+}
+
+function loadPoliciesForWorkflow(workflowId) {
+    fetch('/api/workflows/' + workflowId + '/policies', { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            const sel = document.getElementById('run-policy');
+            sel.innerHTML = (data || []).map(p =>
+                `<option value="${p.id}">${esc(p.name)} (v${p.version})</option>`
+            ).join('');
+        })
+        .catch(() => {});
+}
+
+function cancelNewRun() {
+    document.getElementById('new-run-modal').style.display = 'none';
+}
+
+// Click on the backdrop (outside the dialog) closes the modal; Esc too
+document.getElementById('new-run-modal').addEventListener('click', function(e) {
+    if (!e.target.closest('.modal-dialog')) cancelNewRun();
+});
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') cancelNewRun();
+});
+
+function submitNewRun() {
+    const storyId = document.getElementById('run-story-id').value.trim();
+    const workflowId = document.getElementById('run-workflow').value;
+    const policyId = document.getElementById('run-policy').value;
+    const githubId = document.getElementById('run-github').value;
+    const sourceBranch = document.getElementById('run-source-branch').value.trim();
+    const aiId = document.getElementById('run-ai').value;
+    const jiraId = document.getElementById('run-jira').value;
+    const errEl = document.getElementById('run-create-error');
+
+    if (!storyId) {
+        errEl.textContent = 'Please enter a Story / Ticket ID.';
+        errEl.style.display = ''; return;
+    }
+    if (!workflowId) {
+        errEl.textContent = 'Please select a workflow.';
+        errEl.style.display = ''; return;
+    }
+    if (!githubId) {
+        errEl.textContent = 'Please select a verified GitHub integration.';
+        errEl.style.display = ''; return;
+    }
+    if (!aiId) {
+        errEl.textContent = 'Please select a verified AI vendor.';
+        errEl.style.display = ''; return;
+    }
+
+    errEl.style.display = 'none';
+    fetch('/api/runs', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({
+            project_id: window.BB_PROJECT_ID,
+            workflow_id: workflowId,
+            policy_id: policyId || null,
+            story_id: storyId,
+            github_integration_id: githubId,
+            jira_integration_id: jiraId || null,
+            ai_vendor_integration_id: aiId,
+            source_branch: sourceBranch || null,
+        })
+    })
+    .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.message || d.detail || 'Failed'); });
+        return r.json();
+    })
+    .then(run => {
+        document.getElementById('new-run-modal').style.display = 'none';
+        document.getElementById('run-story-id').value = '';
+        loadRuns();
+    })
+    .catch(err => {
+        errEl.textContent = err.message;
+        errEl.style.display = '';
+    });
+}
+
+// ── Configuration: project info (read-only for PMs — renaming is ADMIN-only) ────────────────────
+
+function loadConfigProject() {
+    const pid = window.BB_PROJECT_ID;
+    fetch('/api/projects/' + pid, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(project => {
+            document.getElementById('project-info').innerHTML = `
+                <p><strong>Project ID:</strong> <code>${esc(project.id)}</code></p>
+                <p><strong>Name:</strong> ${esc(project.name)}</p>
+                <p><strong>Created:</strong> ${esc((project.created_at || '').substring(0, 10))}</p>
+            `;
+        })
+        .catch(() => {
+            document.getElementById('project-info').innerHTML = '<p class="text-danger">Failed to load project info.</p>';
+        });
+}
+</script>
+{% endblock %}
