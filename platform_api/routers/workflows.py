@@ -10,15 +10,14 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import or_, select
-
 from bheembhai.database import get_session
 from bheembhai.models.project import Project
 from bheembhai.models.run import Run
 from bheembhai.models.user import Membership, User
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.protocols.auth import Identity
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import or_, select
 
 from platform_api.dependencies import get_current_enabled_user
 from platform_api.routers._workflow_shared import (
@@ -50,7 +49,7 @@ router = APIRouter(prefix="/api/workflows", tags=["workflows"])
 async def list_workflows(
     include_inactive: bool = Query(False),
     project_id: str | None = Query(None),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> list[WorkflowResponse]:
     """List workflows.
@@ -107,7 +106,7 @@ async def list_workflows(
 @router.get("/{workflow_id}")
 async def get_workflow(
     workflow_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> WorkflowResponse:
     """Get a workflow by ID (any authenticated user)."""
@@ -125,7 +124,7 @@ async def get_workflow(
 async def list_policies(
     workflow_id: str,
     include_inactive: bool = Query(False),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> list[PolicyResponse]:
     """List policies for a workflow.
@@ -161,7 +160,7 @@ async def list_policies(
 async def copy_workflow_to_project(
     workflow_id: str,
     body: CopyToProjectRequest,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> WorkflowResponse:
     """Clone a platform workflow (and its policies) to a project.
@@ -254,7 +253,7 @@ async def copy_workflow_to_project(
 async def update_workflow(
     workflow_id: str,
     body: WorkflowUpdate,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> WorkflowResponse:
     """Update a project-scoped workflow's name, YAML, or active status.
@@ -308,7 +307,7 @@ async def update_workflow(
 @router.delete("/{workflow_id}")
 async def delete_workflow(
     workflow_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ):
     """Delete a project-scoped workflow and all associated policies and runs.

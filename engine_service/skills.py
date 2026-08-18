@@ -17,10 +17,9 @@ import os
 import shutil
 from pathlib import Path
 
+from bheembhai.models.skill import Skill
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
-
-from bheembhai.models.skill import Skill
 
 logger = logging.getLogger(__name__)
 

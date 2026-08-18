@@ -4,9 +4,8 @@ Uses httpx (already a shared dependency) to hit both services.
 No browser automation required — keeps the dev-setup footprint small.
 """
 
-import pytest
 import httpx
-
+import pytest
 
 PLATFORM_API = "http://localhost:9000"
 ENGINE_SERVICE = "http://localhost:9001"

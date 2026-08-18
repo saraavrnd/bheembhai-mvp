@@ -14,13 +14,11 @@ run's resume just re-notifies the open gate.
 import logging
 from datetime import datetime, timezone
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bheembhai.config import AppConfig
 from bheembhai.database import get_sessionmaker
 from bheembhai.models.run import Run
 from bheembhai.models.work_queue import WorkQueueItem
+from sqlalchemy import select
 
 from engine_service.metrics import METRICS
 

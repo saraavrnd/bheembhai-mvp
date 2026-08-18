@@ -2,8 +2,8 @@
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 
@@ -28,10 +28,10 @@ from bheembhai.providers.aws_ssm import AWSSSMParameterStore
 from bheembhai.providers.env_secrets import EnvSecureStorage
 
 from engine_service import notifier
+from engine_service.recovery import recover_on_startup
 from engine_service.routers import health
 from engine_service.runtime import DockerRuntime
 from engine_service.worker import configure_worker, worker_loop
-from engine_service.recovery import recover_on_startup
 
 
 def _build_secure_storage(config: AppConfig):

@@ -9,11 +9,6 @@ import uuid as _uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
-
 from bheembhai.database import get_session
 from bheembhai.log_keys import KINDS
 from bheembhai.models.project import ProjectIntegration
@@ -22,6 +17,10 @@ from bheembhai.models.user import Membership, User
 from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.protocols.auth import Identity
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from platform_api.dependencies import get_current_enabled_user
 from platform_api.github_content import build_chain, git_fetch_content, resolve_step_sha
@@ -120,7 +119,7 @@ def _run_summary(run: Run, started_by: User | None = None) -> dict:
 
 
 async def _require_verified_integration(
-    db: "AsyncSession",
+    db: AsyncSession,
     project_id: str,
     integration_id: str,
     expected_types: set[str],
@@ -890,7 +889,7 @@ _STUB_FILE_CONTENT: dict[str, str] = {
 @router.get("")
 async def list_runs(
     project_id: str | None = Query(None),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> list[dict]:
     """List runs for a project, newest first. Includes workflow step info for progress bars."""
@@ -1006,7 +1005,7 @@ async def list_runs(
 async def create_run(
     body: RunCreateRequest,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
     """Start a new pipeline run."""
@@ -1109,7 +1108,7 @@ async def create_run(
 @router.get("/{run_id}")
 async def get_run(
     run_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
     """Get full run detail with stage rail, artifact files, and gate info."""
@@ -1186,7 +1185,7 @@ async def get_run_file(
     step_id: str | None = Query(None, description="Step whose commit to read at"),
     commit: str | None = Query(None, description="Exact commit (validated against run)"),
     request: Request = None,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
     """Get file content for the output viewer. Returns the content and viewer type.
@@ -1247,7 +1246,7 @@ async def get_run_logs(
     kind: str = Query(..., description="agent | container | diagnostics"),
     mode: str = Query("tail", pattern="^(tail|full)$"),
     lines: int = Query(200, ge=1, le=_LOG_TAIL_LINES_MAX),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
     request: Request = None,
 ) -> dict:
@@ -1305,7 +1304,7 @@ async def get_run_summary(
     run_id: str,
     step_id: str = Query(..., description="Step whose summary to return"),
     commit: str | None = Query(None, description="Visit-pinning commit sha (loops)"),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
     """The FULL step summary, loaded on demand.
@@ -1335,7 +1334,7 @@ async def get_run_summary(
 async def submit_decision(
     run_id: str,
     body: DecisionRequest,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
     """Queue a gate decision for the engine (ADR-003 dispatch model).
@@ -1398,7 +1397,7 @@ async def submit_decision(
 @router.post("/{run_id}/cancel", status_code=202)
 async def cancel_run(
     run_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
     """Stop a run (bookkeeper, ADR-003): enqueue a `cancel` dispatch token.

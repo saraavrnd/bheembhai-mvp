@@ -1,10 +1,9 @@
 """Platform API — user-facing FastAPI application."""
 
 import logging
-import os
 import time
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -20,7 +19,14 @@ logging.getLogger("uvicorn.access").setLevel(logging.INFO)
 logging.getLogger("uvicorn").setLevel(logging.DEBUG)
 
 from bheembhai.config import load_config
-from bheembhai.database import close_database, init_database, run_migrations, seed_default_roles, seed_default_skills, seed_default_workflows
+from bheembhai.database import (
+    close_database,
+    init_database,
+    run_migrations,
+    seed_default_roles,
+    seed_default_skills,
+    seed_default_workflows,
+)
 from bheembhai.providers import build_object_store
 from bheembhai.providers.aws_secrets import AWSSecretsManager
 from bheembhai.providers.aws_ssm import AWSSSMParameterStore

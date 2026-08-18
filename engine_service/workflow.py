@@ -7,19 +7,31 @@ change: model resolution no longer goes through a `model_profiles` indirection. 
 replaces it with flat tier keys (`model_high/medium/low`) on the AI-vendor integration.
 """
 
+import re
 from dataclasses import dataclass, field
 
-import re
 import yaml
 
-from engine_service.runtime import ExecState, Result, TRANSIENT  # noqa: F401  (re-export)
+from engine_service.runtime import (
+    TRANSIENT,
+    ExecState,
+    Result,
+)
 
 __all__ = [
-    "Result", "TRANSIENT", "ExecState",
-    "WorkflowSpec", "PolicySpec",
-    "WorkflowError", "PairingError", "TierResolutionError",
-    "validate_workflow", "validate_pairing",
-    "TIER_KEYS", "resolve_model_tier", "allowed_models",
+    "TIER_KEYS",
+    "TRANSIENT",
+    "ExecState",
+    "PairingError",
+    "PolicySpec",
+    "Result",
+    "TierResolutionError",
+    "WorkflowError",
+    "WorkflowSpec",
+    "allowed_models",
+    "resolve_model_tier",
+    "validate_pairing",
+    "validate_workflow",
 ]
 
 

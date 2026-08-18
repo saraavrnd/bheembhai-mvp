@@ -5,3 +5,9 @@ markers = [
     "integration: integration tests (may need DB or services)",
     "unit: fast isolated unit tests",
 ]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's `Depends(...)` in argument defaults is the framework idiom — the
+# dependency is resolved per-request by the router, never evaluated once and
+# shared. B008 (function-call-in-default-argument) is a false positive here.
+extend-immutable-calls = ["fastapi.Depends"]

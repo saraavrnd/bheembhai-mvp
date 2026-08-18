@@ -3,7 +3,7 @@ and the REST branch-creation client (idempotency + failure classification)."""
 
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -17,7 +17,6 @@ from engine_service.run_init import (
     safe_story,
 )
 
-
 # ── Branch naming ──────────────────────────────────────────────────────
 
 def test_safe_story_folds_to_slug():
@@ -29,14 +28,16 @@ def test_safe_story_folds_to_slug():
 
 def test_derive_run_branch_format():
     run_id = uuid.UUID("12345678-1234-1234-1234-123456789abc")
-    now = datetime(2026, 8, 14, 9, 30)
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=timezone.utc)
     name = derive_run_branch("LNPRTL-101", run_id, now=now)
     assert name == "feat/lnprtl-101/140820260930-1234"
 
 
 def test_derive_run_branch_suffix_comes_from_run_uuid():
-    a = derive_run_branch("S-1", uuid.uuid4(), now=datetime(2026, 1, 1, 0, 0))
-    b = derive_run_branch("S-1", uuid.uuid4(), now=datetime(2026, 1, 1, 0, 0))
+    a = derive_run_branch("S-1", uuid.uuid4(),
+                          now=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc))
+    b = derive_run_branch("S-1", uuid.uuid4(),
+                          now=datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc))
     assert a != b   # uuid suffix disambiguates same-minute same-story runs
 
 
@@ -199,8 +200,6 @@ async def test_create_branch_unknown_source_branch_404_is_failed_execution():
 
 
 async def test_create_branch_network_error_is_failed_infra():
-    mock = GitHubMock()
-
     def down(request):  # connection refused — httpx surfaces it as ConnectError
         raise httpx.ConnectError("connection refused")
 

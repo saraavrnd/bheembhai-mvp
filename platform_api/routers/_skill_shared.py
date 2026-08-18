@@ -5,9 +5,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import HTTPException
-
 from bheembhai.models.skill import Skill
+from fastapi import HTTPException
 
 from platform_api.schemas.admin import SkillFileResponse, SkillResponse
 
@@ -36,7 +35,7 @@ def _skill_to_response(skill: Skill) -> SkillResponse:
     )
 
 
-async def _get_skill_or_404(skill_id: str, db: "AsyncSession") -> Skill:
+async def _get_skill_or_404(skill_id: str, db: AsyncSession) -> Skill:
     skill = await db.get(Skill, skill_id)
     if skill is None:
         raise HTTPException(404, f"Skill {skill_id} not found")

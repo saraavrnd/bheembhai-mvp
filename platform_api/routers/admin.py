@@ -8,19 +8,15 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import asyncio
-
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
-from sqlalchemy import and_, func, select
-from sqlalchemy.orm import joinedload, selectinload
-
 from bheembhai.database import get_session
 from bheembhai.models.project import Project, ProjectIntegration
 from bheembhai.models.run import Run
 from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import Membership, ProjectRole, User
 from bheembhai.models.workflow import Policy, Workflow
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import and_, func, select
+from sqlalchemy.orm import selectinload
 
 from platform_api.dependencies import require_admin
 from platform_api.routers._skill_shared import _get_skill_or_404, _skill_to_response
@@ -40,8 +36,8 @@ from platform_api.schemas.admin import (
     IntegrationTypeMeta,
     MemberAdd,
     MemberResponse,
-    MemberUpdate,
     MembershipBrief,
+    MemberUpdate,
     PolicyCreate,
     PolicyResponse,
     PolicyUpdate,
@@ -66,9 +62,8 @@ from platform_api.schemas.admin import (
 )
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
-
     from bheembhai.protocols.auth import Identity
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +109,7 @@ def _member_to_response(membership, user_name: str = "", user_email: str = "") -
     )
 
 
-async def _get_project_or_404(project_id: str, db: "AsyncSession") -> Project:
+async def _get_project_or_404(project_id: str, db: AsyncSession) -> Project:
     project = await db.get(Project, project_id)
     if project is None:
         raise HTTPException(404, f"Project {project_id} not found")
@@ -127,8 +122,8 @@ async def _get_project_or_404(project_id: str, db: "AsyncSession") -> Project:
 @router.get("/users")
 async def list_users(
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[UserResponse]:
     """List all platform users with their project memberships."""
     users_result = await db.execute(
@@ -161,8 +156,8 @@ async def update_user_role(
     user_id: str,
     body: UpdatePlatformRole,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> UserResponse:
     """Promote or demote a user's platform role (ADMIN ↔ USER)."""
     if body.platform_role not in ("ADMIN", "USER"):
@@ -190,8 +185,8 @@ async def update_user_enabled(
     user_id: str,
     body: UpdateUserEnabled,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> UserResponse:
     """Enable or disable a user. Disabled users cannot log in."""
     user = await db.get(User, user_id)
@@ -218,8 +213,8 @@ async def update_user_enabled(
 @router.get("/projects")
 async def list_projects(
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[ProjectResponseAdmin]:
     """List all projects with owner name and member count."""
     projects_result = await db.execute(
@@ -248,8 +243,8 @@ async def list_projects(
 async def get_project(
     project_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> ProjectResponseAdmin:
     """Get a single project by ID."""
     project = await _get_project_or_404(project_id, db)
@@ -269,11 +264,11 @@ async def get_project(
 async def create_project(
     body: ProjectCreateAdmin,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> ProjectResponseAdmin:
     """Create a new project and assign a project manager."""
-    admin_user, _ = _admin
+    _admin_user, _ = _admin
 
     # Check for duplicate project name
     existing = (await db.execute(
@@ -315,8 +310,8 @@ async def update_project(
     project_id: str,
     body: ProjectUpdate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> ProjectResponseAdmin:
     """Update a project's name."""
     project = await _get_project_or_404(project_id, db)
@@ -342,8 +337,8 @@ async def update_project(
 async def delete_project(
     project_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ):
     """Delete a project. DB FK CASCADE handles memberships, integrations, runs,
     workflows, policies, and project skills in a single DELETE (passive_deletes
@@ -364,8 +359,8 @@ async def delete_project(
 async def list_members(
     project_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[MemberResponse]:
     """List all members of a project with user details."""
     await _get_project_or_404(project_id, db)
@@ -387,8 +382,8 @@ async def add_member(
     project_id: str,
     body: MemberAdd,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> MemberResponse:
     """Add a user to a project with a specific role."""
     project = await _get_project_or_404(project_id, db)
@@ -435,8 +430,8 @@ async def update_member_role(
     membership_id: str,
     body: MemberUpdate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> MemberResponse:
     """Change a member's project role."""
     await _get_project_or_404(project_id, db)
@@ -466,8 +461,8 @@ async def remove_member(
     project_id: str,
     membership_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ):
     """Remove a member from a project."""
     await _get_project_or_404(project_id, db)
@@ -494,8 +489,8 @@ async def remove_member(
 @router.get("/skills")
 async def list_skills(
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[SkillResponse]:
     """List all skills with their files."""
     result = await db.execute(
@@ -510,8 +505,8 @@ async def list_skills(
 @router.get("/skills/names")
 async def list_skill_names(
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[SkillNameResponse]:
     """List skill IDs and names only (lightweight — no file contents)."""
     result = await db.execute(
@@ -529,8 +524,8 @@ async def list_skill_names(
 async def get_skill(
     skill_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> SkillResponse:
     """Get a single skill with all files."""
     result = await db.execute(
@@ -548,8 +543,8 @@ async def get_skill(
 async def create_skill(
     body: SkillCreate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> SkillResponse:
     """Create a new skill."""
     # Check for duplicate name among platform skills (project skills are PM-owned)
@@ -585,8 +580,8 @@ async def update_skill(
     skill_id: str,
     body: SkillUpdate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> SkillResponse:
     """Update skill metadata."""
     skill = await _get_skill_or_404(skill_id, db)
@@ -629,8 +624,8 @@ async def update_skill(
 async def delete_skill(
     skill_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ):
     """Delete a skill and all its files (CASCADE)."""
     skill = await _get_skill_or_404(skill_id, db)
@@ -650,8 +645,8 @@ async def get_skill_file(
     skill_id: str,
     file_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> SkillFileResponse:
     """Get a single skill file with full content."""
     await _get_skill_or_404(skill_id, db)
@@ -673,8 +668,8 @@ async def create_skill_file(
     skill_id: str,
     body: SkillFileCreate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> SkillFileResponse:
     """Add a file to a skill."""
     await _get_skill_or_404(skill_id, db)
@@ -713,8 +708,8 @@ async def update_skill_file(
     file_id: str,
     body: SkillFileUpdate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> SkillFileResponse:
     """Update a skill file's content."""
     await _get_skill_or_404(skill_id, db)
@@ -741,8 +736,8 @@ async def delete_skill_file(
     skill_id: str,
     file_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ):
     """Delete a file from a skill."""
     await _get_skill_or_404(skill_id, db)
@@ -764,8 +759,8 @@ async def delete_skill_file(
 @router.get("/roles")
 async def list_roles(
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[RoleResponse]:
     """List all SDLC project roles (for policy editor dropdowns)."""
     from sqlalchemy import select as _select
@@ -783,8 +778,8 @@ async def list_roles(
 async def list_workflows(
     request: Request,
     project_id: str | None = None,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[WorkflowResponse]:
     """List workflows.
 
@@ -809,8 +804,8 @@ async def list_workflows(
 async def get_workflow(
     workflow_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> WorkflowResponse:
     """Get a single workflow with parsed YAML and associated policies."""
     workflow = await db.get(Workflow, workflow_id)
@@ -823,8 +818,8 @@ async def get_workflow(
 async def list_workflow_policies(
     workflow_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[PolicyResponse]:
     """List all policies associated with a workflow."""
     workflow = await db.get(Workflow, workflow_id)
@@ -841,8 +836,8 @@ async def list_workflow_policies(
 async def create_workflow(
     body: WorkflowCreate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> WorkflowResponse:
     """Create a new workflow.
 
@@ -898,8 +893,8 @@ async def update_workflow(
     workflow_id: str,
     body: WorkflowUpdate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> WorkflowResponse:
     """Update a workflow's name, YAML content, or active status."""
     workflow = await db.get(Workflow, workflow_id)
@@ -943,8 +938,8 @@ async def update_workflow(
 async def delete_workflow(
     workflow_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ):
     """Delete a workflow and all associated policies and runs.
 
@@ -984,8 +979,8 @@ async def copy_workflow_to_project(
     workflow_id: str,
     body: CopyToProjectRequest,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> WorkflowResponse:
     """Clone a platform workflow (and its policies + referenced skills) to a
     specific project.
@@ -1066,8 +1061,8 @@ async def copy_workflow_to_project(
 @router.get("/runs")
 async def list_runs(
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[dict]:
     """List all runs across the platform, newest first (lightweight)."""
     runs_result = await db.execute(
@@ -1094,8 +1089,8 @@ async def list_runs(
 async def get_policy(
     policy_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> PolicyResponse:
     """Get a single policy with parsed YAML."""
     policy = await db.get(Policy, policy_id)
@@ -1110,8 +1105,8 @@ async def get_policy(
 async def create_policy(
     body: PolicyCreate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> PolicyResponse:
     """Create a new policy tied to a workflow."""
     # Verify workflow exists
@@ -1157,8 +1152,8 @@ async def update_policy(
     policy_id: str,
     body: PolicyUpdate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> PolicyResponse:
     """Update a policy's YAML content or active status."""
     policy = await db.get(Policy, policy_id)
@@ -1184,8 +1179,8 @@ async def update_policy(
 async def delete_policy(
     policy_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ):
     """Delete a policy."""
     policy = await db.get(Policy, policy_id)
@@ -1206,7 +1201,6 @@ async def delete_policy(
 
 from platform_api.routers._integration_shared import (
     INTEGRATION_TYPE_REGISTRY,
-    _integration_status,
     _integration_to_response,
     _secure_storage,
     _test_integration_connection,
@@ -1218,8 +1212,8 @@ from platform_api.routers._integration_shared import (
 async def admin_list_integrations(
     project_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[IntegrationAdminResponse]:
     """List integrations for a project, filling in unconfigured slots.
 
@@ -1255,7 +1249,7 @@ async def admin_list_integrations(
 @router.get("/projects/{project_id}/integrations/types")
 async def admin_list_integration_types(
     request: Request,
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[IntegrationTypeMeta]:
     """Return the integration type registry (labels, icons, field definitions)."""
     return [
@@ -1276,7 +1270,7 @@ async def admin_get_integration_fields(
     project_id: str,
     type_key: str,
     request: Request,
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> list[IntegrationFieldDef]:
     """Return the field definitions for a specific integration type."""
     meta = INTEGRATION_TYPE_REGISTRY.get(type_key)
@@ -1300,8 +1294,8 @@ async def admin_create_integration(
     project_id: str,
     body: IntegrationAdminCreate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> IntegrationAdminResponse:
     """Create or overwrite an integration for a project.
 
@@ -1383,8 +1377,8 @@ async def admin_update_integration(
     integration_id: str,
     body: IntegrationAdminUpdate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> IntegrationAdminResponse:
     """Update an integration's label, config, or rotate its credential."""
     await _get_project_or_404(project_id, db)
@@ -1423,8 +1417,8 @@ async def admin_delete_integration(
     project_id: str,
     integration_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ):
     """Delete an integration and its stored credential."""
     await _get_project_or_404(project_id, db)
@@ -1449,8 +1443,8 @@ async def admin_test_integration(
     project_id: str,
     integration_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
-    _admin: tuple[User, "Identity"] = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> TestConnectionResult:
     """Test connectivity for an integration.
 
@@ -1488,7 +1482,8 @@ async def admin_test_integration(
 
     # On successful test, update verified_at
     if result.ok:
-        from datetime import datetime as _dt, timezone as _tz
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
         integration.verified_at = _dt.now(_tz.utc)
         await db.commit()
 

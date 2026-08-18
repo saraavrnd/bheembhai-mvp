@@ -10,15 +10,14 @@ import logging
 from typing import TYPE_CHECKING
 
 import yaml
-from fastapi import HTTPException
-from sqlalchemy import func, select
-from sqlalchemy.orm import selectinload
-
 from bheembhai.models.project import Project
 from bheembhai.models.run import Run
 from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import Membership, User
 from bheembhai.models.workflow import Policy, Workflow
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from platform_api.schemas.admin import (
     PolicyGateSchema,
@@ -97,7 +96,7 @@ def _referenced_skill_names(parsed: WorkflowParsed | None) -> set[str]:
 
 
 async def clone_referenced_skills(
-    db: "AsyncSession",
+    db: AsyncSession,
     source: Workflow,
     project_id,
 ) -> None:
@@ -198,7 +197,7 @@ def _parse_policy_yaml(yaml_content: str) -> PolicyParsed | None:
 # ── Response builders ───────────────────────────────────────────────────────
 
 
-async def _workflow_to_response(workflow: Workflow, db: "AsyncSession") -> WorkflowResponse:
+async def _workflow_to_response(workflow: Workflow, db: AsyncSession) -> WorkflowResponse:
     """Build a ``WorkflowResponse`` with parsed YAML, policy count, and run count."""
     # Count policies and runs
     policy_count = (
@@ -257,7 +256,7 @@ def _policy_to_response(policy: Policy, workflow_name: str | None = None) -> Pol
 async def _require_pm_of_workflow(
     workflow: Workflow,
     current_user: User,
-    db: "AsyncSession",
+    db: AsyncSession,
 ) -> None:
     """403 unless ``workflow`` is project-scoped and the user manages that project.
 

@@ -2,9 +2,8 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bheembhai.models.run import Transition
+from sqlalchemy.ext.asyncio import AsyncSession
 
 # Transition.step_id and attempt_no are NOT NULL — run-level rows use sentinels.
 RUN_LEVEL_STEP = ""

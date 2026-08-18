@@ -12,9 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 import engine_service.runtime as rt
-from engine_service.log_upload import upload_step_logs
-
 from conftest import FakeRuntime
+from engine_service.log_upload import upload_step_logs
 
 
 @pytest.fixture(autouse=True)

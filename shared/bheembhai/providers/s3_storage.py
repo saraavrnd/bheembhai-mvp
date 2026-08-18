@@ -6,12 +6,11 @@ The engine (upload) and the platform (read) should get separate IAM policies;
 the agent containers get no AWS credentials at all.
 """
 
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import boto3
 
 from bheembhai.protocols.storage import (
-    ObjectStorage,
     PresignedUrl,
     StoredHead,
     StoredObject,

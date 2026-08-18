@@ -2,11 +2,25 @@
 
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from sqlalchemy import UUID, Boolean, CheckConstraint, DateTime, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    UUID,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bheembhai.models.base import Base
+
+if TYPE_CHECKING:
+    from bheembhai.models.project import Project
 
 
 class User(Base):

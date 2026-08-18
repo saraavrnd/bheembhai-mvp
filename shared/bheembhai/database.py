@@ -99,7 +99,6 @@ async def seed_default_roles() -> None:
 
     Called at startup so FK constraints on memberships.role are always satisfied.
     """
-    from sqlalchemy import select
 
     from bheembhai.models.user import ProjectRole
 
@@ -133,7 +132,6 @@ async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
     Directories named ``.local``, ``_tooling``, or starting with ``_SHARED``
     are skipped, as are regular files (``README.md``, etc.).
     """
-    import re
 
     import yaml
 
@@ -264,9 +262,8 @@ async def seed_default_workflows() -> None:
     If no projects exist yet, a default "BheemBhai Platform" project is
     created first so the FK constraints are satisfied.
     """
-    from sqlalchemy import select
-
     import yaml as _yaml
+    from sqlalchemy import select
 
     from bheembhai.models.workflow import Policy, Workflow
 

@@ -11,14 +11,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
-
 from bheembhai.database import get_session
 from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import User
 from bheembhai.protocols.auth import Identity
+from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from platform_api.dependencies import require_project_manager
 from platform_api.routers._skill_shared import _skill_to_response
@@ -42,7 +41,7 @@ router = APIRouter(
 
 
 async def _get_project_skill_or_404(
-    skill_id: str, project_id: str, db: "AsyncSession"
+    skill_id: str, project_id: str, db: AsyncSession
 ) -> Skill:
     """Skill by id, scoped to the project — other projects' rows are invisible."""
     result = await db.execute(
@@ -60,7 +59,7 @@ async def _get_project_skill_or_404(
 async def list_project_skills(
     project_id: str,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ) -> list[SkillResponse]:
     """List the project's skills with their files."""
     result = await db.execute(
@@ -77,7 +76,7 @@ async def create_project_skill(
     body: SkillCreate,
     project_id: str,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ) -> SkillResponse:
     """Create a new project-scoped skill."""
     name = body.name.strip()
@@ -119,7 +118,7 @@ async def get_project_skill(
     project_id: str,
     skill_id: str,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ) -> SkillResponse:
     """Get a single project skill with all files."""
     return _skill_to_response(await _get_project_skill_or_404(skill_id, project_id, db))
@@ -131,7 +130,7 @@ async def update_project_skill(
     body: SkillUpdate,
     project_id: str,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ) -> SkillResponse:
     """Update project skill metadata.
 
@@ -165,7 +164,7 @@ async def delete_project_skill(
     skill_id: str,
     project_id: str,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ):
     """Delete a project skill and all its files (CASCADE).
 
@@ -187,7 +186,7 @@ async def get_project_skill_file(
     skill_id: str,
     file_id: str,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ) -> SkillFileResponse:
     """Get a single project skill file with full content."""
     await _get_project_skill_or_404(skill_id, project_id, db)
@@ -208,7 +207,7 @@ async def create_project_skill_file(
     skill_id: str,
     body: SkillFileCreate,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ) -> SkillFileResponse:
     """Add a file to a project skill."""
     await _get_project_skill_or_404(skill_id, project_id, db)
@@ -243,7 +242,7 @@ async def update_project_skill_file(
     file_id: str,
     body: SkillFileUpdate,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ) -> SkillFileResponse:
     """Update a project skill file's content."""
     await _get_project_skill_or_404(skill_id, project_id, db)
@@ -268,7 +267,7 @@ async def delete_project_skill_file(
     skill_id: str,
     file_id: str,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
 ):
     """Delete a file from a project skill."""
     await _get_project_skill_or_404(skill_id, project_id, db)

@@ -3,13 +3,12 @@
 import logging
 import os
 
-from fastapi import Cookie, Depends, Header, HTTPException, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bheembhai.database import get_session
 from bheembhai.models.user import Membership, User
 from bheembhai.protocols.auth import Identity
 from bheembhai.providers.cognito import CognitoProvider
+from fastapi import Cookie, Depends, Header, HTTPException, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from platform_api.users import get_or_create_user
 
@@ -59,7 +58,7 @@ async def get_current_user(
         source = "cookie"
         print(f"  AUTH  token from bb_id_token cookie (len={len(token)})", flush=True)
     else:
-        print(f"  AUTH  no token (all headers listed above)", flush=True)
+        print("  AUTH  no token (all headers listed above)", flush=True)
 
     if token is None:
         return None
@@ -70,13 +69,13 @@ async def get_current_user(
     )
 
     if provider is None:
-        print(f"  AUTH  get_current_user: NO CognitoProvider on app.state", flush=True)
+        print("  AUTH  get_current_user: NO CognitoProvider on app.state", flush=True)
         return None
 
     print(f"  AUTH  get_current_user: validating token (source={source}, len={len(token)})...", flush=True)
     identity = await provider.validate(token)
     if identity is None:
-        print(f"  AUTH  get_current_user: validation returned None", flush=True)
+        print("  AUTH  get_current_user: validation returned None", flush=True)
         return None
 
     print(f"  AUTH  get_current_user: authenticated as {identity.display_name} ({identity.email})", flush=True)

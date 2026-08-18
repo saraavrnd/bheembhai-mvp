@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
-
 from bheembhai.models.user import User
 from bheembhai.protocols.auth import Identity
+from sqlalchemy import select
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
 async def get_or_create_user(
-    identity: Identity | None, db: "AsyncSession"
+    identity: Identity | None, db: AsyncSession
 ) -> User:
     """Find an existing user by external_id + provider, or create one.
 

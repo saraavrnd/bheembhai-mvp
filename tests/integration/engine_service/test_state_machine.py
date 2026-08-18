@@ -16,10 +16,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
-
 from bheembhai.config import DatabaseConfig
-from bheembhai.database import close_database, get_sessionmaker, init_database, run_migrations
+from bheembhai.database import (
+    close_database,
+    get_sessionmaker,
+    init_database,
+    run_migrations,
+)
 from bheembhai.models.project import Project, ProjectIntegration
 from bheembhai.models.run import Run, Step, Transition
 from bheembhai.models.skill import Skill
@@ -27,17 +30,16 @@ from bheembhai.models.user import User
 from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.providers.env_secrets import EnvSecureStorage
+from sqlalchemy import delete, select
 
 from conftest import FakeRuntime
-
 from engine_service import worker as worker_mod
 from engine_service.metrics import METRICS
 from engine_service.recovery import recover_on_startup
 from engine_service.run_init import InitFailure
 from engine_service.runtime import RESULT_FILENAME
 from engine_service.state_machine import drive_run
-from engine_service.workflow import (ExecState, Result, WorkflowSpec,
-                                     resolve_model_tier)
+from engine_service.workflow import ExecState, Result, WorkflowSpec, resolve_model_tier
 
 # One event loop for the whole module: the session-scoped async engine and its
 # pool must never straddle pytest-asyncio's default function-scoped loops.

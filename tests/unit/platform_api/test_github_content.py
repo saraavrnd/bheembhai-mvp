@@ -7,14 +7,11 @@ without Postgres or a GitHub token.
 
 from types import SimpleNamespace
 
-import pytest
-
 from platform_api.github_content import (
     build_chain,
     git_fetch_content,
     resolve_step_sha,
 )
-
 
 # ── resolve_step_sha ────────────────────────────────────────────────────
 

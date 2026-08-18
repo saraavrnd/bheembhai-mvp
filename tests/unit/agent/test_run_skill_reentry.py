@@ -62,13 +62,13 @@ def _run_skill(tmp_path: Path, remote: Path, run_branch: str, workspace: Path | 
            **(env_overrides or {})}
     env.pop("GH_TOKEN", None)  # local clones need no token
     proc = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
-                          timeout=60)
+                          timeout=60, check=False)
     return proc, ws, out
 
 
 def _current_branch(repo: Path) -> str:
     return subprocess.run(["git", "branch", "--show-current"], cwd=repo,
-                          capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, check=True).stdout.strip()
 
 
 def test_reentry_drops_leftover_and_clones_pushed_branch(tmp_path):
@@ -125,8 +125,8 @@ def _skills_stop_env(overlay: Path | None) -> dict[str, str]:
 def test_overlay_symlinks_skills_dir_over_untracked_default(tmp_path):
     remote = _make_remote(tmp_path)
     overlay = _overlay(tmp_path)
-    proc, ws, out = _run_skill(tmp_path, remote, "feat/overlay",
-                               env_overrides=_skills_stop_env(overlay))
+    proc, ws, _ = _run_skill(tmp_path, remote, "feat/overlay",
+                             env_overrides=_skills_stop_env(overlay))
     assert proc.returncode == 0, proc.stderr
     skills_link = ws / "repo" / ".claude" / "skills"
     assert skills_link.is_symlink()
@@ -139,8 +139,8 @@ def test_overlay_beats_repo_tracked_skills(tmp_path):
     # Repo tracks its own .claude/skills — the DB overlay must still win.
     remote = _make_remote(tmp_path, {".claude/skills/tracked.md": "tracked\n"})
     overlay = _overlay(tmp_path)
-    proc, ws, out = _run_skill(tmp_path, remote, "feat/overlay-tracked",
-                               env_overrides=_skills_stop_env(overlay))
+    proc, ws, _ = _run_skill(tmp_path, remote, "feat/overlay-tracked",
+                             env_overrides=_skills_stop_env(overlay))
     assert proc.returncode == 0, proc.stderr
     skills_link = ws / "repo" / ".claude" / "skills"
     assert skills_link.is_symlink()
@@ -150,15 +150,15 @@ def test_overlay_beats_repo_tracked_skills(tmp_path):
     # The worktree sees the removal (the COMMIT block restores it later, after
     # this hook — see run_skill.sh hygiene block).
     status = subprocess.run(["git", "status", "--porcelain"], cwd=ws / "repo",
-                            capture_output=True, text=True).stdout
+                            capture_output=True, text=True, check=True).stdout
     assert ".claude/skills/tracked.md" in status
 
 
 def test_no_overlay_respects_repo_tracked_skills(tmp_path):
     # BB_SKILLS_DIR unset: default behavior — repo-tracked .claude/skills stay.
     remote = _make_remote(tmp_path, {".claude/skills/tracked.md": "tracked\n"})
-    proc, ws, out = _run_skill(tmp_path, remote, "feat/no-overlay",
-                               env_overrides=_skills_stop_env(None))
+    proc, ws, _ = _run_skill(tmp_path, remote, "feat/no-overlay",
+                             env_overrides=_skills_stop_env(None))
     assert proc.returncode == 0, proc.stderr
     skills_path = ws / "repo" / ".claude" / "skills"
     assert not skills_path.is_symlink()
@@ -168,8 +168,8 @@ def test_no_overlay_respects_repo_tracked_skills(tmp_path):
 def test_no_overlay_defaults_to_image_skills_symlink(tmp_path):
     # BB_SKILLS_DIR unset and the repo tracks nothing: symlink to baked /skills.
     remote = _make_remote(tmp_path)
-    proc, ws, out = _run_skill(tmp_path, remote, "feat/default",
-                               env_overrides=_skills_stop_env(None))
+    proc, ws, _ = _run_skill(tmp_path, remote, "feat/default",
+                             env_overrides=_skills_stop_env(None))
     assert proc.returncode == 0, proc.stderr
     skills_link = ws / "repo" / ".claude" / "skills"
     assert skills_link.is_symlink()

@@ -15,15 +15,15 @@ Create Date: 2026-08-13
 - AI-vendor ``project_integrations.config`` key ``model_small`` → ``model_low``.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a1b2c3d4e5f6"
-down_revision: Union[str, None] = "9f0a9b1c2d3e"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "9f0a9b1c2d3e"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 AI_VENDOR_TYPES = ("openai", "claude", "deepseek", "kimi")
 

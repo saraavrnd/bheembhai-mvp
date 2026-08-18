@@ -5,21 +5,20 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, Field
-from sqlalchemy import select
-
 from bheembhai.database import get_session
 from bheembhai.models.project import Project
 from bheembhai.models.user import Membership, User
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.protocols.auth import Identity
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from platform_api.dependencies import (
     get_current_enabled_user,
     require_admin,
-    require_project_member,
     require_project_manager,
+    require_project_member,
 )
 from platform_api.schemas.admin import MemberAdd, MemberResponse, MemberUpdate
 from platform_api.schemas.projects import ProjectCreate, ProjectResponse
@@ -69,7 +68,7 @@ def _to_response(project: Project) -> ProjectResponse:
 
 @router.get("")
 async def list_projects(
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> list[ProjectResponse]:
     """List all projects the current user has access to."""
@@ -89,7 +88,7 @@ async def list_projects(
 @router.post("", status_code=201)
 async def create_project(
     body: ProjectCreate,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> ProjectResponse:
     """Create a new project. The creating user becomes the owner + first member."""
@@ -121,7 +120,7 @@ async def create_project(
 @router.get("/{project_id}")
 async def get_project(
     project_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> ProjectResponse:
     """Get a single project by ID."""
@@ -136,7 +135,7 @@ async def get_project(
 @router.get("/{project_id}/my-role")
 async def get_my_role(
     project_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> MyRoleResponse:
     """Return the current user's role in this project."""
@@ -175,7 +174,7 @@ async def get_my_role(
 @router.get("/{project_id}/overview")
 async def get_project_overview(
     project_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> dict:
     """Dashboard overview for a project: member count, workflow/policy names,
@@ -276,7 +275,7 @@ async def get_project_overview(
 async def update_project(
     project_id: str,
     body: ProjectUpdate,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     admin: tuple[User, Identity] = Depends(require_admin),
 ) -> ProjectResponse:
     """Update a project's name. ADMIN-only — PMs see Project Info read-only."""
@@ -289,7 +288,6 @@ async def update_project(
     if body.name is not None:
         name = body.name.strip()
         # Check for duplicate name (excluding self)
-        from sqlalchemy import func
         existing = (await db.execute(
             select(Project).where(Project.name == name, Project.id != project.id)
         )).scalar_one_or_none()
@@ -318,7 +316,7 @@ def _member_to_response(membership, user_name: str = "", user_email: str = "") -
     )
 
 
-async def _pm_count(project_id: str, db: "AsyncSession") -> int:
+async def _pm_count(project_id: str, db: AsyncSession) -> int:
     from sqlalchemy import func
 
     return (await db.execute(
@@ -332,7 +330,7 @@ async def _pm_count(project_id: str, db: "AsyncSession") -> int:
 @router.get("/{project_id}/members")
 async def list_members(
     project_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _member: tuple[User, Identity] = Depends(require_project_member),
 ) -> list[MemberResponse]:
     """List all members of a project with user details (any project member)."""
@@ -351,7 +349,7 @@ async def list_members(
 @router.get("/{project_id}/members/candidates")
 async def list_member_candidates(
     project_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _member: tuple[User, Identity] = Depends(require_project_member),
 ) -> list[MemberCandidateResponse]:
     """Enabled users who are not yet members of this project (any project member)."""
@@ -374,7 +372,7 @@ async def list_member_candidates(
 async def add_member(
     project_id: str,
     body: MemberAdd,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _pm: tuple[User, Identity] = Depends(require_project_manager),
 ) -> MemberResponse:
     """Add a user to the project. Requires ``project_manager`` role."""
@@ -419,7 +417,7 @@ async def update_member_role(
     project_id: str,
     membership_id: str,
     body: MemberUpdate,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _pm: tuple[User, Identity] = Depends(require_project_manager),
 ) -> MemberResponse:
     """Change a member's project role. Requires ``project_manager`` role."""
@@ -428,9 +426,9 @@ async def update_member_role(
         raise HTTPException(404, f"Membership {membership_id} not found in project {project_id}")
 
     # Guard: can't demote the last project_manager
-    if membership.role == "project_manager" and body.role != "project_manager":
-        if await _pm_count(project_id, db) <= 1:
-            raise HTTPException(400, "Cannot demote the last project manager")
+    if (membership.role == "project_manager" and body.role != "project_manager"
+            and await _pm_count(project_id, db) <= 1):
+        raise HTTPException(400, "Cannot demote the last project manager")
 
     membership.role = body.role
     await db.commit()
@@ -452,7 +450,7 @@ async def update_member_role(
 async def remove_member(
     project_id: str,
     membership_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _pm: tuple[User, Identity] = Depends(require_project_manager),
 ):
     """Remove a member from the project. Requires ``project_manager`` role."""
@@ -461,9 +459,8 @@ async def remove_member(
         raise HTTPException(404, f"Membership {membership_id} not found in project {project_id}")
 
     # Guard: can't remove the last project_manager
-    if membership.role == "project_manager":
-        if await _pm_count(project_id, db) <= 1:
-            raise HTTPException(400, "Cannot remove the last project manager")
+    if membership.role == "project_manager" and await _pm_count(project_id, db) <= 1:
+        raise HTTPException(400, "Cannot remove the last project manager")
 
     await db.delete(membership)
     await db.commit()

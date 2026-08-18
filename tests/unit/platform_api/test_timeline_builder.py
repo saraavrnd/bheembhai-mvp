@@ -33,9 +33,9 @@ GATES = {"story-design": {"review": "required", "role": "any"}}
 
 def _row(**kw):
     """Duck-typed transition row with Transition's column defaults."""
-    base = dict(step_id=None, from_state="", to_state="", ts=0.0,
-                result_status=None, actor="system", reason=None,
-                payload=None, attempt_no=1)
+    base = {"step_id": None, "from_state": "", "to_state": "", "ts": 0.0,
+            "result_status": None, "actor": "system", "reason": None,
+            "payload": None, "attempt_no": 1}
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -397,7 +397,7 @@ def test_timeline_pending_tail_defaults_cost_fields():
 
 def _log_row(**kw):
     """Duck-typed run_logs reference row (never content)."""
-    base = dict(step_id="story-design", attempt_no=1, kind="agent", size_bytes=1234)
+    base = {"step_id": "story-design", "attempt_no": 1, "kind": "agent", "size_bytes": 1234}
     base.update(kw)
     return SimpleNamespace(**base)
 

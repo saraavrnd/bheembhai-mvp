@@ -17,7 +17,7 @@ config = context.config
 # silencing startup and request-path logs for the process lifetime. Set
 # alembic's own levels directly instead.
 logging.getLogger("alembic").setLevel(logging.INFO)
-logging.getLogger("sqlalchemy.engine").setLevel(logging.WARN)
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
 
 # Override sqlalchemy.url from env var
 db_url = os.getenv("DATABASE_URL")
@@ -25,7 +25,8 @@ if db_url:
     config.set_main_option("sqlalchemy.url", db_url)
 
 # Model MetaData for autogenerate
-from bheembhai.models import Base  # noqa: E402
+from bheembhai.models import Base
+
 target_metadata = Base.metadata
 
 

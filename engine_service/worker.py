@@ -26,18 +26,21 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bheembhai.config import AppConfig
 from bheembhai.database import get_sessionmaker
 from bheembhai.models.run import Run
 from bheembhai.models.work_queue import WorkQueueItem
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine_service.metrics import METRICS
 from engine_service.persistence import record_transition
 from engine_service.run_init import InitFailure
-from engine_service.state_machine import TERMINAL_STATES, _last_gate_transition, drive_run
+from engine_service.state_machine import (
+    TERMINAL_STATES,
+    _last_gate_transition,
+    drive_run,
+)
 from engine_service.workflow import ExecState, Result
 
 logger = logging.getLogger(__name__)

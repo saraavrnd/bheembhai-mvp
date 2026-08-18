@@ -19,28 +19,35 @@ protocol (the `hung` behaviour keeps a step "running" until the cancel lands).
 import asyncio
 import inspect
 import time
-import uuid
 from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select
-
 from bheembhai.config import DatabaseConfig
-from bheembhai.database import close_database, get_sessionmaker, init_database, run_migrations
-from bheembhai.models.run import Run, Transition
+from bheembhai.database import (
+    close_database,
+    get_sessionmaker,
+    init_database,
+    run_migrations,
+)
+from bheembhai.models.run import Transition
 from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.providers.env_secrets import EnvSecureStorage
+from sqlalchemy import delete, select
+from test_state_machine import (
+    POLICY_FAST,
+    continue_item,
+    get_run,
+    make_world,
+    start_item,
+    step_row,
+)
 
 from conftest import FakeRuntime
-
 from engine_service import worker as worker_mod
 from engine_service.runtime import CANCELLED
 from engine_service.state_machine import drive_run
 from engine_service.workflow import ExecState
-
-from test_state_machine import (POLICY_FAST, make_world, start_item,
-                                continue_item, get_run, step_row)
 
 pytestmark = [
     pytest.mark.integration,
@@ -188,7 +195,7 @@ async def test_cancel_mid_step_signals_dispatch_and_stops_container(
             active["event"].set()
             try:
                 await asyncio.wait_for(asyncio.shield(active["task"]), timeout=10)
-            except Exception:
+            except Exception:  # noqa: S110, BLE001 — teardown: never mask the test's real result
                 pass
 
 

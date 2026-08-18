@@ -18,15 +18,14 @@ import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from sqlalchemy import select
-
 from bheembhai.database import get_session
 from bheembhai.models.project import ProjectIntegration
 from bheembhai.models.user import User
 from bheembhai.protocols.auth import Identity
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy import select
 
-from platform_api.dependencies import require_project_member, require_project_manager
+from platform_api.dependencies import require_project_manager, require_project_member
 from platform_api.routers._integration_shared import (
     INTEGRATION_TYPE_REGISTRY,
     _integration_to_response,
@@ -53,7 +52,7 @@ router = APIRouter(prefix="/api/projects/{project_id}/integrations", tags=["inte
 
 
 async def _get_integration_or_404(
-    project_id: str, integration_id: str, db: "AsyncSession"
+    project_id: str, integration_id: str, db: AsyncSession
 ) -> ProjectIntegration:
     integration = await db.get(ProjectIntegration, integration_id)
     if integration is None or str(integration.project_id) != project_id:
@@ -67,7 +66,7 @@ async def _get_integration_or_404(
 @router.get("")
 async def list_integrations(
     project_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _member: tuple[User, Identity] = Depends(require_project_member),
 ) -> list[IntegrationAdminResponse]:
     """List all integrations for a project. Credential values are NEVER returned."""
@@ -83,7 +82,7 @@ async def list_integrations(
 async def get_integration(
     project_id: str,
     integration_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _member: tuple[User, Identity] = Depends(require_project_member),
 ) -> IntegrationAdminResponse:
     """Get a single integration by ID. Credential value is NEVER returned."""
@@ -96,7 +95,7 @@ async def create_integration(
     project_id: str,
     body: IntegrationAdminCreate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _pm: tuple[User, Identity] = Depends(require_project_manager),
 ) -> IntegrationAdminResponse:
     """Create or overwrite an integration for a project.
@@ -176,7 +175,7 @@ async def update_integration(
     integration_id: str,
     body: IntegrationAdminUpdate,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _pm: tuple[User, Identity] = Depends(require_project_manager),
 ) -> IntegrationAdminResponse:
     """Update an integration's label, config, or rotate its credential."""
@@ -211,7 +210,7 @@ async def delete_integration(
     project_id: str,
     integration_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _pm: tuple[User, Identity] = Depends(require_project_manager),
 ):
     """Delete an integration and its stored credential."""
@@ -234,7 +233,7 @@ async def test_integration(
     project_id: str,
     integration_id: str,
     request: Request,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     _pm: tuple[User, Identity] = Depends(require_project_manager),
 ) -> TestConnectionResult:
     """Test connectivity for an integration (project manager only).

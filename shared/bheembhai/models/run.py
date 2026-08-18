@@ -2,13 +2,29 @@
 
 import uuid
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from sqlalchemy import (UUID, BigInteger, DateTime, ForeignKey, Integer, Numeric,
-                        String, Text, UniqueConstraint, func)
+from sqlalchemy import (
+    UUID,
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bheembhai.models.base import Base
+
+if TYPE_CHECKING:
+    from bheembhai.models.project import Project
+    from bheembhai.models.work_queue import WorkQueueItem
+    from bheembhai.models.workflow import Policy, Workflow
 
 
 class Run(Base):

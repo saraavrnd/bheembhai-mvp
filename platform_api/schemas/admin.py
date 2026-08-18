@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
-
 from pydantic import BaseModel, Field
-
 
 # ── User ──────────────────────────────────────────────────────────────────────
 
@@ -20,7 +16,7 @@ class UserResponse(BaseModel):
     platform_role: str
     is_enabled: bool
     created_at: str  # ISO-8601
-    memberships: list["MembershipBrief"] = Field(default_factory=list)
+    memberships: list[MembershipBrief] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

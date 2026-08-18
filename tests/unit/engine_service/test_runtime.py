@@ -5,9 +5,8 @@ import json
 import pytest
 
 import engine_service.runtime as rt
-from engine_service.runtime import Result, reconcile
-
 from conftest import FakeRuntime
+from engine_service.runtime import Result, reconcile
 
 
 @pytest.fixture(autouse=True)

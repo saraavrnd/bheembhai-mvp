@@ -8,13 +8,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_, select
-
 from bheembhai.database import get_session
 from bheembhai.models.skill import Skill
 from bheembhai.models.user import Membership, ProjectRole, User
 from bheembhai.protocols.auth import Identity
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_, select
 
 from platform_api.dependencies import get_current_enabled_user
 from platform_api.schemas.admin import RoleResponse, SkillNameResponse
@@ -27,7 +26,7 @@ router = APIRouter(prefix="/api", tags=["reference-data"])
 
 @router.get("/roles")
 async def list_roles(
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> list[RoleResponse]:
     """List all SDLC project roles (for policy editor dropdowns)."""
@@ -43,7 +42,7 @@ async def list_roles(
 @router.get("/skills/names")
 async def list_skill_names(
     project_id: str | None = Query(None),
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> list[SkillNameResponse]:
     """List skill IDs and names only (lightweight — no file contents).

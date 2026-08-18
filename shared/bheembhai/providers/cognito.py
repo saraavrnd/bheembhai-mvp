@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 import jwt
 
-from bheembhai.protocols.auth import AuthProvider, Identity
+from bheembhai.protocols.auth import Identity
 
 
 class CognitoProvider:
@@ -27,7 +27,7 @@ class CognitoProvider:
         try:
             print(f"  AUTH  CognitoProvider.validate: fetching JWKS from {self._jwks_url}", flush=True)
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
-            print(f"  AUTH  CognitoProvider.validate: JWKS key obtained, decoding JWT...", flush=True)
+            print("  AUTH  CognitoProvider.validate: JWKS key obtained, decoding JWT...", flush=True)
             claims = jwt.decode(
                 token,
                 signing_key.key,
@@ -45,12 +45,12 @@ class CognitoProvider:
                 raw_claims=claims,
             )
         except jwt.ExpiredSignatureError:
-            print(f"  AUTH  CognitoProvider.validate: TOKEN EXPIRED", flush=True)
+            print("  AUTH  CognitoProvider.validate: TOKEN EXPIRED", flush=True)
             return None
         except jwt.InvalidTokenError as e:
             print(f"  AUTH  CognitoProvider.validate: INVALID TOKEN — {e}", flush=True)
             return None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — JWKS/network boundary: any failure = invalid token
             print(f"  AUTH  CognitoProvider.validate: UNEXPECTED ERROR — {type(e).__name__}: {e}", flush=True)
             return None
 

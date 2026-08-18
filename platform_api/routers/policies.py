@@ -10,13 +10,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select
-
 from bheembhai.database import get_session
 from bheembhai.models.user import User
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.protocols.auth import Identity
+from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import select
 
 from platform_api.dependencies import get_current_enabled_user
 from platform_api.routers._workflow_shared import (
@@ -34,7 +33,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/policies", tags=["policies"])
 
 
-async def _get_policy_or_404(policy_id: str, db: "AsyncSession") -> Policy:
+async def _get_policy_or_404(policy_id: str, db: AsyncSession) -> Policy:
     policy = await db.get(Policy, policy_id)
     if policy is None:
         raise HTTPException(404, f"Policy {policy_id} not found")
@@ -44,7 +43,7 @@ async def _get_policy_or_404(policy_id: str, db: "AsyncSession") -> Policy:
 @router.post("", status_code=201)
 async def create_policy(
     body: PolicyCreate,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> PolicyResponse:
     """Create a new policy tied to a project-scoped workflow (PM of that project)."""
@@ -94,7 +93,7 @@ async def create_policy(
 async def update_policy(
     policy_id: str,
     body: PolicyUpdate,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> PolicyResponse:
     """Update a policy's YAML content or active status (PM of its workflow's project)."""
@@ -125,7 +124,7 @@ async def update_policy(
 @router.delete("/{policy_id}")
 async def delete_policy(
     policy_id: str,
-    db: "AsyncSession" = Depends(get_session),
+    db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ):
     """Delete a policy (PM of its workflow's project)."""

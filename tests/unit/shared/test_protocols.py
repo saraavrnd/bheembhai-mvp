@@ -1,8 +1,8 @@
 """Trivial unit test — proves protocol types work (walking skeleton)."""
 
 from bheembhai.protocols.auth import Identity
-from bheembhai.protocols.storage import PresignedUrl, StoredObject
 from bheembhai.protocols.secrets import Credential
+from bheembhai.protocols.storage import PresignedUrl, StoredObject
 
 
 def test_identity_creation():

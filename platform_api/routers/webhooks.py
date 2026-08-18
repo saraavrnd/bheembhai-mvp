@@ -35,7 +35,7 @@ async def engine_webhook(
 
     try:
         body = await request.json()
-    except Exception:
+    except ValueError:  # malformed JSON body → treat as empty event
         body = {}
     event = body.get("event") if isinstance(body, dict) else None
     logger.info("engine webhook: %s (run %s, step %s)",

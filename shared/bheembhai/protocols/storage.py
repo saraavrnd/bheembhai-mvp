@@ -1,7 +1,8 @@
 """Pluggable object storage protocol (ADR-011)."""
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from typing import AsyncIterator, Protocol
+from typing import Protocol
 
 
 @dataclass

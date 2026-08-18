@@ -3,8 +3,15 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import (UUID, CheckConstraint, DateTime, ForeignKey, Text,
-                        UniqueConstraint, func)
+from sqlalchemy import (
+    UUID,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from bheembhai.models.base import Base

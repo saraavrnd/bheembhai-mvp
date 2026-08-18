@@ -9,15 +9,14 @@ Project workflows (project_id IS NOT NULL): unique on (project_id, name, version
 This allows cloning: a platform template and its project copy can share name+version.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "8f8a9b0c1d3e"
-down_revision: Union[str, None] = "7f8a9b0c1d2e"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "7f8a9b0c1d2e"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

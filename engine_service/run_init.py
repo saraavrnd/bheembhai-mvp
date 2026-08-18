@@ -16,14 +16,10 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from bheembhai.github import (
-    DEFAULT_GITHUB_API,
     DEFAULT_GITHUB_URL,
     GITHUB_API_HEADERS,
     GitTarget,
@@ -35,6 +31,8 @@ from bheembhai.models.project import ProjectIntegration
 from bheembhai.models.run import Run, Step
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.resolver import ResolvedIntegration, mask_credential, resolve_credentials
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine_service.persistence import record_transition
 from engine_service.skills import (
@@ -94,7 +92,7 @@ def derive_run_branch(story_id: str | None, run_id, *, now: datetime | None = No
     """`feat/<safe_story>/<DDMMYYYYHHmm>-<first-4-of-run-uuid>` (ADR-013 §2 step 3).
     The uuid suffix makes collisions across same-minute runs impossible."""
     story = safe_story(story_id or "story")
-    stamp = (now or datetime.now()).strftime("%d%m%Y%H%M")
+    stamp = (now or datetime.now(timezone.utc)).strftime("%d%m%Y%H%M")
     suffix = str(run_id).replace("-", "")[:4]
     return f"feat/{story}/{stamp}-{suffix}"
 

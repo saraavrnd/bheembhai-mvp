@@ -19,8 +19,6 @@ from __future__ import annotations
 import logging
 
 import httpx
-from sqlalchemy import select
-
 from bheembhai.github import (
     ARTIFACT_TEXT_MAX,
     api_base_from_config,
@@ -30,6 +28,7 @@ from bheembhai.github import (
 from bheembhai.models.project import ProjectIntegration
 from bheembhai.models.run import Run, Transition
 from bheembhai.resolver import mask_credential, resolve_credentials
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 

@@ -1,15 +1,23 @@
 """Local filesystem storage — dev-only ObjectStorage backend (ADR-011)."""
 
+import asyncio
 import os
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import AsyncIterator
 
 from bheembhai.protocols.storage import (
-    ObjectStorage,
     PresignedUrl,
     StoredHead,
     StoredObject,
 )
+
+
+def _read_range(target: Path, start: int, end: int | None) -> bytes:
+    with open(target, "rb") as f:
+        f.seek(start)
+        if end is None:
+            return f.read()
+        return f.read(max(0, end - start + 1))
 
 
 class LocalStorage:
@@ -65,11 +73,7 @@ class LocalStorage:
         target = self._resolve(key)
         if not target.is_file():
             return b""
-        with open(target, "rb") as f:
-            f.seek(start)
-            if end is None:
-                return f.read()
-            return f.read(max(0, end - start + 1))
+        return await asyncio.to_thread(_read_range, target, start, end)
 
     async def presigned_get_url(
         self, key: str, expires_in: int = 3600

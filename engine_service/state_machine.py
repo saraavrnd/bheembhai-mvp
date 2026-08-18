@@ -25,19 +25,25 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from bheembhai.models.run import Run, Step, Transition
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bheembhai.models.run import Run, Step, Transition
-
 from engine_service.contexts import build_env_bundle, build_step_context
 from engine_service.log_upload import upload_step_logs
-from engine_service.persistence import (RUN_LEVEL_ATTEMPT, RUN_LEVEL_STEP,
-                                        record_transition)
+from engine_service.persistence import (
+    RUN_LEVEL_ATTEMPT,
+    RUN_LEVEL_STEP,
+    record_transition,
+)
 from engine_service.run_init import init_run
 from engine_service.runtime import CANCELLED, Handle, _dump_container_log, reconcile
-from engine_service.workflow import (ExecState, Result, TRANSIENT, PolicySpec,
-                                     WorkflowSpec)
+from engine_service.workflow import (
+    TRANSIENT,
+    ExecState,
+    Result,
+    WorkflowSpec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -339,7 +345,7 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                                           row.fargate_task_arn, started)
             try:
                 st = await runtime.status(h)
-            except Exception:
+            except Exception:  # noqa: BLE001 — any status failure → treat as gone, relaunch
                 st = {"state": "gone"}
             if st.get("state") != "gone":
                 remaining = max(5.0, (started + deadline) - time.time())

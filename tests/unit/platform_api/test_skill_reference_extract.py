@@ -9,7 +9,6 @@ from platform_api.routers._workflow_shared import (
     _parse_workflow_yaml,
     _referenced_skill_names,
 )
-
 from platform_api.schemas.admin import WorkflowParsed, WorkflowStepSchema
 
 

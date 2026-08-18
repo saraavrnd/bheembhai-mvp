@@ -2,7 +2,6 @@
 
 import httpx
 import pytest
-
 from bheembhai.github import (
     ARTIFACT_TEXT_MAX,
     api_base_from_config,
@@ -16,8 +15,8 @@ def _client(handler, *, follow_redirects: bool = True) -> httpx.AsyncClient:
         transport=httpx.MockTransport(handler), follow_redirects=follow_redirects)
 
 
-FETCH_KW = dict(api_base="https://api.github.com", token="tok", repository="o/r",
-                path="src/app.py", ref="abc1234")
+FETCH_KW = {"api_base": "https://api.github.com", "token": "tok", "repository": "o/r",
+            "path": "src/app.py", "ref": "abc1234"}
 
 
 async def test_fetch_200_returns_content_and_status():

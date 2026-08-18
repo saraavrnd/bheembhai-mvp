@@ -10,10 +10,9 @@ import asyncio
 import logging
 import traceback
 
-from sqlalchemy import select
-
 from bheembhai.log_keys import KIND_FILES, log_key
 from bheembhai.models.run import RunLog
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +47,7 @@ async def upload_step_logs(session, run, step_id: str, attempt_no: int,
         key = log_key(str(run.id), step_id, attempt_no, kind)
         try:
             await _put_file_offloop(store, key, str(path))
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort upload must not fail the run
             logger.warning(
                 "log upload failed run=%s step=%s attempt=%s kind=%s key=%s:\n%s",
                 run.id, step_id, attempt_no, kind, key, traceback.format_exc())
@@ -65,7 +64,7 @@ async def upload_step_logs(session, run, step_id: str, attempt_no: int,
                     run_id=run.id, step_id=step_id, attempt_no=attempt_no,
                     kind=kind, object_key=key, size_bytes=path.stat().st_size))
             added += 1
-        except Exception:
+        except Exception:  # noqa: BLE001 — best-effort log bookkeeping must not fail the run
             logger.warning(
                 "run_logs reference insert failed run=%s step=%s attempt=%s kind=%s:\n%s",
                 run.id, step_id, attempt_no, kind, traceback.format_exc())

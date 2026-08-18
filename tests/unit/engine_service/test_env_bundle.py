@@ -8,8 +8,6 @@ import json
 import uuid
 from types import SimpleNamespace
 
-import pytest
-
 from bheembhai.resolver import ResolvedIntegration
 
 from engine_service.contexts import build_env_bundle, build_step_context

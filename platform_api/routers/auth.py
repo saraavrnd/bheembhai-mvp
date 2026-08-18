@@ -10,15 +10,15 @@ Login flow (AWS SDK, no redirect):
 import os
 from concurrent.futures import ThreadPoolExecutor
 
+from bheembhai.database import get_session
+from bheembhai.models.user import Membership
+from bheembhai.protocols.auth import Identity
+from bheembhai.providers.cognito import CognitoProvider
+from bheembhai.providers.cognito_auth import AuthError, AuthTokens, CognitoAuthService
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-
-from bheembhai.database import get_session
-from bheembhai.models.user import Membership
-from bheembhai.protocols.auth import Identity
-from bheembhai.providers.cognito_auth import AuthError, AuthTokens, CognitoAuthService
 
 from platform_api.dependencies import get_current_user
 from platform_api.users import get_or_create_user
@@ -123,9 +123,9 @@ async def login(request: Request) -> JSONResponse:
         return _error_response(status, result.code, result.message)
 
     # ── Check if the user is enabled ──────────────────────────
-    from sqlalchemy import select
-    from bheembhai.models.user import User
     from bheembhai.database import _sessionmaker as db_sessionmaker
+    from bheembhai.models.user import User
+    from sqlalchemy import select
 
     provider_obj: CognitoProvider | None = getattr(
         request.app.state, "cognito_provider", None

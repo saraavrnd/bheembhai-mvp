@@ -152,8 +152,8 @@ class DockerRuntime:
             outdir.mkdir(parents=True, exist_ok=True)
             try:
                 os.chmod(outdir, 0o777)
-            except Exception:
-                pass
+            except OSError:
+                log.debug("chmod %s 0o777 failed", outdir, exc_info=True)
 
             # Fresh launch: drop any result a previous attempt of this step left behind.
             # The reconciler reads this file's presence as "the container published" — a
@@ -171,8 +171,8 @@ class DockerRuntime:
             workspace.mkdir(parents=True, exist_ok=True)
             try:
                 os.chmod(workspace, 0o777)
-            except Exception:
-                pass
+            except OSError:
+                log.debug("chmod %s 0o777 failed", workspace, exc_info=True)
 
             # Per-run CONTEXT (see DESIGN note): the backend tells the skill its valid
             # result-status vocabulary and whether a human gate follows — so the skill
@@ -187,8 +187,8 @@ class DockerRuntime:
                 ctxdir.mkdir(parents=True, exist_ok=True)
                 try:
                     os.chmod(ctxdir, 0o755)
-                except Exception:
-                    pass
+                except OSError:
+                    log.debug("chmod %s 0o755 failed", ctxdir, exc_info=True)
                 (ctxdir / "context.json").write_text(json.dumps(context, indent=2))
                 container_env["BB_CONTEXT"] = json.dumps(context, separators=(",", ":"))
                 container_env["CONTEXT_FILE"] = "/ctx/context.json"
@@ -260,6 +260,8 @@ class DockerRuntime:
                 return self.client.containers.get(h.container_id).logs(
                     tail=tail).decode("utf-8", "replace")
             except Exception:
+                log.debug("container logs() failed for %s", h.container_id[:12],
+                          exc_info=True)
                 return ""
         return await asyncio.to_thread(_logs)
 
@@ -275,7 +277,8 @@ class DockerRuntime:
             try:
                 self.client.containers.get(h.container_id).remove(force=True)
             except Exception:
-                pass
+                log.debug("container remove failed for %s", h.container_id[:12],
+                          exc_info=True)
         await asyncio.to_thread(_cleanup)
 
     async def stop(self, h: Handle) -> None:
@@ -287,7 +290,8 @@ class DockerRuntime:
                 self.client.containers.get(h.container_id).remove(force=True)
                 log.info("  stopped container %s (run cancelled)", h.container_id[:12])
             except Exception:
-                pass
+                log.debug("container remove failed for %s", h.container_id[:12],
+                          exc_info=True)
         await asyncio.to_thread(_stop)
 
 
@@ -298,7 +302,7 @@ async def read_result(path: Path) -> dict | None:
             return None
         try:
             return json.loads(path.read_text())
-        except Exception:
+        except (OSError, ValueError):  # missing/corrupt payload → treat as absent
             return None
     return await asyncio.to_thread(_read)
 
@@ -393,7 +397,7 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
         polls += 1
         try:
             st = await runtime.status(h)
-        except Exception:
+        except Exception:  # noqa: BLE001 — any status() failure classifies as infra failure
             log.error("status() raised — treating as infra failure:\n%s",
                       traceback.format_exc())
             return {"status": Result.FAILED_INFRA, "reason": "runtime status() error"}
@@ -410,7 +414,7 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
                 try:
                     await on_progress(prog)
                 except Exception:
-                    pass
+                    log.debug("progress publish failed", exc_info=True)
 
         if polls == 1 or polls % 10 == 0 or st["state"] != "running":
             log.info("  poll #%d: state=%s exit=%s result_present=%s elapsed=%.1fs",
