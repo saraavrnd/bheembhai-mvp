@@ -188,9 +188,12 @@ async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
         async with _sessionmaker() as session:
             from sqlalchemy import select
 
-            # Upsert skill
+            # Upsert skill — platform scope only: project skills with the same
+            # name must never be touched (or the lookup would be ambiguous).
             result = await session.execute(
-                select(Skill).where(Skill.name == skill_name)
+                select(Skill).where(
+                    Skill.name == skill_name, Skill.project_id.is_(None)
+                )
             )
             skill = result.scalar_one_or_none()
             if skill is None:

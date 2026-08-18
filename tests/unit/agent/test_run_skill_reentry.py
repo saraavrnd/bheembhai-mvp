@@ -25,7 +25,7 @@ def _git(*args, cwd):
                           check=True)
 
 
-def _make_remote(tmp_path: Path) -> Path:
+def _make_remote(tmp_path: Path, extra_files: dict[str, str] | None = None) -> Path:
     """Local bare repo with one commit on main — stands in for GitHub."""
     seed = tmp_path / "seed"
     seed.mkdir()
@@ -33,6 +33,10 @@ def _make_remote(tmp_path: Path) -> Path:
     _git("config", "user.email", "test@bheembhai.local", cwd=seed)
     _git("config", "user.name", "test", cwd=seed)
     (seed / "README.md").write_text("seed\n")
+    for relpath, content in (extra_files or {}).items():
+        p = seed / relpath
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
     _git("add", "-A", cwd=seed)
     _git("commit", "-qm", "seed", cwd=seed)
     remote = tmp_path / "remote.git"
@@ -40,7 +44,8 @@ def _make_remote(tmp_path: Path) -> Path:
     return remote
 
 
-def _run_skill(tmp_path: Path, remote: Path, run_branch: str, workspace: Path | None = None):
+def _run_skill(tmp_path: Path, remote: Path, run_branch: str, workspace: Path | None = None,
+               env_overrides: dict[str, str] | None = None):
     ws = workspace if workspace is not None else tmp_path / "ws"
     out = tmp_path / "out"
     ws.mkdir(parents=True, exist_ok=True)
@@ -53,7 +58,8 @@ def _run_skill(tmp_path: Path, remote: Path, run_branch: str, workspace: Path | 
            "SKILL": "test",
            "RESULT_DIR": str(out),
            "WORKSPACE_DIR": str(ws),
-           "BB_STOP_AFTER_INIT": "1"}
+           "BB_STOP_AFTER_INIT": "1",
+           **(env_overrides or {})}
     env.pop("GH_TOKEN", None)  # local clones need no token
     proc = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True,
                           timeout=60)
@@ -95,3 +101,76 @@ def test_reentry_with_branch_not_yet_on_remote_repairs_too(tmp_path):
     assert proc2.returncode == 0, proc2.stderr
     assert "created run branch feat/never-pushed from main" in (out / "agent.log").read_text()
     assert _current_branch(ws / "repo") == "feat/never-pushed"
+
+
+# ── Project skill overlay (BB_SKILLS_DIR) ────────────────────────────────────
+# These stop at BB_STOP_AFTER_SKILLS=1 — right after the overlay block, before
+# Claude Code. BB_STOP_AFTER_INIT must be 0 or the script exits too early.
+
+
+def _overlay(tmp_path: Path) -> Path:
+    overlay = tmp_path / "overlay"
+    (overlay / "story-design").mkdir(parents=True)
+    (overlay / "story-design" / "SKILL.md").write_text("overlay wins\n")
+    return overlay
+
+
+def _skills_stop_env(overlay: Path | None) -> dict[str, str]:
+    env = {"BB_STOP_AFTER_INIT": "0", "BB_STOP_AFTER_SKILLS": "1"}
+    if overlay is not None:
+        env["BB_SKILLS_DIR"] = str(overlay)
+    return env
+
+
+def test_overlay_symlinks_skills_dir_over_untracked_default(tmp_path):
+    remote = _make_remote(tmp_path)
+    overlay = _overlay(tmp_path)
+    proc, ws, out = _run_skill(tmp_path, remote, "feat/overlay",
+                               env_overrides=_skills_stop_env(overlay))
+    assert proc.returncode == 0, proc.stderr
+    skills_link = ws / "repo" / ".claude" / "skills"
+    assert skills_link.is_symlink()
+    assert os.readlink(skills_link) == str(overlay)
+    # The overlay content is what Claude would load.
+    assert (skills_link / "story-design" / "SKILL.md").read_text() == "overlay wins\n"
+
+
+def test_overlay_beats_repo_tracked_skills(tmp_path):
+    # Repo tracks its own .claude/skills — the DB overlay must still win.
+    remote = _make_remote(tmp_path, {".claude/skills/tracked.md": "tracked\n"})
+    overlay = _overlay(tmp_path)
+    proc, ws, out = _run_skill(tmp_path, remote, "feat/overlay-tracked",
+                               env_overrides=_skills_stop_env(overlay))
+    assert proc.returncode == 0, proc.stderr
+    skills_link = ws / "repo" / ".claude" / "skills"
+    assert skills_link.is_symlink()
+    assert os.readlink(skills_link) == str(overlay)
+    # The tracked dir was force-replaced: its file is no longer at that path.
+    assert not (skills_link / "tracked.md").exists()
+    # The worktree sees the removal (the COMMIT block restores it later, after
+    # this hook — see run_skill.sh hygiene block).
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=ws / "repo",
+                            capture_output=True, text=True).stdout
+    assert ".claude/skills/tracked.md" in status
+
+
+def test_no_overlay_respects_repo_tracked_skills(tmp_path):
+    # BB_SKILLS_DIR unset: default behavior — repo-tracked .claude/skills stay.
+    remote = _make_remote(tmp_path, {".claude/skills/tracked.md": "tracked\n"})
+    proc, ws, out = _run_skill(tmp_path, remote, "feat/no-overlay",
+                               env_overrides=_skills_stop_env(None))
+    assert proc.returncode == 0, proc.stderr
+    skills_path = ws / "repo" / ".claude" / "skills"
+    assert not skills_path.is_symlink()
+    assert (skills_path / "tracked.md").read_text() == "tracked\n"
+
+
+def test_no_overlay_defaults_to_image_skills_symlink(tmp_path):
+    # BB_SKILLS_DIR unset and the repo tracks nothing: symlink to baked /skills.
+    remote = _make_remote(tmp_path)
+    proc, ws, out = _run_skill(tmp_path, remote, "feat/default",
+                               env_overrides=_skills_stop_env(None))
+    assert proc.returncode == 0, proc.stderr
+    skills_link = ws / "repo" / ".claude" / "skills"
+    assert skills_link.is_symlink()
+    assert os.readlink(skills_link) == "/skills"

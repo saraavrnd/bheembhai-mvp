@@ -26,6 +26,7 @@ from platform_api.routers._workflow_shared import (
     _policy_to_response,
     _require_pm_of_workflow,
     _workflow_to_response,
+    clone_referenced_skills,
 )
 from platform_api.schemas.admin import (
     CopyToProjectRequest,
@@ -235,6 +236,10 @@ async def copy_workflow_to_project(
             yaml_content=pol.yaml_content,
             is_active=pol.is_active,
         ))
+
+    # Clone referenced platform skills into project-scoped rows (shared helper
+    # with the admin copy endpoint — they must not diverge).
+    await clone_referenced_skills(db, source, body.project_id)
 
     await db.commit()
 

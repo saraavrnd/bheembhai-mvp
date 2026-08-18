@@ -319,11 +319,12 @@
         </div>
     </div>
 
-    <!-- Sub-tabs: Members / Integrations / Workflows -->
+    <!-- Sub-tabs: Members / Integrations / Workflows / Skills -->
     <div class="config-subnav mb-15" id="config-subnav">
         <button class="config-subtab active" data-subtab="members"><i class="fa fa-users"></i> Members</button>
         <button class="config-subtab" data-subtab="integrations"><i class="fa fa-plug"></i> Integrations</button>
         <button class="config-subtab" data-subtab="workflows"><i class="fa fa-sitemap"></i> Workflows</button>
+        <button class="config-subtab" data-subtab="skills"><i class="fa fa-tasks"></i> Skills</button>
     </div>
 
     <div id="config-panel-members">
@@ -334,6 +335,9 @@
     </div>
     <div id="config-panel-workflows" style="display:none;">
         {% include "_config_workflows.html" %}
+    </div>
+    <div id="config-panel-skills" style="display:none;">
+        {% include "_config_skills.html" %}
     </div>
 </div>
 {% endblock %}
@@ -370,7 +374,14 @@ function showSubTab(name) {
     document.getElementById('config-panel-members').style.display = (name === 'members') ? '' : 'none';
     document.getElementById('config-panel-integrations').style.display = (name === 'integrations') ? '' : 'none';
     document.getElementById('config-panel-workflows').style.display = (name === 'workflows') ? '' : 'none';
+    document.getElementById('config-panel-skills').style.display = (name === 'skills') ? '' : 'none';
     activateSubTab(name);
+}
+
+function setActiveSubTab(name) {
+    document.querySelectorAll('#config-subnav .config-subtab').forEach(b => {
+        b.classList.toggle('active', b.dataset.subtab === name);
+    });
 }
 
 function highlightNavPill(tab) {
@@ -403,7 +414,13 @@ window.addEventListener('bb:userReady', function(e) {
     highlightNavPill(currentTab);
 
     if (currentTab === 'runs') loadRuns();
-    if (currentTab === 'config') showSubTab('members');
+    if (currentTab === 'config') {
+        // ?sub= deep link from editor breadcrumbs (default: members)
+        const sub = ['members', 'integrations', 'workflows', 'skills']
+            .includes(params.get('sub')) ? params.get('sub') : 'members';
+        setActiveSubTab(sub);
+        showSubTab(sub);
+    }
 
     // ?new=1 deep link (dashboard "Start a run") — auto-open the run form once
     if (params.get('new') === '1') {
@@ -444,9 +461,11 @@ window.addEventListener('bb:userReady', function(e) {
     // Config sub-tab clicks
     document.querySelectorAll('#config-subnav .config-subtab').forEach(btn => {
         btn.addEventListener('click', function() {
-            document.querySelectorAll('#config-subnav .config-subtab').forEach(b => b.classList.remove('active'));
-            this.classList.add('active');
+            setActiveSubTab(this.dataset.subtab);
             showSubTab(this.dataset.subtab);
+            const url = new URL(window.location);
+            url.searchParams.set('sub', this.dataset.subtab);
+            window.history.replaceState({}, '', url);
         });
     });
 });

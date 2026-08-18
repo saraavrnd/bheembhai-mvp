@@ -33,11 +33,15 @@ from bheembhai.github import (
 )
 from bheembhai.models.project import ProjectIntegration
 from bheembhai.models.run import Run, Step
-from bheembhai.models.skill import Skill
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.resolver import ResolvedIntegration, mask_credential, resolve_credentials
 
 from engine_service.persistence import record_transition
+from engine_service.skills import (
+    effective_skill_map,
+    load_run_skills,
+    materialize_skills,
+)
 from engine_service.workflow import (
     PolicySpec,
     TierResolutionError,
@@ -75,6 +79,7 @@ class InitContext:
     source_branch: str
     run_branch: str
     model_map: dict[str, str]      # step_id -> resolved concrete vendor model id
+    skills_overlay: bool = False   # True → /skills bind mount + BB_SKILLS_DIR env
 
 
 # ── Branch name derivation ──────────────────────────────────────────────
@@ -287,9 +292,27 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage) -> Ini
                 f", jira …{mask_credential(jira.token)}" if jira else "")
 
     # ── Validate workflow/policy pairing + skill existence ──
-    known_skills = set((await session.execute(select(Skill.name))).scalars().all())
+    # Project skills shadow platform skills by name; the effective set is what
+    # the run may reference and what gets materialized to /skills below.
+    project_skills, platform_skills = await load_run_skills(session, run.project_id)
+    effective_skills = effective_skill_map(project_skills, platform_skills)
+    known_skills = set(effective_skills)
     validate_workflow(wf_spec, known_skills=known_skills)
     validate_pairing(wf_spec, pol_spec)
+
+    # ── Project skill overlay: materialize the FULL effective library ──
+    # The /skills bind mount replaces the image's baked copy, so everything
+    # the run may reference must be on disk at <workdir>/skills/<run_id>.
+    # init re-runs on every dispatch claim, so PM edits apply at the next
+    # dispatch without touching in-flight runs.
+    skills_overlay = bool(project_skills)
+    if skills_overlay:
+        try:
+            materialize_skills(config.engine.workdir, run_id, effective_skills)
+        except OSError as exc:
+            raise InitFailure(
+                "failed_infra",
+                f"skill library materialization failed: {exc}") from exc
 
     # ── Resolve models: tier → concrete id through the vendor's flat config ──
     model_map: dict[str, str] = {}
@@ -360,4 +383,5 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage) -> Ini
         source_branch=source_branch,
         run_branch=run_branch,
         model_map=model_map,
+        skills_overlay=skills_overlay,
     )

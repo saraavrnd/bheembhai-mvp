@@ -1,0 +1,117 @@
+<!-- ══════════ Configuration sub-tab: Skills (project-manager view) ══════════
+     Included by project.html inside #config-panel-skills. Lazy-activated via
+     BBConfig.skills.activate(); fetches /api/projects/<id>/skills (PM-gated).
+
+     Project skills shadow platform skills by name at run time — they are
+     cloned automatically when a workflow is mapped, and edited here. -->
+
+<div class="box">
+    <div class="box-header with-border">
+        <h4 class="box-title"><i class="fa fa-tasks me-2"></i>Project Skills</h4>
+    </div>
+    <div class="box-body">
+        <p class="small text-muted">
+            Project skills are clones of platform skills, created automatically when you map a
+            workflow. Editing a file here changes what the skill does for <strong>this project
+            only</strong>; the next run of a mapped workflow uses the edited version. Deleting a
+            project skill falls back to the platform template.
+        </p>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Model Tier</th>
+                        <th>Files</th>
+                        <th>Updated</th>
+                        <th class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="sk-tbody">
+                    <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+    const projectId = window.BB_PROJECT_ID;
+
+    function throwIfError(r) {
+        if (r.ok) return r;
+        return r.text().then(t => {
+            let msg = r.statusText;
+            try { const d = JSON.parse(t); msg = d.detail || msg; } catch (e) { /* not JSON */ }
+            throw new Error(msg);
+        });
+    }
+
+    function loadSkills() {
+        // Never rejects — errors render inline in the table.
+        fetch('/api/projects/' + projectId + '/skills', { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(data => renderSkills(data))
+            .catch(err => {
+                document.getElementById('sk-tbody').innerHTML =
+                    '<tr><td colspan="5" class="text-center text-danger">' + esc(err.message) + '</td></tr>';
+            });
+    }
+
+    function renderSkills(skills) {
+        const tbody = document.getElementById('sk-tbody');
+        if (!skills.length) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No project skills yet — map a platform workflow to clone its skills here.</td></tr>';
+            return;
+        }
+        const tierBadge = {
+            high: '<span class="badge rounded-pill bg-success">high</span>',
+            medium: '<span class="badge rounded-pill bg-primary">medium</span>',
+            low: '<span class="badge rounded-pill bg-dark">low</span>',
+        };
+        tbody.innerHTML = skills.map(s => {
+            const editUrl = '/projects/' + projectId + '/config/skills/' + s.id;
+            const updated = s.updated_at ? new Date(s.updated_at).toLocaleString() : '—';
+            return `
+                <tr>
+                    <td>
+                        <a href="${editUrl}" class="text-decoration-none fw-bold">${esc(s.name)}</a>
+                    </td>
+                    <td>${tierBadge[s.model] || esc(s.model)}</td>
+                    <td>${(s.files || []).length}</td>
+                    <td class="small text-muted">${esc(updated)}</td>
+                    <td class="text-end">
+                        <a href="${editUrl}" class="btn btn-info btn-sm" title="Edit"><i class="ti-pencil"></i></a>
+                        <button class="btn btn-danger btn-sm" onclick="BBConfig.skills.deleteSkill('${s.id}', '${escJs(s.name)}')" title="Delete (falls back to platform template)"><i class="ti-trash"></i></button>
+                    </td>
+                </tr>`;
+        }).join('');
+    }
+
+    function deleteSkill(skillId, skillName) {
+        if (!confirm(`Delete project skill "${skillName}"? Runs will fall back to the platform template.`)) return;
+        fetch('/api/projects/' + projectId + '/skills/' + skillId, { method: 'DELETE', headers: authHeaders() })
+            .then(throwIfError)
+            .then(() => { loadSkills(); })
+            .catch(err => alert('Error: ' + err.message));
+    }
+
+    function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+    // Escape for use inside an inline onclick="..." string literal
+    function escJs(s) { return s ? String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;') : ''; }
+
+    function activate() {
+        loadSkills();
+    }
+
+    window.BBConfig = window.BBConfig || {};
+    window.BBConfig.skills = {
+        activate: activate,
+        loadSkills: loadSkills,
+        deleteSkill: deleteSkill,
+    };
+})();
+</script>

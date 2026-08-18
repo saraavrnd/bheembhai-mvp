@@ -23,11 +23,13 @@ from bheembhai.models.user import Membership, ProjectRole, User
 from bheembhai.models.workflow import Policy, Workflow
 
 from platform_api.dependencies import require_admin
+from platform_api.routers._skill_shared import _get_skill_or_404, _skill_to_response
 from platform_api.routers._workflow_shared import (
     _parse_policy_yaml,
     _parse_workflow_yaml,
     _policy_to_response,
     _workflow_to_response,
+    clone_referenced_skills,
 )
 from platform_api.schemas.admin import (
     CopyToProjectRequest,
@@ -343,7 +345,9 @@ async def delete_project(
     db: "AsyncSession" = Depends(get_session),
     _admin: tuple[User, "Identity"] = Depends(require_admin),
 ):
-    """Delete a project. CASCADE handles memberships, integrations, and workflows."""
+    """Delete a project. DB FK CASCADE handles memberships, integrations, runs,
+    workflows, policies, and project skills in a single DELETE (passive_deletes
+    on the Project relationships — the ORM must not emulate the cascade)."""
     project = await _get_project_or_404(project_id, db)
 
     await db.delete(project)
@@ -483,34 +487,8 @@ async def remove_member(
 
 
 # ── Skills ────────────────────────────────────────────────────────────────────
-
-
-def _skill_to_response(skill: Skill) -> SkillResponse:
-    return SkillResponse(
-        id=str(skill.id),
-        name=skill.name,
-        description=skill.description,
-        model=skill.model,
-        compatibility=skill.compatibility,
-        created_at=skill.created_at.isoformat() if skill.created_at else "",
-        updated_at=skill.updated_at.isoformat() if skill.updated_at else "",
-        files=[
-            SkillFileResponse(
-                id=str(f.id),
-                path=f.path,
-                content=f.content,
-                created_at=f.created_at.isoformat() if f.created_at else "",
-            )
-            for f in (skill.files or [])
-        ],
-    )
-
-
-async def _get_skill_or_404(skill_id: str, db: "AsyncSession") -> Skill:
-    skill = await db.get(Skill, skill_id)
-    if skill is None:
-        raise HTTPException(404, f"Skill {skill_id} not found")
-    return skill
+# (_skill_to_response / _get_skill_or_404 live in _skill_shared.py — shared with
+# the project-scoped PM router.)
 
 
 @router.get("/skills")
@@ -523,6 +501,7 @@ async def list_skills(
     result = await db.execute(
         select(Skill)
         .options(selectinload(Skill.files))
+        .where(Skill.project_id.is_(None))
         .order_by(Skill.name)
     )
     return [_skill_to_response(s) for s in result.scalars().unique().all()]
@@ -536,7 +515,9 @@ async def list_skill_names(
 ) -> list[SkillNameResponse]:
     """List skill IDs and names only (lightweight — no file contents)."""
     result = await db.execute(
-        select(Skill.id, Skill.name).order_by(Skill.name)
+        select(Skill.id, Skill.name)
+        .where(Skill.project_id.is_(None))
+        .order_by(Skill.name)
     )
     return [
         SkillNameResponse(id=str(row[0]), name=row[1])
@@ -571,9 +552,11 @@ async def create_skill(
     _admin: tuple[User, "Identity"] = Depends(require_admin),
 ) -> SkillResponse:
     """Create a new skill."""
-    # Check for duplicate name
+    # Check for duplicate name among platform skills (project skills are PM-owned)
     existing = (await db.execute(
-        select(Skill).where(Skill.name == body.name.strip())
+        select(Skill).where(
+            Skill.name == body.name.strip(), Skill.project_id.is_(None)
+        )
     )).scalar_one_or_none()
     if existing is not None:
         raise HTTPException(409, f"A skill named '{body.name.strip()}' already exists")
@@ -610,9 +593,13 @@ async def update_skill(
 
     if body.name is not None:
         name = body.name.strip()
-        # Check for duplicate name (excluding self)
+        # Check for duplicate name among platform skills (excluding self)
         existing = (await db.execute(
-            select(Skill).where(Skill.name == name, Skill.id != skill.id)
+            select(Skill).where(
+                Skill.name == name,
+                Skill.id != skill.id,
+                Skill.project_id.is_(None),
+            )
         )).scalar_one_or_none()
         if existing is not None:
             raise HTTPException(409, f"A skill named '{name}' already exists")
@@ -1000,10 +987,13 @@ async def copy_workflow_to_project(
     db: "AsyncSession" = Depends(get_session),
     _admin: tuple[User, "Identity"] = Depends(require_admin),
 ) -> WorkflowResponse:
-    """Clone a platform workflow (and its policies) to a specific project.
+    """Clone a platform workflow (and its policies + referenced skills) to a
+    specific project.
 
     The source workflow remains as a platform template.  The clone gets
-    ``project_id`` set so the project can customise it independently.
+    ``project_id`` set so the project can customise it independently; every
+    platform skill its steps reference is cloned into project scope too
+    (names the project already has are left untouched).
     """
     source = await db.get(Workflow, workflow_id)
     if source is None:
@@ -1056,6 +1046,10 @@ async def copy_workflow_to_project(
             yaml_content=pol.yaml_content,
             is_active=pol.is_active,
         ))
+
+    # Clone referenced platform skills into project-scoped rows (shared helper
+    # with the PM copy endpoint — they must not diverge).
+    await clone_referenced_skills(db, source, body.project_id)
 
     await db.commit()
 

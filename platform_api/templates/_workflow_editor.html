@@ -230,7 +230,11 @@ let selectedStepIdx = -1;
 // ── Load ───────────────────────────────────────────────────────────────────
 
 function loadSkills() {
-    return fetch(`${API_BASE}/skills/names`)
+    // PM wrapper: ask for the project union (project skills shadow platform
+    // names) so the dropdown offers what actually runs for this project.
+    const url = `${API_BASE}/skills/names` +
+        (window.BB_PROJECT_ID ? `?project_id=${window.BB_PROJECT_ID}` : '');
+    return fetch(url)
         .then(r => r.json())
         .then(data => { skillsList = data; });
 }

@@ -6,14 +6,17 @@ routers from importing each other.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import yaml
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from bheembhai.models.project import Project
 from bheembhai.models.run import Run
+from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import Membership, User
 from bheembhai.models.workflow import Policy, Workflow
 
@@ -28,6 +31,8 @@ from platform_api.schemas.admin import (
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 
 # ── YAML parse helpers ──────────────────────────────────────────────────────
@@ -73,6 +78,83 @@ def _parse_workflow_yaml(yaml_content: str) -> WorkflowParsed | None:
         start=str(raw.get("start", steps[0].id if steps else "")),
         steps=steps,
     )
+
+
+def _referenced_skill_names(parsed: WorkflowParsed | None) -> set[str]:
+    """Skill names a workflow's steps reference.
+
+    Falls back to the step id when ``skill:`` is missing, mirroring the
+    engine's ``spec.get("skill", step_id)`` resolution in run_init.
+    """
+    names: set[str] = set()
+    if parsed is None:
+        return names
+    for step in parsed.steps:
+        name = (step.skill or step.id).strip()
+        if name:
+            names.add(name)
+    return names
+
+
+async def clone_referenced_skills(
+    db: "AsyncSession",
+    source: Workflow,
+    project_id,
+) -> None:
+    """Clone every platform skill ``source`` references into project scope.
+
+    Used by BOTH copy-to-project endpoints (admin and PM — they must not
+    diverge). A name the project already has is left untouched (PM edits win
+    over re-cloning); names with no platform template are skipped + logged.
+    Only adds/flushes — the caller commits.
+    """
+    for skill_name in _referenced_skill_names(
+        _parse_workflow_yaml(source.yaml_content)
+    ):
+        project_skill = (
+            await db.execute(
+                select(Skill).where(
+                    Skill.project_id == project_id,
+                    Skill.name == skill_name,
+                )
+            )
+        ).scalar_one_or_none()
+        if project_skill is not None:
+            continue
+
+        platform_skill = (
+            await db.execute(
+                select(Skill)
+                .options(selectinload(Skill.files))
+                .where(
+                    Skill.project_id.is_(None),
+                    Skill.name == skill_name,
+                )
+            )
+        ).scalars().first()
+        if platform_skill is None:
+            logger.warning(
+                "Workflow %s references skill '%s' missing from the platform library — skipped",
+                source.id, skill_name,
+            )
+            continue
+
+        cloned_skill = Skill(
+            project_id=project_id,
+            name=platform_skill.name,
+            description=platform_skill.description,
+            model=platform_skill.model,
+            compatibility=platform_skill.compatibility,
+        )
+        db.add(cloned_skill)
+        await db.flush()
+        for sf in platform_skill.files:
+            db.add(SkillFile(
+                skill_id=cloned_skill.id,
+                path=sf.path,
+                content=sf.content,
+            ))
+        logger.info("Skill '%s' cloned to project %s", skill_name, project_id)
 
 
 def _parse_policy_yaml(yaml_content: str) -> PolicyParsed | None:

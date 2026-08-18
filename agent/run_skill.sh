@@ -134,9 +134,27 @@ fi
 [ "${BB_STOP_AFTER_INIT:-0}" = "1" ] && exit 0
 
 # --- INIT: make skills discoverable where Claude Code looks (.claude/skills) ---
-# The image ships skills at /skills; Claude loads project skills from $PWD/.claude/skills.
+# Default: the image ships skills at /skills; Claude loads project skills from
+# $PWD/.claude/skills, so symlink the baked library in (unless the repo tracks
+# its own .claude/skills).
+# Project skill overlay: the engine sets BB_SKILLS_DIR=/skills when the run's
+# project has DB-delivered project-scoped skills, and the runtime bind-mounts
+# the materialized library over /skills. The overlay is authoritative — DB
+# project skills shadow platform skills AND beat repo-tracked .claude/skills —
+# so the symlink is forced. The COMMIT block restores tracked .claude before
+# staging so the overlay never lands on the branch.
 mkdir -p "${WORKDIR_REPO}/.claude"
-[ -e "${WORKDIR_REPO}/.claude/skills" ] || ln -sfn /skills "${WORKDIR_REPO}/.claude/skills"
+if [ -n "${BB_SKILLS_DIR:-}" ]; then
+  rm -rf "${WORKDIR_REPO}/.claude/skills"
+  ln -sfn "$BB_SKILLS_DIR" "${WORKDIR_REPO}/.claude/skills"
+else
+  [ -e "${WORKDIR_REPO}/.claude/skills" ] || ln -sfn /skills "${WORKDIR_REPO}/.claude/skills"
+fi
+
+# Test hook: stop after the skills overlay — lets the overlay regression test
+# (tests/unit/agent/test_run_skill_reentry.py) run the real script against a
+# local repo without launching Claude Code.
+[ "${BB_STOP_AFTER_SKILLS:-0}" = "1" ] && exit 0
 
 # --- INIT: install MCP config with runtime credentials substituted ---
 # Written to $HOME/bb-mcp.json (ours alone, passed via --mcp-config) rather than
@@ -505,6 +523,13 @@ FILES_JSON="[]"
 REPO="${WORKDIR_REPO:-/workspace}"
 if [ -d "${REPO}/.git" ]; then
   cd "$REPO"
+  # Project skill overlay: restore whatever .claude content the repo tracks
+  # (the symlink we planted over .claude/skills must never land on the branch),
+  # then let the plumbing filter below run as usual.
+  if [ -n "${BB_SKILLS_DIR:-}" ]; then
+    rm -f .claude/skills 2>/dev/null || true
+    git restore .claude 2>/dev/null || true
+  fi
   # Never commit platform plumbing into the user's branch: the skills symlink and our MCP
   # config live in the working tree but must not land on their history. If the repo
   # TRACKS .claude it is the repo's OWN content (some projects version their skills) —

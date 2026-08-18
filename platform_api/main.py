@@ -34,6 +34,7 @@ from platform_api.routers import (
     health,
     integrations,
     policies,
+    project_skills,
     projects,
     refdata,
     runs,
@@ -174,6 +175,15 @@ async def project_workflow_edit_page(project_id: str, workflow_id: str, request:
     )
 
 
+@app.get("/projects/{project_id}/config/skills/{skill_id}", include_in_schema=False)
+async def project_skill_edit_page(project_id: str, skill_id: str, request: Request):
+    """Project-manager skill editor — same editor as admin, project-scoped API."""
+    return templates.TemplateResponse(
+        request, "project_skill_edit.html",
+        {"request": request, "project_id": project_id, "skill_id": skill_id},
+    )
+
+
 @app.get("/admin", include_in_schema=False)
 async def admin_index(request: Request):
     """Admin dashboard — overview page."""
@@ -246,6 +256,7 @@ app.include_router(integrations.router)
 app.include_router(projects.router)
 app.include_router(workflows.router)
 app.include_router(policies.router)
+app.include_router(project_skills.router)
 app.include_router(refdata.router)
 app.include_router(runs.router)
 app.include_router(webhooks.router)

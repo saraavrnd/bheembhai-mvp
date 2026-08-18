@@ -16,9 +16,10 @@ class Skill(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
-    name: Mapped[str] = mapped_column(
-        Text, nullable=False, unique=True
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
     )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     model: Mapped[str] = mapped_column(
         Text, nullable=False, default="medium", server_default="medium"
@@ -45,6 +46,12 @@ class Skill(Base):
             "model IN ('high', 'medium', 'low')",
             name="ck_skills_model",
         ),
+        # Platform skills (project_id IS NULL): unique on (name)
+        # Project skills (project_id IS NOT NULL): unique on (project_id, name)
+        # Implemented via partial unique indexes in migration e5f6a7b8c9d0.
+        # project_id deletes CASCADE (e6f7a8b9c0d1): SET NULL would re-parent a
+        # project skill into platform scope and collide with the platform-name
+        # index whenever it shadows a platform skill of the same name.
     )
 
 

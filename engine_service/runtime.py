@@ -205,6 +205,17 @@ class DockerRuntime:
             if ctxdir:
                 vols[str(ctxdir)] = {"bind": "/ctx", "mode": "ro"}
 
+            # Project skill overlay: replace the image's baked /skills with the
+            # materialized library for this run (init writes it when the project
+            # has project-scoped skills, and sets BB_SKILLS_DIR=/skills in the
+            # env). The non-empty guard is mandatory — Docker silently creates a
+            # missing bind source as an empty root-owned dir, which would mount
+            # empty over /skills and disable every skill. (A FargateRuntime must
+            # mount the same dir when it lands.)
+            skills_dir = self.workdir / "skills" / str(run_id)
+            if skills_dir.is_dir() and any(skills_dir.iterdir()):
+                vols[str(skills_dir)] = {"bind": "/skills", "mode": "ro"}
+
             log.info("launch step=%s attempt=%s image=%s", step_id, attempt_no, self.image)
             log.info("  result path (host): %s", outdir / RESULT_FILENAME)
             log.info("  mounts: %s", {k: v["bind"] for k, v in vols.items()})

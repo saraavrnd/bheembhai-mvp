@@ -5,7 +5,8 @@
 {% block page_title %}Edit Workflow{% endblock %}
 {% block breadcrumb %}
 <li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
-<li class="breadcrumb-item"><a href="/projects/{{ project_id }}?tab=config" id="breadcrumb-workflows-link">Configuration</a></li>
+<li class="breadcrumb-item"><a href="/projects/{{ project_id }}?tab=config" id="breadcrumb-config-link">Configuration</a></li>
+<li class="breadcrumb-item"><a href="/projects/{{ project_id }}?tab=config&sub=workflows" id="breadcrumb-workflows-link">Workflows</a></li>
 <li class="breadcrumb-item active" aria-current="page" id="breadcrumb-name">...</li>
 {% endblock %}
 

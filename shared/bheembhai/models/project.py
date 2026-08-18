@@ -26,10 +26,19 @@ class Project(Base):
         server_default=func.now()
     )
 
-    memberships: Mapped[list["Membership"]] = relationship(back_populates="project")
-    integrations: Mapped[list["ProjectIntegration"]] = relationship(back_populates="project")
-    workflows: Mapped[list["Workflow"]] = relationship(back_populates="project")
-    runs: Mapped[list["Run"]] = relationship(back_populates="project")
+    # passive_deletes: the DB FK constraints cascade (memberships/integrations/
+    # runs: ON DELETE CASCADE) or null (workflows: ON DELETE SET NULL) — the
+    # ORM must not emulate the cascade, because its emulation nulls NOT NULL
+    # FKs (UPDATE project_integrations SET project_id=NULL) and blows up on
+    # admin project deletion.
+    memberships: Mapped[list["Membership"]] = relationship(
+        back_populates="project", passive_deletes=True)
+    integrations: Mapped[list["ProjectIntegration"]] = relationship(
+        back_populates="project", passive_deletes=True)
+    workflows: Mapped[list["Workflow"]] = relationship(
+        back_populates="project", passive_deletes=True)
+    runs: Mapped[list["Run"]] = relationship(
+        back_populates="project", passive_deletes=True)
 
 
 class ProjectIntegration(Base):
