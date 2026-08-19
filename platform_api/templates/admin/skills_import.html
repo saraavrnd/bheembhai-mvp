@@ -1,0 +1,541 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Import Skills{% endblock %}
+{% block nav_skills %}active menu-open{% endblock %}
+{% block page_title %}Import Skills{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a href="/admin/skills">Skills</a></li>
+<li class="breadcrumb-item active" aria-current="page">Import ZIP</li>
+{% endblock %}
+
+{% block content %}
+<style>
+    /* Toast — same idiom as the dashboard tab */
+    .bb-toast {
+        position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+        background: #3e2f26; color: #fefcf7; padding: 10px 20px; border-radius: 10px;
+        font-size: 12.5px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        animation: bbFade 0.18s ease-out; max-width: 80vw;
+    }
+    @keyframes bbFade { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    /* The theme moves every native checkbox offscreen and only draws a styled
+       box when a <label> follows the input (Materialize pattern). Our
+       selection checkboxes carry no labels — restore the native control. */
+    #check-all, .row-check {
+        position: static !important;
+        left: auto !important;
+        opacity: 1 !important;
+        cursor: pointer;
+    }
+    .import-muted-note { font-size: 12px; color: #8a7a6a; }
+
+    /* Dependency-files preview drawer — reuses the theme's control-sidebar
+       aside (empty in admin_base.html; the plugin only knows it via
+       data-toggle, so open/close classes are managed here). */
+    .files-badge { cursor: pointer; }
+    .files-badge:hover .badge { filter: brightness(0.9); }
+    /* Half-screen drawer — files need the width. The theme's open-state rule
+       (.control-sidebar.control-sidebar-open { right: 0 }) still applies. */
+    .control-sidebar { background: #fff; padding: 0; width: 50vw; right: -50vw; }
+    @media (max-width: 767px) { .control-sidebar { width: 100vw; right: -100vw; } }
+    .bb-drawer { display: flex; flex-direction: column; height: 100%; }
+    .bb-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 18px 20px; border-bottom: 1px solid #eef0f4; background: #f6f7f9; }
+    .bb-drawer-title { font-size: 15px; font-weight: 700; color: #2a2a3a; word-break: break-all; }
+    .bb-drawer-sub { font-size: 11.5px; color: #8a7a6a; margin-top: 2px; word-break: break-all; }
+    .bb-drawer-close { border: none; background: transparent; font-size: 22px; line-height: 1; color: #8a7a6a; cursor: pointer; }
+    .bb-drawer-body { flex: 1; overflow-y: auto; padding: 10px 14px 30px; }
+    .file-item { border-bottom: 1px solid #eef0f4; }
+    .file-item-head { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: none; background: transparent; padding: 10px 6px; cursor: pointer; }
+    .file-item-caret { transition: transform .15s ease; color: #8a7a6a; font-size: 12px; }
+    .file-item-path { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: #3f6ea5; word-break: break-all; }
+    .file-item-body { padding: 0 6px 12px 24px; }
+    .file-item-body pre { margin: 0; padding: 10px 12px; background: #f6f7f9; border-radius: 8px; font-size: 11.5px; max-height: 50vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .file-item-note { font-size: 11px; color: #b08c3e; margin-top: 6px; }
+    /* Light code highlighting (built-in, no lib) */
+    .hl-kw { color: #7c3aed; }
+    .hl-str { color: #0e9f6e; }
+    .hl-com { color: #9aa3b0; }
+    .hl-num { color: #d97706; }
+    /* Rendered markdown body */
+    .md-body { font-size: 12.5px; color: #3e3a34; line-height: 1.55; }
+    .md-body h1, .md-body h2, .md-body h3, .md-body h4, .md-body h5, .md-body h6 { margin: 14px 0 6px; font-weight: 700; color: #2a2a3a; line-height: 1.3; }
+    .md-body h1 { font-size: 16px; }
+    .md-body h2 { font-size: 15px; }
+    .md-body h3 { font-size: 13.5px; }
+    .md-body h4 { font-size: 13px; }
+    .md-body h5, .md-body h6 { font-size: 12.5px; }
+    .md-body p { margin: 0 0 8px; }
+    .md-body ul, .md-body ol { margin: 0 0 8px; padding-left: 22px; }
+    .md-body li { margin-bottom: 3px; }
+    .md-body code { background: #f0e8dd; padding: 1px 5px; border-radius: 4px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; color: #9a3412; }
+    .md-body a { color: #3f6ea5; }
+    .md-body hr { border: none; border-top: 1px solid #eef0f4; margin: 10px 0; }
+    .md-body .table-scroll { overflow-x: auto; }
+</style>
+
+<div class="row">
+    <div class="col-12">
+
+        <!-- Step 1 · Upload -->
+        <div class="box" id="upload-card">
+            <div class="box-header with-border">
+                <h4 class="box-title">1 · Upload skills ZIP</h4>
+            </div>
+            <div class="box-body">
+                <p class="text-muted">
+                    Max <strong>5 MB</strong>. The zip must have a <code>skills/</code> folder at its root —
+                    one directory per skill, each with a <code>SKILL.md</code> plus supporting files in
+                    subdirectories (<code>references/</code>, <code>templates/</code>, <code>examples/</code>,
+                    <code>scripts/</code>, …). Other root entries (e.g. <code>tools/</code>) are ignored by the import.
+                </p>
+                <div class="input-group" style="max-width: 560px;">
+                    <input type="file" class="form-control" id="zip-file" accept=".zip,application/zip">
+                    <button class="btn btn-primary" id="btn-analyze" onclick="analyzeZip()" disabled>
+                        <i class="ti-search"></i> Analyze ZIP
+                    </button>
+                </div>
+                <div id="upload-error" class="text-danger mt-2" style="display:none;"></div>
+            </div>
+        </div>
+
+        <!-- Step 2 · Analysis -->
+        <div class="box" id="analysis-card" style="display:none;">
+            <div class="box-header with-border">
+                <h4 class="box-title">2 · Review — choose what to import</h4>
+            </div>
+            <div class="box-body">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width: 36px;"><input type="checkbox" id="check-all" title="Select all"></th>
+                                <th>Skill</th>
+                                <th>Dependent files</th>
+                                <th>Missing references</th>
+                                <th>Existing?</th>
+                                <th style="width: 150px;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="analysis-tbody">
+                            <tr><td colspan="6" class="text-center text-muted">Analyzing…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="analysis-extras" class="import-muted-note mt-2"></div>
+                <div class="d-flex align-items-center mt-3 gap-2">
+                    <button class="btn btn-success" id="btn-import" onclick="doImport()" disabled>
+                        <i class="ti-import"></i> Import selected (<span id="selected-count">0</span>)
+                    </button>
+                    <button class="btn btn-secondary" onclick="resetAll()">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3 · Results -->
+        <div class="box" id="results-card" style="display:none;">
+            <div class="box-header with-border">
+                <h4 class="box-title">3 · Import results</h4>
+            </div>
+            <div class="box-body">
+                <div id="results-summary" class="mb-3"></div>
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Skill</th>
+                                <th>Action</th>
+                                <th>Status</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-tbody"></tbody>
+                    </table>
+                </div>
+                <div class="mt-3">
+                    <a class="btn btn-success" href="/admin/skills">
+                        <i class="ti-check"></i> Go to Skills library
+                    </a>
+                    <button class="btn btn-secondary" onclick="resetAll()">Import another ZIP</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/vendor/marked/marked.min.js?v=1"></script>
+<script>
+let zipFile = null;      // File object kept in JS state — re-uploaded on confirm
+let analysis = null;     // last analyze response (server re-validates on import)
+
+const MAX_ZIP = 5 * 1024 * 1024;
+
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+function toast(msg) {
+    const el = document.createElement('div');
+    el.className = 'bb-toast';
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
+}
+
+function showUploadError(msg) {
+    const el = document.getElementById('upload-error');
+    el.textContent = msg;
+    el.style.display = msg ? '' : 'none';
+}
+
+document.getElementById('zip-file').addEventListener('change', function() {
+    zipFile = this.files[0] || null;
+    document.getElementById('btn-analyze').disabled = !zipFile;
+    showUploadError('');
+    // New file invalidates any prior analysis/results.
+    document.getElementById('analysis-card').style.display = 'none';
+    document.getElementById('results-card').style.display = 'none';
+    analysis = null;
+});
+
+async function postZip(url, formData) {
+    const r = await fetch(url, { method: 'POST', headers: authHeaders(), body: formData });
+    if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || r.statusText);
+    }
+    return r.json();
+}
+
+async function analyzeZip() {
+    if (!zipFile) return;
+    if (zipFile.size > MAX_ZIP) {
+        showUploadError('File is larger than 5 MB — choose a smaller zip.');
+        return;
+    }
+    showUploadError('');
+    const fd = new FormData();
+    fd.append('zip_file', zipFile, zipFile.name);
+    document.getElementById('btn-analyze').disabled = true;
+    try {
+        analysis = await postZip('/api/admin/skills/import/analyze', fd);
+        renderAnalysis(analysis);
+        document.getElementById('analysis-card').style.display = '';
+        document.getElementById('results-card').style.display = 'none';
+        toast(`Found ${analysis.skills.length} skill(s) — pick what to import.`);
+    } catch (err) {
+        showUploadError(err.message);
+    } finally {
+        document.getElementById('btn-analyze').disabled = false;
+    }
+}
+
+function modelBadge(model) {
+    if (model === 'high') return '<span class="badge rounded-pill bg-danger">High</span>';
+    if (model === 'low') return '<span class="badge rounded-pill bg-success">Low</span>';
+    return '<span class="badge rounded-pill bg-warning">Medium</span>';
+}
+
+function renderAnalysis(a) {
+    const tbody = document.getElementById('analysis-tbody');
+    if (!a.skills.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No importable skills found in this zip.</td></tr>';
+    } else {
+        tbody.innerHTML = a.skills.map((s, idx) => {
+            const existing = s.exists;
+            const warnings = s.warnings.length
+                ? `<div class="text-warning small">${s.warnings.map(esc).join('<br>')}</div>` : '';
+            // Refs to files outside the skill dir that the zip DOES carry —
+            // satisfied: imported WITH the skill, SKILL.md links rewritten to
+            // the new in-skill location (muted, not an error).
+            const external = (s.external_references || []).length
+                ? `<br><small class="text-muted" title="${esc(s.external_references.join('\n'))}">${s.external_references.length} ref(s) outside the skill dir — in zip, will be imported with the skill</small>` : '';
+            const missing = s.missing_referenced.length
+                ? `<span class="text-danger small">${s.missing_referenced.map(esc).join(', ')}</span>`
+                : '<span class="text-muted">—</span>';
+            const existsBadge = existing
+                ? '<span class="badge rounded-pill bg-warning">exists</span>'
+                : '<span class="badge rounded-pill bg-success">new</span>';
+            const actions = existing
+                ? '<option value="skip" selected>Skip</option><option value="overwrite">Overwrite</option>'
+                : '<option value="import" selected>Import new</option><option value="skip">Skip</option>';
+            return `
+                <tr data-idx="${idx}">
+                    <td><input type="checkbox" class="row-check" ${existing ? '' : 'checked'}></td>
+                    <td>
+                        <strong>${esc(s.name)}</strong> ${modelBadge(s.model)}
+                        <br><small class="text-muted">${esc(s.description)}</small>${warnings}${external}
+                    </td>
+                    <td><a href="#" class="files-badge" data-files-idx="${idx}" title="${esc(s.files.join('\n'))}"><span class="badge rounded-pill bg-info">${s.files.length} file(s)</span></a></td>
+                    <td>${missing}</td>
+                    <td>${existsBadge}</td>
+                    <td><select class="form-select form-select-sm row-action">${actions}</select></td>
+                </tr>`;
+        }).join('');
+    }
+    // Attach listeners by index — skill names are user-controlled, so they
+    // must never appear inside inline JS handlers.
+    tbody.querySelectorAll('.row-check, .row-action').forEach(el => {
+        el.addEventListener('change', updateSelectedCount);
+    });
+    tbody.querySelectorAll('.files-badge').forEach(el => {
+        el.addEventListener('click', e => {
+            e.preventDefault();
+            openFilesDrawer(Number(el.dataset.filesIdx));
+        });
+    });
+    document.getElementById('check-all').checked = false;
+    document.getElementById('check-all').onclick = function() {
+        const on = this.checked;
+        tbody.querySelectorAll('.row-check').forEach(cb => { cb.checked = on; });
+        updateSelectedCount();
+    };
+    updateSelectedCount();
+
+    const extras = ['Click a file count to preview the files.'];
+    if (a.invalid_dirs.length) {
+        extras.push(`Directories without SKILL.md (excluded): ${a.invalid_dirs.map(esc).join(', ')}`);
+    }
+    if (a.other_entries.length) {
+        // Group by top-level directory — dozens of loose file names make an
+        // unreadable wall (e.g. a tools/ tree with 160 entries).
+        const groups = {};
+        a.other_entries.forEach(p => {
+            const top = p.includes('/') ? p.split('/')[0] + '/' : p;
+            groups[top] = (groups[top] || 0) + 1;
+        });
+        const summary = Object.entries(groups).sort((x, y) => x[0].localeCompare(y[0]))
+            .map(([d, n]) => d.endsWith('/') ? `${d} (${n} files)` : esc(d)).join(', ');
+        extras.push(`Other root entries (ignored): ${summary}`);
+    }
+    if (a.warnings.length) {
+        extras.push(a.warnings.map(esc).join(' · '));
+    }
+    document.getElementById('analysis-extras').textContent = extras.join(' — ');
+}
+
+function updateSelectedCount() {
+    // Count rows that will actually import: checked AND action is
+    // import/overwrite. Flipping a checked row's action to "Skip" must
+    // decrement — and at 0 the button disables.
+    let n = 0;
+    document.querySelectorAll('#analysis-tbody tr[data-idx]').forEach(tr => {
+        if (!tr.querySelector('.row-check').checked) return;
+        const action = tr.querySelector('.row-action').value;
+        if (action === 'import' || action === 'overwrite') n++;
+    });
+    document.getElementById('selected-count').textContent = n;
+    document.getElementById('btn-import').disabled = n === 0;
+}
+
+async function doImport() {
+    // Every analyzed skill gets a decision — unchecked rows are "skip". The
+    // server requires keys to cover the analysis set exactly, so unchecked
+    // (e.g. already-existing) skills must not be omitted from the map.
+    const decisions = {};
+    document.querySelectorAll('#analysis-tbody tr[data-idx]').forEach(tr => {
+        const idx = Number(tr.dataset.idx);
+        decisions[analysis.skills[idx].name] = tr.querySelector('.row-check').checked
+            ? tr.querySelector('.row-action').value
+            : 'skip';
+    });
+    const willImport = Object.values(decisions).some(a => a === 'import' || a === 'overwrite');
+    if (!willImport) { toast('Select at least one skill to import.'); return; }
+
+    const fd = new FormData();
+    fd.append('zip_file', zipFile, zipFile.name);  // same file — server re-validates
+    fd.append('decisions', JSON.stringify(decisions));
+
+    document.getElementById('btn-import').disabled = true;
+    try {
+        const result = await postZip('/api/admin/skills/import', fd);
+        renderResults(result);
+        document.getElementById('analysis-card').style.display = 'none';
+        document.getElementById('results-card').style.display = '';
+        document.getElementById('results-card').scrollIntoView({ behavior: 'smooth' });
+    } catch (err) {
+        toast('Import failed: ' + err.message);
+        document.getElementById('btn-import').disabled = false;
+    }
+}
+
+function renderResults(result) {
+    const s = result.summary || {};
+    const badge = (label, n, cls) => n
+        ? `<span class="badge rounded-pill ${cls} me-2">${n} ${label}</span>` : '';
+    document.getElementById('results-summary').innerHTML =
+        badge('imported', s.imported, 'bg-success') +
+        badge('overwritten', s.overwritten, 'bg-warning') +
+        badge('skipped', s.skipped, 'bg-secondary') +
+        badge('errors', s.errors, 'bg-danger');
+
+    const statusBadge = st => st === 'error'
+        ? '<span class="badge rounded-pill bg-danger">error</span>'
+        : `<span class="badge rounded-pill bg-success">${esc(st)}</span>`;
+    document.getElementById('results-tbody').innerHTML = result.results.map(r => `
+        <tr>
+            <td><strong>${esc(r.name)}</strong></td>
+            <td>${esc(r.action)}</td>
+            <td>${statusBadge(r.status)}</td>
+            <td>${r.message ? `<span class="text-danger small">${esc(r.message)}</span>` : ''}</td>
+        </tr>`).join('');
+}
+
+// ── Dependency-files preview drawer (theme control-sidebar) ──
+// The theme's aside sits off-canvas (right: -355px) until it gets the
+// `control-sidebar-open` class; the plugin only toggles it via
+// [data-toggle="control-sidebar"], so open/close is managed here.
+const FILES_PREVIEW_CAP = 30000;  // chars per file — contents come from a ≤5 MB zip
+
+function openFilesDrawer(idx) {
+    const skill = analysis.skills[idx];
+    const aside = document.querySelector('.control-sidebar');
+    const contents = skill.file_contents || {};
+    aside.innerHTML = `
+        <div class="bb-drawer">
+            <div class="bb-drawer-head">
+                <div>
+                    <div class="bb-drawer-title">${esc(skill.name)}</div>
+                    <div class="bb-drawer-sub">${esc(skill.directory)} · ${Object.keys(contents).length} file(s)</div>
+                </div>
+                <button type="button" class="bb-drawer-close" title="Close">×</button>
+            </div>
+            <div class="bb-drawer-body">${Object.entries(contents).map(([path, content]) => {
+                const truncated = content.length > FILES_PREVIEW_CAP;
+                const shown = truncated ? content.slice(0, FILES_PREVIEW_CAP) : content;
+                const extTag = (skill.external_references || []).includes(path)
+                    ? ' <small class="text-muted">— from outside the skill dir</small>' : '';
+                return `
+                <div class="file-item">
+                    <button type="button" class="file-item-head">
+                        <i class="ti-angle-right file-item-caret"></i>
+                        <span class="file-item-path">${esc(path)}</span>${extTag}
+                    </button>
+                    <div class="file-item-body" style="display:none;">
+                        ${renderFileContent(path, shown)}
+                        ${truncated ? '<div class="file-item-note">Truncated — showing the first 30,000 characters.</div>' : ''}
+                    </div>
+                </div>`;
+            }).join('')}
+            </div>
+        </div>`;
+    aside.querySelectorAll('.file-item-head').forEach(head => {
+        head.addEventListener('click', () => {
+            const body = head.nextElementSibling;
+            const open = body.style.display !== 'none';
+            body.style.display = open ? 'none' : '';
+            head.querySelector('.file-item-caret').style.transform = open ? '' : 'rotate(90deg)';
+        });
+    });
+    aside.querySelector('.bb-drawer-close').addEventListener('click', closeFilesDrawer);
+    aside.classList.add('control-sidebar-open');
+}
+
+function closeFilesDrawer() {
+    document.querySelector('.control-sidebar').classList.remove('control-sidebar-open');
+}
+
+// The theme binds no close-on-background for this aside — do it here, plus
+// Escape and any click outside the drawer.
+document.querySelector('.control-sidebar-bg').addEventListener('click', closeFilesDrawer);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeFilesDrawer(); });
+document.addEventListener('click', e => {
+    const aside = document.querySelector('.control-sidebar');
+    if (!aside.classList.contains('control-sidebar-open')) return;
+    if (e.target.closest('.control-sidebar, .files-badge')) return;
+    closeFilesDrawer();
+});
+
+// ── Readonly file renderers (type-aware) ──
+// Markdown via the vendored marked lib; raw HTML in rendered content is
+// escaped rather than passed through — zip contents are user-supplied and
+// never trusted (same contract as run_detail.html).
+if (window.marked && typeof marked.parse === 'function') {
+    const mdRenderer = new marked.Renderer();
+    mdRenderer.html = function (tok) {
+        return esc(typeof tok === 'string' ? tok : (tok && tok.text ? tok.text : ''));
+    };
+    marked.setOptions({ renderer: mdRenderer, gfm: true, breaks: false });
+}
+
+const CODE_EXT = new Set(['py', 'sh', 'bash', 'zsh', 'js', 'mjs', 'ts', 'json',
+    'jsonc', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'env', 'css', 'scss', 'html',
+    'htm', 'xml', 'sql', 'go', 'rs', 'java', 'c', 'h', 'cpp', 'hpp', 'rb', 'php',
+    'swift', 'kt', 'lua', 'r', 'ps1', 'dockerfile', 'makefile', 'txt', 'log',
+    'csv', 'tsv', 'diff', 'patch']);
+
+// Best-effort generic highlighter: strings, comments (# or //), numbers, and
+// a small common keyword set. Strings match before comments so `#` inside
+// quotes isn't eaten; cosmetic quirks (e.g. #fff hex in CSS) are acceptable
+// for a readonly preview.
+const HL_KEYWORDS = new Set((
+    'def return if else elif for while in not and or class import from as with ' +
+    'try except finally raise yield lambda pass break continue global nonlocal ' +
+    'None True False self async await function const let var new typeof ' +
+    'instanceof this undefined null true false echo exit set local export fi ' +
+    'done do then esac package func type struct interface go range defer chan ' +
+    'map select insert update delete join on order by group limit having create ' +
+    'table alter drop').split(' '));
+
+const HL_RE = /("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\/\/[^\n]*|#[^\n]*)|(\b\d[\d_]*(?:\.\d+)?\b)|(\b[A-Za-z_][A-Za-z0-9_]*\b)/g;
+
+function highlightCode(src) {
+    let out = '';
+    let last = 0;
+    for (const m of src.matchAll(HL_RE)) {
+        out += esc(src.slice(last, m.index));
+        const [, str, comment, num, word] = m;
+        if (str !== undefined) out += `<span class="hl-str">${esc(str)}</span>`;
+        else if (comment !== undefined) out += `<span class="hl-com">${esc(comment)}</span>`;
+        else if (num !== undefined) out += `<span class="hl-num">${esc(num)}</span>`;
+        else if (HL_KEYWORDS.has(word)) out += `<span class="hl-kw">${esc(word)}</span>`;
+        else out += esc(word);
+        last = m.index + m[0].length;
+    }
+    return out + esc(src.slice(last));
+}
+
+function renderMarkdown(md) {
+    if (window.marked && typeof marked.parse === 'function') {
+        try {
+            let html = marked.parse(md || '');
+            // Wide GFM tables scroll inside their own container.
+            if (html.length < 400000) {
+                html = html.replace(/<table[\s\S]*?<\/table>/g, m =>
+                    '<div class="table-scroll">' + m + '</div>');
+            }
+            return `<div class="md-body">${html}</div>`;
+        } catch (e) { /* fall through */ }
+    }
+    return `<div class="md-body">${esc(md).replace(/\n/g, '<br>')}</div>`;
+}
+
+function renderFileContent(path, content) {
+    // Dispatch on extension — everything is readonly preview, no editing.
+    const m = /\.([A-Za-z0-9]+)$/.exec(path);
+    const ext = m ? m[1].toLowerCase() : '';
+    if (ext === 'md') return renderMarkdown(content);  // incl. SKILL.md
+    if (ext === 'json') {
+        try {
+            return `<pre>${highlightCode(JSON.stringify(JSON.parse(content), null, 2))}</pre>`;
+        } catch (e) { /* invalid JSON — fall through to code view */ }
+    }
+    if (CODE_EXT.has(ext)) return `<pre>${highlightCode(content)}</pre>`;
+    return `<pre>${esc(content)}</pre>`;
+}
+
+function resetAll() {
+    closeFilesDrawer();
+    zipFile = null;
+    analysis = null;
+    document.getElementById('zip-file').value = '';
+    document.getElementById('btn-analyze').disabled = true;
+    document.getElementById('analysis-card').style.display = 'none';
+    document.getElementById('results-card').style.display = 'none';
+    showUploadError('');
+    document.getElementById('upload-card').scrollIntoView({ behavior: 'smooth' });
+}
+</script>
+{% endblock %}

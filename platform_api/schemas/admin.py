@@ -131,6 +131,54 @@ class SkillFileUpdate(BaseModel):
     content: str = Field(..., min_length=1)
 
 
+# ── Skill zip import ────────────────────────────────────────────────────────
+
+
+class SkillImportSkillAnalysis(BaseModel):
+    """One row of the import analysis table (skill | dependent files | existing?)."""
+
+    name: str
+    directory: str
+    description: str
+    model: str
+    compatibility: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)  # dependent files incl. zip-backed external refs
+    file_contents: dict[str, str] = Field(default_factory=dict)  # path → content (files preview)
+    missing_referenced: list[str] = Field(default_factory=list)
+    external_references: list[str] = Field(default_factory=list)  # in zip, outside the skill dir
+    exists: bool = False
+
+
+class SkillImportAnalyzeResponse(BaseModel):
+    skills: list[SkillImportSkillAnalysis] = Field(default_factory=list)
+    invalid_dirs: list[str] = Field(default_factory=list)
+    other_entries: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SkillImportResult(BaseModel):
+    name: str
+    action: str  # import | overwrite | skip
+    status: str  # imported | overwritten | skipped | error
+    message: str | None = None
+    skill_id: str | None = None
+
+
+class SkillImportResponse(BaseModel):
+    results: list[SkillImportResult] = Field(default_factory=list)
+    summary: dict[str, int] = Field(default_factory=dict)
+
+
+# ── Skill zip export ────────────────────────────────────────────────────────
+
+
+class SkillExportRequest(BaseModel):
+    """Names of platform skills to zip (export key = name, the import contract)."""
+
+    names: list[str] = Field(..., min_length=1)
+
+
 # ── Workflow categories ────────────────────────────────────────────────────
 
 

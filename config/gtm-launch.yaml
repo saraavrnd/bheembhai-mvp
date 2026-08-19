@@ -1,0 +1,83 @@
+workflow: gtm-launch
+version: 1
+category: Marketing
+description: >
+  End-to-end governed product / feature launch — from positioning and pricing through
+  channel assets, launch execution, and a post-launch attribution read. Mirrors the
+  marketing-plan skill's own cross-references (product-marketing → customer-research →
+  pricing → launch).
+start: product-marketing
+steps:
+  - id: product-marketing
+    skill: product-marketing
+    model: high            # positioning/ICP is the foundation everything else consumes
+    label: Set positioning & product context
+    deadline: 1200
+    "on":
+      completed: customer-research
+      changes_requested: product-marketing
+
+  - id: customer-research
+    skill: customer-research
+    model: high
+    label: Validate ICP & voice-of-customer
+    deadline: 1500
+    "on":
+      completed: pricing
+      changes_requested: customer-research
+      # If research shows the positioning is wrong, kick back to product-marketing.
+      BLOCK: product-marketing
+
+  - id: pricing
+    skill: pricing
+    model: high
+    label: Decide packaging & pricing
+    deadline: 1200
+    "on":
+      completed: launch
+      changes_requested: pricing
+
+  - id: launch
+    skill: launch
+    model: medium
+    label: Build the launch plan
+    deadline: 1800
+    "on":
+      completed: copywriting
+      changes_requested: launch
+
+  - id: copywriting
+    skill: copywriting
+    model: medium
+    label: Write launch page & announcement copy
+    deadline: 1200
+    "on":
+      completed: public-relations
+      changes_requested: copywriting
+
+  - id: public-relations
+    skill: public-relations
+    model: medium
+    label: Prepare PR & earned-media outreach
+    deadline: 1200
+    "on":
+      completed: social
+      changes_requested: public-relations
+
+  - id: social
+    skill: social
+    model: low
+    label: Schedule launch-day social
+    deadline: 900
+    "on":
+      completed: attribution
+
+  - id: attribution
+    skill: attribution
+    model: medium
+    label: Read what actually drove the launch
+    deadline: 900
+    "on":
+      completed: DONE
+      # Attribution finds the launch under-performed on a channel → revisit the plan.
+      BLOCK: launch

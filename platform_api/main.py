@@ -247,6 +247,18 @@ async def admin_skills(request: Request):
     return templates.TemplateResponse(request, "admin/skills.html", {"request": request})
 
 
+@app.get("/admin/skills/import", include_in_schema=False)
+async def admin_skill_import(request: Request):
+    """Admin skills library — zip import page.
+
+    Must stay registered BEFORE /admin/skills/{skill_id}: FastAPI matches in
+    registration order and {skill_id} would swallow "import".
+    """
+    return templates.TemplateResponse(
+        request, "admin/skills_import.html", {"request": request}
+    )
+
+
 @app.get("/admin/skills/{skill_id}", include_in_schema=False)
 async def admin_skill_edit(skill_id: str, request: Request):
     """Admin skills library — detail/edit page."""
