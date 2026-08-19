@@ -9,6 +9,9 @@ Loop scoping: same pattern as test_create_run.py — a dedicated engine on the
 test's own loop, the platform app on TestClient's portal loop.
 """
 
+import hashlib
+import io
+import tarfile
 import uuid
 
 import pytest
@@ -362,6 +365,46 @@ async def test_project_skill_crud_and_file_editing(client):
         # Skill delete → gone from the list.
         assert client.delete(f"{base}/{skill['id']}").status_code == 204
         assert all(s["id"] != skill["id"] for s in client.get(base).json())
+    finally:
+        await _cleanup(world)
+
+
+async def test_skill_file_write_publishes_s3_bundle(client):
+    """Phase 1 publish-on-write: creating a skill stamps an (empty) bundle,
+    adding a file re-publishes under a NEW content-addressed key, and the
+    stored object round-trips to exactly the DB content."""
+    world = await _make_world()
+    try:
+        base = f"/api/projects/{world['pm_project']}/skills"
+        resp = client.post(base, json={"name": "publish-check", "description": "d",
+                                       "model": "high"})
+        assert resp.status_code == 201, resp.text
+        skill_id = resp.json()["id"]
+
+        async with _sm() as session:
+            empty = await session.get(Skill, uuid.UUID(skill_id))
+            assert empty.s3_key and empty.sha256
+            empty_key = empty.s3_key
+            store = client.app.state.object_store
+            assert (await store.head(empty_key)) is not None
+
+        f_resp = client.post(f"{base}/{skill_id}/files",
+                             json={"path": "SKILL.md", "content": "# published"})
+        assert f_resp.status_code == 201, f_resp.text
+
+        async with _sm() as session:
+            row = await session.get(Skill, uuid.UUID(skill_id))
+            assert row.s3_key and row.sha256
+            # Content change → new content-addressed key (old object kept).
+            assert row.s3_key != empty_key
+            assert row.s3_key == f"skills/publish-check/{row.sha256}.tar.gz"
+
+            obj = await store.get(row.s3_key)
+            assert obj is not None
+            assert hashlib.sha256(obj.data).hexdigest() == row.sha256
+            with tarfile.open(fileobj=io.BytesIO(obj.data), mode="r:*") as tar:
+                member = tar.extractfile("publish-check/SKILL.md")
+                assert member.read().decode("utf-8") == "# published"
     finally:
         await _cleanup(world)
 

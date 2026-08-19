@@ -18,7 +18,7 @@ from bheembhai.models.user import Membership, User
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.models.workflow_category import WorkflowCategory
 from bheembhai.protocols.auth import Identity
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import or_, select
 
 from platform_api.dependencies import get_current_enabled_user
@@ -353,6 +353,7 @@ async def list_policies(
 async def copy_workflow_to_project(
     workflow_id: str,
     body: CopyToProjectRequest,
+    request: Request,
     db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
 ) -> WorkflowResponse:
@@ -433,8 +434,12 @@ async def copy_workflow_to_project(
         ))
 
     # Clone referenced platform skills into project-scoped rows (shared helper
-    # with the admin copy endpoint — they must not diverge).
-    await clone_referenced_skills(db, source, body.project_id)
+    # with the admin copy endpoint — they must not diverge). The store
+    # publishes each fresh clone's bundle (publish-on-write).
+    await clone_referenced_skills(
+        db, source, body.project_id,
+        store=getattr(request.app.state, "object_store", None),
+    )
 
     await db.commit()
 

@@ -57,10 +57,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await seed_default_roles()
     await seed_default_categories()
 
+    # Object storage (ADR-011) — built BEFORE the optional seed so skill
+    # seeds publish S3 bundles (Phase 1). AWS creds (S3 backend) come from
+    # boto3's default chain — env vars or the EC2 instance role — never from
+    # app config, and never into agent containers.
+    store = build_object_store(config.storage)
+
     # Optional self-seeding (dev): the platform seeds its own DB, but the engine
     # can run standalone. Idempotent — seed_* are upserts.
     if config.engine.seed_on_startup:
-        await seed_default_skills()
+        await seed_default_skills(store=store)
         await seed_default_workflows()
 
     # Runtime + SecureStorage + notifier, wired into the worker BEFORE the loop
@@ -78,10 +84,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     notify_task = notifier.setup_notifier(config)
     # Object storage (ADR-011): the engine uploads each attempt's logs at
-    # reconcile; the platform reads them back. AWS creds (S3 backend) come
-    # from boto3's default chain — env vars or the EC2 instance role — never
-    # from app config, and never into agent containers.
-    store = build_object_store(config.storage)
+    # reconcile and presigns skill bundles per launch; the platform reads
+    # logs back and writes skill bundles.
     configure_worker(
         runtime=runtime,
         secure_storage=_build_secure_storage(config),

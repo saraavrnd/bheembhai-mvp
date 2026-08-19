@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
+from platform_api.routers._skill_shared import republish_skill
 from platform_api.schemas.admin import (
     PolicyGateSchema,
     PolicyParsed,
@@ -100,13 +101,15 @@ async def clone_referenced_skills(
     db: AsyncSession,
     source: Workflow,
     project_id,
+    store=None,
 ) -> None:
     """Clone every platform skill ``source`` references into project scope.
 
     Used by BOTH copy-to-project endpoints (admin and PM — they must not
     diverge). A name the project already has is left untouched (PM edits win
     over re-cloning); names with no platform template are skipped + logged.
-    Only adds/flushes — the caller commits.
+    With a store, each fresh clone's S3 bundle is published (publish-on-write
+    — the clone has no bundle yet). Only adds/flushes — the caller commits.
     """
     for skill_name in _referenced_skill_names(
         _parse_workflow_yaml(source.yaml_content)
@@ -154,6 +157,8 @@ async def clone_referenced_skills(
                 path=sf.path,
                 content=sf.content,
             ))
+        if store is not None:
+            await republish_skill(db, store, skill_id=str(cloned_skill.id))
         logger.info("Skill '%s' cloned to project %s", skill_name, project_id)
 
 

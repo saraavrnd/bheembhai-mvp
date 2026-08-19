@@ -1,19 +1,18 @@
-"""Unit — run-scoped skill library: DB shadowing + host materialization.
+"""Unit — run-scoped skill library: DB shadowing, no filesystem.
 
-Covers the three pure pieces of ``engine_service/skills.py`` with no database:
-the duck-typed session seam, project-shadows-platform resolution, and the
-wipe-then-write filesystem materializer.
+Covers the two pure pieces of ``engine_service/skills.py`` with no database:
+the duck-typed session seam and project-shadows-platform resolution. (Phase 1
+dropped the host materializer — skills now reach the agent as S3 bundles; the
+publishing side is covered in tests/unit/shared/test_skill_publish.py.)
 """
 
 import uuid
-from pathlib import Path
 
-from bheembhai.models.skill import Skill, SkillFile
+from bheembhai.models.skill import Skill
 
 from engine_service.skills import (
     effective_skill_map,
     load_run_skills,
-    materialize_skills,
 )
 
 # ── fixtures / builders ──────────────────────────────────────────────────────
@@ -21,10 +20,6 @@ from engine_service.skills import (
 
 def _skill(name: str, project_id=None) -> Skill:
     return Skill(name=name, project_id=project_id, description=f"desc {name}")
-
-
-def _file(path: str, content: str) -> SkillFile:
-    return SkillFile(skill_id=uuid.uuid4(), path=path, content=content)
 
 
 class _FakeScalars:
@@ -101,82 +96,3 @@ def test_effective_map_without_project_skills_is_platform_only():
     platform = [_skill("story-design")]
     by_name = effective_skill_map([], platform)
     assert by_name["story-design"].project_id is None
-
-
-# ── materialize_skills ───────────────────────────────────────────────────────
-
-
-def _materialized_tree(skills_dir) -> dict:
-    """path relative to the materialized root -> content."""
-    out = {}
-    root = Path(skills_dir)
-    for p in root.rglob("*"):
-        if p.is_file():
-            out[str(p.relative_to(root))] = p.read_text()
-    return out
-
-
-def test_materialize_writes_full_library_with_modes(tmp_path):
-    workdir = tmp_path / "work"
-    run_id = uuid.uuid4()
-    skill = _skill("story-design")
-    skill.files = [
-        _file("SKILL.md", "# story design"),
-        _file("references/context.md", "ref content"),
-    ]
-    root = materialize_skills(workdir, run_id, {"story-design": skill})
-
-    tree = _materialized_tree(str(root))
-    assert tree == {
-        "story-design/SKILL.md": "# story design",
-        "story-design/references/context.md": "ref content",
-    }
-    # Bind mounts don't inherit the image's chmod — verify explicit modes.
-    assert (root / "story-design" / "SKILL.md").stat().st_mode & 0o777 == 0o644
-    assert (root / "story-design" / "references").stat().st_mode & 0o777 == 0o755
-    assert root.stat().st_mode & 0o777 == 0o755
-
-
-def test_materialize_wipes_stale_files_on_rerun(tmp_path):
-    workdir = tmp_path / "work"
-    run_id = uuid.uuid4()
-    skill = _skill("story-design")
-    skill.files = [_file("SKILL.md", "v1")]
-
-    root = materialize_skills(workdir, run_id, {"story-design": skill})
-    # Simulate a PM edit landing between dispatches, plus a stale orphan file.
-    skill.files = [_file("SKILL.md", "v2")]
-    (root / "story-design" / "orphan.md").write_text("stale")
-
-    root = materialize_skills(workdir, run_id, {"story-design": skill})
-
-    tree = _materialized_tree(str(root))
-    assert tree == {"story-design/SKILL.md": "v2"}
-
-
-def test_materialize_skips_path_escaping_skill_dir(tmp_path):
-    workdir = tmp_path / "work"
-    run_id = uuid.uuid4()
-    skill = _skill("evil")
-    skill.files = [
-        _file("SKILL.md", "ok"),
-        _file("../escaped.md", "must not be written"),
-    ]
-
-    root = materialize_skills(workdir, run_id, {"evil": skill})
-
-    tree = _materialized_tree(str(root))
-    assert tree == {"evil/SKILL.md": "ok"}
-    assert not (root / "escaped.md").exists()
-
-
-def test_materialize_handles_skill_without_files(tmp_path):
-    root = materialize_skills(tmp_path / "work", uuid.uuid4(), {"empty": _skill("empty")})
-    assert (root / "empty").is_dir()
-    assert not any(p.is_file() for p in (root / "empty").iterdir())
-
-
-def test_materialize_with_invalid_run_id_type_is_handled_by_str(tmp_path):
-    # run_id is always a UUID in production; the function stringifies it.
-    root = materialize_skills(tmp_path / "work", "run-abc", {"s": _skill("s")})
-    assert root.name == "run-abc"

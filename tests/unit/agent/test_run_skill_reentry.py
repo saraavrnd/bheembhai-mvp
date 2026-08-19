@@ -1,21 +1,28 @@
-"""Unit — run_skill.sh re-entry guard (git INIT block).
+"""Unit — run_skill.sh re-entry guard (git INIT block) + S3 skill download.
 
-Regression for the implement re-loop failure on run 03ad1cd6: code-review returned
-``changes_requested``, the workflow routed back to ``implement``, and the engine
-relaunched the step into the SAME workspace dir (clones/<run>/implement/1) whose
-``repo/`` clone from the first visit was still there. The INIT block cloned into the
-non-empty dir, git failed instantly ("destination path 'repo' already exists"), the
-fallback clone of the source branch failed the same way, and the script exited 3
-(failed_init). The guard drops the leftover so re-entry resumes from the last
-pushed state.
+Re-entry regression for the implement re-loop failure on run 03ad1cd6:
+code-review returned ``changes_requested``, the workflow routed back to
+``implement``, and the engine relaunched the step into the SAME workspace dir
+(clones/<run>/implement/1) whose ``repo/`` clone from the first visit was still
+there. The INIT block cloned into the non-empty dir, git failed instantly
+("destination path 'repo' already exists"), the fallback clone of the source
+branch failed the same way, and the script exited 3 (failed_init). The guard
+drops the leftover so re-entry resumes from the last pushed state.
 
-Runs the REAL script with BB_STOP_AFTER_INIT=1 (exits right after git init, before
-Claude Code) against a local bare repo — no Docker, no network.
+The skill-delivery tests below stop at BB_STOP_AFTER_SKILLS=1 — right after the
+download block (Phase 1: BB_SKILL_URL curl + sha256 verify + extract), before
+Claude Code — against a bundle built by the REAL pack_skill (file:// URL, no
+network). BB_STOP_AFTER_INIT must be 0 or the script exits too early.
 """
 
+import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+
+from bheembhai.skill_publish import pack_skill
 
 SCRIPT = Path(__file__).resolve().parents[3] / "agent" / "run_skill.sh"
 
@@ -103,50 +110,58 @@ def test_reentry_with_branch_not_yet_on_remote_repairs_too(tmp_path):
     assert _current_branch(ws / "repo") == "feat/never-pushed"
 
 
-# ── Project skill overlay (BB_SKILLS_DIR) ────────────────────────────────────
-# These stop at BB_STOP_AFTER_SKILLS=1 — right after the overlay block, before
-# Claude Code. BB_STOP_AFTER_INIT must be 0 or the script exits too early.
+# ── Skill delivery: BB_SKILL_URL download (Phase 1) ──────────────────────────
 
 
-def _overlay(tmp_path: Path) -> Path:
-    overlay = tmp_path / "overlay"
-    (overlay / "story-design").mkdir(parents=True)
-    (overlay / "story-design" / "SKILL.md").write_text("overlay wins\n")
-    return overlay
+def _bundle(tmp_path: Path, files: dict[str, str] | None = None,
+            name: str = "test") -> tuple[Path, str]:
+    """Real pack_skill output (deterministic tar.gz) + its sha256."""
+    skill = SimpleNamespace(name=name, files=[
+        SimpleNamespace(path=p, content=c)
+        for p, c in (files or {"SKILL.md": "# bundled skill\n"}).items()
+    ])
+    data = pack_skill(skill)
+    bundle = tmp_path / f"bundle-{name}.tar.gz"
+    bundle.write_bytes(data)
+    return bundle, hashlib.sha256(data).hexdigest()
 
 
-def _skills_stop_env(overlay: Path | None) -> dict[str, str]:
+def _skills_stop_env(url: str | None = None, sha: str | None = None) -> dict[str, str]:
     env = {"BB_STOP_AFTER_INIT": "0", "BB_STOP_AFTER_SKILLS": "1"}
-    if overlay is not None:
-        env["BB_SKILLS_DIR"] = str(overlay)
+    if url is not None:
+        env["BB_SKILL_URL"] = url
+    if sha is not None:
+        env["BB_SKILL_SHA256"] = sha
     return env
 
 
-def test_overlay_symlinks_skills_dir_over_untracked_default(tmp_path):
+def _result(out: Path) -> dict:
+    return json.loads((out / "bb_step_result.json").read_text())
+
+
+def test_download_delivers_real_content_not_a_symlink(tmp_path):
+    # Repo tracks nothing at .claude: the OLD default was a symlink to the
+    # baked /skills library. Phase 1 must deliver the bundle as real files.
     remote = _make_remote(tmp_path)
-    overlay = _overlay(tmp_path)
-    proc, ws, _ = _run_skill(tmp_path, remote, "feat/overlay",
-                             env_overrides=_skills_stop_env(overlay))
+    bundle, sha = _bundle(tmp_path)
+    proc, ws, _ = _run_skill(tmp_path, remote, "feat/download",
+                             env_overrides=_skills_stop_env(bundle.as_uri(), sha))
     assert proc.returncode == 0, proc.stderr
-    skills_link = ws / "repo" / ".claude" / "skills"
-    assert skills_link.is_symlink()
-    assert os.readlink(skills_link) == str(overlay)
-    # The overlay content is what Claude would load.
-    assert (skills_link / "story-design" / "SKILL.md").read_text() == "overlay wins\n"
+    skills = ws / "repo" / ".claude" / "skills"
+    assert skills.is_dir() and not skills.is_symlink()
+    assert (skills / "test" / "SKILL.md").read_text() == "# bundled skill\n"
 
 
-def test_overlay_beats_repo_tracked_skills(tmp_path):
-    # Repo tracks its own .claude/skills — the DB overlay must still win.
+def test_download_overwrites_repo_tracked_skills(tmp_path):
     remote = _make_remote(tmp_path, {".claude/skills/tracked.md": "tracked\n"})
-    overlay = _overlay(tmp_path)
-    proc, ws, _ = _run_skill(tmp_path, remote, "feat/overlay-tracked",
-                             env_overrides=_skills_stop_env(overlay))
+    bundle, sha = _bundle(tmp_path)
+    proc, ws, _ = _run_skill(tmp_path, remote, "feat/download-tracked",
+                             env_overrides=_skills_stop_env(bundle.as_uri(), sha))
     assert proc.returncode == 0, proc.stderr
-    skills_link = ws / "repo" / ".claude" / "skills"
-    assert skills_link.is_symlink()
-    assert os.readlink(skills_link) == str(overlay)
-    # The tracked dir was force-replaced: its file is no longer at that path.
-    assert not (skills_link / "tracked.md").exists()
+    skills = ws / "repo" / ".claude" / "skills"
+    assert (skills / "test" / "SKILL.md").read_text() == "# bundled skill\n"
+    # The tracked file was force-replaced: no longer at that path.
+    assert not (skills / "tracked.md").exists()
     # The worktree sees the removal (the COMMIT block restores it later, after
     # this hook — see run_skill.sh hygiene block).
     status = subprocess.run(["git", "status", "--porcelain"], cwd=ws / "repo",
@@ -154,23 +169,36 @@ def test_overlay_beats_repo_tracked_skills(tmp_path):
     assert ".claude/skills/tracked.md" in status
 
 
-def test_no_overlay_respects_repo_tracked_skills(tmp_path):
-    # BB_SKILLS_DIR unset: default behavior — repo-tracked .claude/skills stay.
-    remote = _make_remote(tmp_path, {".claude/skills/tracked.md": "tracked\n"})
-    proc, ws, _ = _run_skill(tmp_path, remote, "feat/no-overlay",
-                             env_overrides=_skills_stop_env(None))
-    assert proc.returncode == 0, proc.stderr
-    skills_path = ws / "repo" / ".claude" / "skills"
-    assert not skills_path.is_symlink()
-    assert (skills_path / "tracked.md").read_text() == "tracked\n"
-
-
-def test_no_overlay_defaults_to_image_skills_symlink(tmp_path):
-    # BB_SKILLS_DIR unset and the repo tracks nothing: symlink to baked /skills.
+def test_download_sha_mismatch_fails_infra_without_extracting(tmp_path):
     remote = _make_remote(tmp_path)
-    proc, ws, _ = _run_skill(tmp_path, remote, "feat/default",
-                             env_overrides=_skills_stop_env(None))
-    assert proc.returncode == 0, proc.stderr
-    skills_link = ws / "repo" / ".claude" / "skills"
-    assert skills_link.is_symlink()
-    assert os.readlink(skills_link) == "/skills"
+    bundle, _ = _bundle(tmp_path)
+    proc, ws, out = _run_skill(tmp_path, remote, "feat/download-badsha",
+                               env_overrides=_skills_stop_env(bundle.as_uri(), "0" * 64))
+    assert proc.returncode == 4, proc.stderr
+    payload = _result(out)
+    assert payload["status"] == "failed_infra"
+    assert "sha256" in payload["reason"]
+    # Refused BEFORE extraction: nothing landed in the worktree.
+    assert not (ws / "repo" / ".claude" / "skills" / "test").exists()
+
+
+def test_download_missing_url_fails_init(tmp_path):
+    remote = _make_remote(tmp_path)
+    proc, ws, out = _run_skill(tmp_path, remote, "feat/download-nourl",
+                               env_overrides=_skills_stop_env(None))
+    assert proc.returncode == 2, proc.stderr
+    payload = _result(out)
+    assert payload["status"] == "failed_init"
+    assert "BB_SKILL_URL" in payload["reason"]
+
+
+def test_download_unreachable_url_fails_infra(tmp_path):
+    remote = _make_remote(tmp_path)
+    dead = tmp_path / "gone" / "skill.tar.gz"   # never created
+    proc, ws, out = _run_skill(tmp_path, remote, "feat/download-dead",
+                               env_overrides=_skills_stop_env(dead.as_uri(), "0" * 64))
+    assert proc.returncode == 4, proc.stderr
+    payload = _result(out)
+    assert payload["status"] == "failed_infra"
+    assert "download failed" in payload["reason"]
+    assert not (ws / "repo" / ".claude" / "skills" / "test").exists()

@@ -98,6 +98,12 @@ class Step(Base):
     )
     result_status: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_requested: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Skill bundle pin (Phase 1): frozen at init so mid-run skill edits can
+    # never change an in-flight step; each launch presigns a fresh GET for
+    # the pinned key. NULL = pre-migration rows (backfilled by the engine on
+    # non-first-init dispatches).
+    skill_s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skill_sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     models_used: Mapped[str | None] = mapped_column(Text, nullable=True)
     cost_usd: Mapped[float] = mapped_column(
         Numeric(10, 4), nullable=False, default=0, server_default="0"

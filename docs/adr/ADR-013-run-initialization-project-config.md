@@ -31,9 +31,9 @@ Seven decisions were locked with the owner:
    mapping as flat config keys `model_high` / `model_medium` / `model_low` (tier → concrete
    vendor model id), matching the existing integration-field registry convention. The engine
    resolves tier → model at run initialization.
-5. Stage-specific skills are stored in **S3**; the container downloads its skill as part of
-   container initialization. AWS credentials and the S3 path are passed as env vars. This
-   also solves the Fargate story (no host volumes).
+5. Stage-specific skills are stored in **S3** as content-addressed bundles; the container
+   downloads its skill via a fresh presigned URL as part of container initialization —
+   no AWS credentials in agent envs, no host volumes (solves the Fargate story too).
 6. The runtime is pluggable: local Docker for dev, Fargate for prod, behind a Runtime
    protocol.
 7. Secrets are resolved per launch from Secure Storage, never persisted, with last-4
@@ -97,7 +97,9 @@ task launch:
    with a clear error (no containers launched). `BB_ALLOWED_MODELS` for the run = those
    three values.
 6. **Pin skill versions**: record the S3 object key (see §3) for each step's skill on the
-   step row — the run executes the skills as of init time, immune to mid-run edits.
+   step row — the run executes the skills as of init time, immune to mid-run edits. A
+   referenced skill with no exported bundle is packed and published from its DB files on
+   the spot (self-heal) so pre-Phase-1 catalogs just work.
 7. **Persist**: `run_branch`, `state=running`, step rows (all pending), a `transitions`
    audit row per action ("branch created", "models resolved", …).
 8. **Launch step 1** through the Runtime protocol (§4).
@@ -125,19 +127,26 @@ the engine's existing retry family.
 
 ### 3. Skills delivered from S3 (Object Storage, ADR-011)
 
-- **Publish**: the `skills` + `skill_files` DB rows remain the source of truth. On skill
-  save, the platform writes the files to Object Storage under
-  `skills/<name>/<content-hash>/` (directory layout `SKILL.md`, `references/`, `templates/`,
-  `examples/`).
-- **Pin**: engine init records the per-step S3 key (name + hash) on the step row.
-- **Consume**: the agent image no longer bakes skills. At container start, `run_skill.sh`
-  downloads the skill into `/skills/<name>` before invoking Claude Code. Env passed by the
-  engine: `SKILL_S3_BUCKET`, `SKILL_S3_KEY`, and AWS credentials (access key / secret /
-  region) — per decision, credentials travel as env vars; this works identically for local
-  Docker and Fargate.
-  - Security note: `presigned_get_url` (already in the storage protocol) would avoid
-    spreading AWS credentials into task envs, and a Fargate task IAM role is the
-    production-grade variant. Both are drop-in later; MVP uses env creds per decision.
+- **Publish**: the `skills` + `skill_files` DB rows remain the source of truth. On every
+  skill-save that touches content (create, file add/edit/delete, import, clone-on-map),
+  the platform packs the files into a **deterministic** tar.gz (entries
+  `<name>/SKILL.md`, `<name>/references/…` sorted by path, mtime=0, fixed mode/owner,
+  gzip header mtime=0) and PUTs it to Object Storage under the **content-addressed key**
+  `skills/<name>/<sha256>.tar.gz`; key + sha are stamped on the skill row. Re-packing the
+  same content yields the same key, so concurrent publishes are idempotent (head-check
+  skips the re-PUT). Metadata-only edits (description/model) do not re-publish, and skill
+  delete keeps the object (in-flight determinism; bundle GC is out of scope).
+- **Pin**: engine init records the per-step S3 key + sha on the step row — first init
+  stamps it, later dispatches read the persisted row (never a re-resolved map), and NULL
+  pins on pre-migration in-flight runs are backfilled. A referenced skill with no exported
+  bundle is packed and published from its DB files at init (self-heal).
+- **Consume**: the agent image is a pure runtime — no skills baked. At container start,
+  `run_skill.sh` downloads the skill bundle via env `BB_SKILL_URL` (a **fresh presigned
+  GET**, `expires_in=900`, signed by the engine at launch from the pinned key) and
+  `BB_SKILL_SHA256` (verification), then extracts it into `.claude/skills/<name>` —
+  unconditionally overwriting anything the repo tracks there (BheemBhai is authoritative).
+  This is the security-preferred variant of the original decision: AWS credentials never
+  travel into agent envs (a Fargate task IAM role remains an alternative later).
 
 ### 4. Runtime protocol (pluggable)
 
@@ -156,7 +165,7 @@ Composed by the engine at each step launch, sourced from the run's captured sele
 | Jira | `JIRA_URL`, `JIRA_USERNAME`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_USER_EFFECTIVE` | Jira integration config + `credential_ref` (absent if not selected) |
 | Model | `BB_MODEL` (tier-resolved), vendor API key, `ANTHROPIC_BASE_URL` for non-Anthropic vendors, `BB_ALLOWED_MODELS` | AI-vendor integration flat tier keys (`model_high/medium/low`) + `credential_ref` |
 | Engine | `RUN_ID`, `STEP_ID`, `ATTEMPT_NO`, `SKILL`, `RESULT_DIR`, `BB_CONTEXT`/`CONTEXT_FILE`, `STORY_ID` | Engine state + context injection |
-| Skills | `SKILL_S3_BUCKET`, `SKILL_S3_KEY`, AWS creds | Object Storage config + pinned skill key |
+| Skills | `BB_SKILL_URL` (fresh presigned GET, 900s), `BB_SKILL_SHA256` | Pinned step-row skill key + Object Storage presigner |
 
 Hygiene: secrets resolved fresh at each launch (never persisted, never in `transitions`);
 last-4 fingerprints in diagnostics; MCP config substitution remains in the agent (`mcp.json`
@@ -202,10 +211,18 @@ Two behaviours settled at implementation time (supersede this ADR where they dif
   with **no state mutation**. The engine claims the token and applies the decision; the UI
   re-poll sees the flip.
 
-**Deferred** (unchanged from the ADR, no new decisions): §3 S3 skill delivery (skills stay
-baked in the agent image — `run_skill.sh` clones a pre-existing `RUN_BRANCH` and only creates
-one when missing), `FargateRuntime` (DockerRuntime is the local-dev runtime;
-`steps.fargate_task_arn` is reused as the generic runtime handle), presigned URLs,
+**Phase 1 implemented (2026-08-19):** §3 S3 skill delivery — content-addressed deterministic
+bundles (`skills/<name>/<sha256>.tar.gz`, packed on every content-changing save in the
+platform, self-heal pack at engine init for unexported skills), step-row pinning at first
+init with NULL backfill for pre-migration in-flight runs, a fresh presigned GET per launch
+into `BB_SKILL_URL` + `BB_SKILL_SHA256` env (no AWS creds in agent envs — the ADR's own
+security-preferred variant), a pure-runtime agent image (no baked skills), and
+`run_skill.sh` download → sha256 verify → path-safety check → extract into
+`.claude/skills/<name>`. Context travels via the `BB_CONTEXT` env var written by the runner
+to `/home/node/context.json` — the `/ctx` bind mount is gone.
+
+**Deferred** (unchanged, no new decisions): `FargateRuntime` (DockerRuntime is the
+local-dev runtime; `steps.fargate_task_arn` is reused as the generic runtime handle),
 `model_profiles` table, budget caps.
 
 ## Consequences
@@ -219,7 +236,11 @@ one when missing), `FargateRuntime` (DockerRuntime is the local-dev runtime;
 - **Easier:** Skill updates flow DB → S3 → next run, no image rebuilds; Fargate has no host
   volumes to manage.
 - **Harder:** The agent container now needs the skills-download phase and its env contract
-  grows (`SKILL_S3_*`, AWS creds). R&D image (skills baked) must be updated to match.
+  grows (`BB_SKILL_URL`, `BB_SKILL_SHA256`). Every skill consumed by a run must have an
+  exported bundle first (publish-on-save + engine self-heal make this automatic).
+- **Harder:** Compose runs the real S3 backend (`STORAGE_BACKEND=s3` + AWS creds). The
+  `local` backend's `file://` URLs are host paths that agent containers cannot resolve,
+  so `local` remains valid only for host-side runs (unit tests).
 - **Harder:** A data migration rewrites workflow YAML `model:` values in place; project
   copies edited by PMs need the same tier vocabulary from day one (validation error
   otherwise).

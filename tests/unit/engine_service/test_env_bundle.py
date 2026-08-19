@@ -52,7 +52,7 @@ def make_ctx(*, vendor_type="claude", vendor_config=None, jira_config=None,
         git_target=GitTarget("https://api.github.com", "https://github.com/acme/demo.git",
                              "acme/demo"),
         source_branch="main", run_branch="feat/lnprtl-101/140820260930-1234",
-        model_map={"story-design": "model-A"})
+        model_map={"story-design": "model-A"}, skill_bundle={})
 
 
 def bundle(**ctx_kwargs):
@@ -71,8 +71,17 @@ def test_engine_group():
     assert env["SKILL"] == "story-design"
     assert env["RESULT_DIR"] == "/out"
     assert env["STORY_ID"] == "LNPRTL-101"
-    assert env["CONTEXT_FILE"] == "/ctx/context.json"
+    # Phase 1 dropped the /ctx bind mount — the runner writes BB_CONTEXT to
+    # CONTEXT_FILE under $HOME inside the container.
+    assert env["CONTEXT_FILE"] == "/home/node/context.json"
     assert json.loads(env["BB_CONTEXT"])["run_id"] == "12345678-1234-1234-1234-123456789abc"
+
+
+def test_no_skills_dir_env():
+    # Skills arrive via BB_SKILL_URL at launch (state machine), never as a
+    # mounted library path — the env bundle must not mention a skills dir.
+    env = bundle()
+    assert "BB_SKILLS_DIR" not in env
 
 
 def test_git_group():

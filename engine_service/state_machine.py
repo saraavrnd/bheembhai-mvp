@@ -184,7 +184,7 @@ async def drive_run(session: AsyncSession, item, config, runtime,
     # Idempotent init first (ADR-013 §2 / ADR-003): on a fresh run this creates
     # the branch + step rows + flips pending→running; on resume it is a cheap
     # reload of workflow/policy/integrations + fresh credential resolution.
-    ctx = await init_run(session, run.id, config, secure_storage)
+    ctx = await init_run(session, run.id, config, secure_storage, store=store)
 
     start: str | None = None
     reviewer_feedback = ""
@@ -306,8 +306,13 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
 
     row = await _get_step(session, run.id, step_id)
     if row is None:
+        # Legacy run without step rows — stamp the init-resolved bundle pin
+        # so the launch below always reads a frozen key.
+        bundle = ctx.skill_bundle.get(skill)
         row = Step(run_id=run.id, step_id=step_id, skill=skill,
-                   model_requested=ctx.model_map.get(step_id))
+                   model_requested=ctx.model_map.get(step_id),
+                   skill_s3_key=bundle[0] if bundle else None,
+                   skill_sha256=bundle[1] if bundle else None)
         session.add(row)
         await session.flush()
 
@@ -360,6 +365,58 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                                   step_id=step_id, attempt_no=attempt,
                                   reason="container gone after crash — relaunching same attempt")
         if h is None:
+            # Skill bundle (Phase 1): presign a fresh GET for the FROZEN pin on
+            # the step row — never the per-dispatch-resolved map, so mid-run
+            # skill edits can't change an in-flight step. Pre-launch failures
+            # mirror the transient exit-code path: retry the attempt, then
+            # fail the run as failed_infra.
+            skill_key = row.skill_s3_key
+            skill_sha = row.skill_sha256 or ""
+            if not skill_key:
+                # Only reachable for rows the init backfill couldn't stamp
+                # (pre-Phase-1 rows whose workflow changed) — fall back to
+                # the init-resolved bundle and stamp the row.
+                bundle = ctx.skill_bundle.get(skill)
+                if bundle is not None:
+                    skill_key, skill_sha = bundle
+                    row.skill_s3_key, row.skill_sha256 = bundle
+                else:
+                    reason = f"step '{step_id}' has no skill bundle pin for '{skill}'"
+                    logger.error("run %s: %s", run.id, reason)
+                    record_transition(session, run.id, ExecState.RUNNING,
+                                      ExecState.RETRYING, step_id=step_id,
+                                      attempt_no=attempt,
+                                      result_status=Result.FAILED_INFRA, reason=reason)
+                    await session.commit()
+                    if attempt < max_attempts:
+                        continue
+                    await _fail_run(session, run, reason=reason,
+                                    result_status=Result.FAILED_INFRA,
+                                    step_id=step_id, attempt_no=attempt)
+                    return ("failed", None)
+            if store is None:
+                logger.warning(
+                    "run %s: no object store — launching without BB_SKILL_URL "
+                    "(tests/minimal deployments)", run.id)
+            else:
+                try:
+                    presigned = await store.presigned_get_url(skill_key, expires_in=900)
+                except Exception as exc:
+                    reason = f"presign failed for skill bundle {skill_key}: {exc}"
+                    logger.error("run %s: %s", run.id, reason)
+                    record_transition(session, run.id, ExecState.RUNNING,
+                                      ExecState.RETRYING, step_id=step_id,
+                                      attempt_no=attempt,
+                                      result_status=Result.FAILED_INFRA, reason=reason)
+                    await session.commit()
+                    if attempt < max_attempts:
+                        continue
+                    await _fail_run(session, run, reason=reason,
+                                    result_status=Result.FAILED_INFRA,
+                                    step_id=step_id, attempt_no=attempt)
+                    return ("failed", None)
+                env["BB_SKILL_URL"] = presigned.url
+                env["BB_SKILL_SHA256"] = skill_sha
             h = await runtime.launch(str(run.id), step_id, attempt, env, context=context)
             row.fargate_task_arn = h.container_id
             record_transition(session, run.id, ExecState.RUNNING, ExecState.AWAITING_RESULT,

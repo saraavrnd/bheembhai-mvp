@@ -6,7 +6,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from bheembhai.models.skill import Skill
+from bheembhai.skill_publish import publish_skill
 from fastapi import HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from platform_api.schemas.admin import SkillFileResponse, SkillResponse
 
@@ -33,6 +36,26 @@ def _skill_to_response(skill: Skill) -> SkillResponse:
             for f in (skill.files or [])
         ],
     )
+
+
+async def republish_skill(db: AsyncSession, store, skill_id: str) -> None:
+    """Repack + publish a skill's S3 bundle and stamp the row (Phase 1).
+
+    Reloads the skill WITH files (async sessions can't lazy-load), publishes
+    via ``bheembhai.skill_publish.publish_skill``, and flushes only — the
+    caller commits so the DB row and the S3 object land together. Content is
+    addressed, so re-publishing unchanged content is a head-check no-op.
+    """
+    result = await db.execute(
+        select(Skill)
+        .options(selectinload(Skill.files))
+        .where(Skill.id == skill_id)
+    )
+    skill = result.scalars().first()
+    if skill is None:
+        return
+    skill.s3_key, skill.sha256 = await publish_skill(store, skill)
+    await db.flush()
 
 
 async def _get_skill_or_404(skill_id: str, db: AsyncSession) -> Skill:

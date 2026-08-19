@@ -53,6 +53,7 @@ class FakeRuntime:
         self.reattach_script = reattach_script or {}
         self.calls: list[tuple[str, int]] = []
         self.contexts: list[tuple[str, dict | None]] = []
+        self.envs: list[tuple[str, dict]] = []
         self.cleaned: list[Handle] = []
         self.stopped: list[Handle] = []
         self.rehandles: list[Handle] = []
@@ -65,6 +66,7 @@ class FakeRuntime:
     async def launch(self, run_id, step_id, attempt_no, env, *, context=None):
         self.calls.append((step_id, attempt_no))
         self.contexts.append((step_id, context))
+        self.envs.append((step_id, dict(env)))
         outdir = self._base / "results" / str(run_id) / step_id / str(attempt_no)
         outdir.mkdir(parents=True, exist_ok=True)
         path = outdir / RESULT_FILENAME

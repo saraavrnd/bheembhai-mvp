@@ -117,11 +117,6 @@ def build_env_bundle(ctx: "InitContext", *, step_id: str, attempt_no: int,
         env["ANTHROPIC_AUTH_TOKEN"] = vendor.token
         env["ANTHROPIC_BASE_URL"] = str(vendor.config.get("base_url") or "")
 
-    if ctx.skills_overlay:
-        # The runtime bind-mounts the materialized library at /skills; the
-        # runner force-symlinks it over repo-tracked .claude/skills.
-        env["BB_SKILLS_DIR"] = "/skills"
-
     if ctx.jira is not None:
         env["JIRA_URL"] = str(ctx.jira.config.get("url") or "")
         env["JIRA_USERNAME"] = str(ctx.jira.config.get("username") or "")
@@ -130,10 +125,11 @@ def build_env_bundle(ctx: "InitContext", *, step_id: str, attempt_no: int,
         env["JIRA_EMAIL"] = env["JIRA_USERNAME"]
         env["JIRA_API_TOKEN"] = ctx.jira.token
 
-    # The per-step context travels both as a mounted file (/ctx/context.json, set up
-    # by the runtime when `context` is passed to launch) and as a compact env copy.
+    # The per-step context travels as a compact env copy — the runner writes
+    # $BB_CONTEXT to $CONTEXT_FILE inside the container (Phase 1 dropped the
+    # /ctx bind mount).
     env["BB_CONTEXT"] = json.dumps(context, separators=(",", ":"))
-    env["CONTEXT_FILE"] = "/ctx/context.json"
+    env["CONTEXT_FILE"] = "/home/node/context.json"
     return env
 
 
