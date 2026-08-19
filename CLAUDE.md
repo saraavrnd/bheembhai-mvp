@@ -166,6 +166,7 @@ Copy mode (`BB_GIT_MODE=0`): uses `BB_SEED_REPO` as a local dir copy, never push
 ## Guardrails
 
 - **Per-step visit cap** (`BB_MAX_STEP_VISITS`, default 3): breaks runaway loops. A step returning the same non-happy verdict repeatedly is halted and escalated.
+- **Fresh-launch channel hygiene**: a step launch clears its attempt's S3 channel keys (result/progress/logs) first — attempt numbers are reused across visits and retries, and a stale result object at the key would otherwise replay the previous visit's verdict (run 07c4b440 recorded visit 1's payload byte-for-byte as visit 2's result).
 - **Per-step model enforcement**: ensures the intended (often cheaper) model actually runs.
 - **Push-lands-or-retry**: failures retry from last good state.
 - **Fail-fast init**: bad git credentials, missing integrations, unknown skills, or missing tier mappings surface at `_init_run` as classified run failures (failed_execution/failed_infra) — before any container minutes are spent.

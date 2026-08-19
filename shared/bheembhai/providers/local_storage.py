@@ -66,6 +66,13 @@ class LocalStorage:
             metadata=None,
         )
 
+    async def delete(self, key: str) -> None:
+        target = self._resolve(key)
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+
     async def head(self, key: str) -> StoredHead | None:
         target = self._resolve(key)
         if not target.is_file():

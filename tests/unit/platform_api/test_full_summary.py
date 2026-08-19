@@ -61,6 +61,18 @@ def test_pick_no_payloads_returns_none():
     assert _pick_full_summary([], None) == (None, None, True)
 
 
+def test_pick_commit_pinned_prefers_full_on_older_row_over_gate_head():
+    # The gate card (newest) can carry the same commit as the completion row
+    # behind it — the pin must keep scanning for the full text instead of
+    # answering with the gate card's truncated head.
+    payloads = [
+        {"summary": "head", "result_status": "escalation_required",
+         "commit": "abc"},                              # gate card
+        {"summary": "head", "summary_full": "full", "commit": "abc"},
+    ]
+    assert _pick_full_summary(payloads, "abc") == ("full", "abc", False)
+
+
 def test_pick_gate_card_first_full_on_older_completion_row():
     # While paused, the newest content row is the gate card (truncated head,
     # no summary_full — it stays poll-light); the completion row just behind
@@ -88,3 +100,21 @@ async def test_summary_payloads_skips_contentless_rows():
     ]
     out = await _summary_payloads(_fake_db(rows), "run-1", "implement")
     assert out == [{"summary": "head", "summary_full": "full", "commit": "abc"}]
+
+
+async def test_summary_payloads_query_has_no_to_state_filter():
+    # Regression (run 07c4b440): the engine records non-happy verdict rows
+    # (escalation_required / BLOCK / changes_requested) with to_state="failed"
+    # — a to_state filter here would 404 their full summaries.
+    captured = {}
+
+    async def execute(stmt):
+        captured["stmt"] = stmt
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+
+    db = SimpleNamespace(execute=execute)
+    assert await _summary_payloads(db, "run-1", "story-design") == []
+    # to_state legitimately appears as a SELECTED column — assert only on the
+    # WHERE portion of the compiled query.
+    where_clause = str(captured["stmt"].compile()).split("WHERE")[-1]
+    assert "to_state" not in where_clause

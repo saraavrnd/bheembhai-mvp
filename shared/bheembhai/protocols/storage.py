@@ -47,6 +47,10 @@ class ObjectStorage(Protocol):
         """Retrieve an object by key. None if not found."""
         ...
 
+    async def delete(self, key: str) -> None:
+        """Remove an object by key. Idempotent — an absent key is not an error."""
+        ...
+
     async def head(self, key: str) -> StoredHead | None:
         """Size of an object without reading content. None if not found."""
         ...

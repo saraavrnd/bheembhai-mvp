@@ -24,7 +24,7 @@ from bheembhai.database import (
     init_database,
     run_migrations,
 )
-from bheembhai.log_keys import result_key
+from bheembhai.log_keys import log_key, progress_key, result_key
 from bheembhai.models.project import Project, ProjectIntegration
 from bheembhai.models.run import Run, Step, Transition
 from bheembhai.models.skill import Skill
@@ -589,6 +589,55 @@ async def test_visit_cap_halts_runaway_loop(session, secure_storage, config, tmp
                                  Transition.to_state == "failed")
         .order_by(Transition.id.desc()).limit(1))
     assert "runaway loop" in res.scalar_one().reason
+
+
+async def test_reloop_visit_clears_stale_attempt_channels(session, secure_storage,
+                                                          config, tmp_path):
+    """Regression (run 07c4b440): a re-looped step relaunches the SAME
+    attempt_no, so the previous visit's artifacts still sit at the attempt's
+    deterministic keys. Launch must clear them — otherwise the reconciler
+    classifies the second visit from the stale result object (it recorded
+    visit 1's payload byte-for-byte as visit 2's result) and the container.log
+    capture is skipped by its head-idempotency check."""
+    s, created = session
+    world = await make_world(s, created, secure_storage,
+                             wf_yaml=WF_SELF_LOOP, pol_yaml=POLICY_FAST)
+    store = _store(tmp_path)
+    run_id = str(world["run"].id)
+    stale = json.dumps({"status": "completed", "cost_usd": 0.99,
+                        "summary": "STALE visit-1 result"}).encode()
+    keys = (result_key(run_id, "story-design", 1),
+            progress_key(run_id, "story-design", 1),
+            log_key(run_id, "story-design", 1, "agent"),
+            log_key(run_id, "story-design", 1, "diagnostics"),
+            log_key(run_id, "story-design", 1, "container"))
+    for key in keys:
+        await store.put(key, stale)
+    # Per-LAUNCH behaviours (not per-attempt): visit 2 reuses attempt_no=1, so
+    # the attempt-keyed script would replay "changes" forever. A real agent
+    # produces fresh output per visit — the visit cap test covers that loop.
+    rt = FakeRuntime({"story-design": ["changes"]}, store=store)
+    behaviours = iter(["changes", "ok"])
+
+    def per_launch(step_id, attempt_no):   # type: ignore[no-untyped-def]
+        return next(behaviours)
+
+    rt._behaviour = per_launch  # type: ignore[method-assign]
+
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
+
+    run = await get_run(s, world["run"].id)
+    assert run.state == "completed"
+    # visit 2 relaunched the same attempt number — key reuse is by design
+    assert rt.calls == [("story-design", 1), ("story-design", 1)]
+    # every channel namespace holds visit 2's content — no stale bytes survive
+    for key in keys:
+        obj = await store.get(key)
+        assert obj is None or b"STALE" not in obj.data
+    # the recorded verdict is visit 2's fresh result, not the seeded stale one
+    final = await store.get(result_key(run_id, "story-design", 1))
+    assert json.loads(final.data)["summary"] == "story-design done"
 
 
 # ── Crash-resume ────────────────────────────────────────────────────────

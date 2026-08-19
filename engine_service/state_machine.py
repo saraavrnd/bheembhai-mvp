@@ -316,6 +316,39 @@ async def _launch_upload_contract(store, run_id: str, step_id: str, attempt_no: 
     return out
 
 
+async def _clear_attempt_channels(store, run_id: str, step_id: str,
+                                  attempt_no: int) -> None:
+    """Delete any objects already sitting at this attempt's deterministic keys
+    (ADR-014) before a fresh launch.
+
+    Attempt numbers are reused across step visits and retries, so a previous
+    visit's artifacts survive at the SAME keys. The reconciler reads the result
+    key from its first poll — while the container is still running — and
+    classifies whatever it found at exit; a stale object there replays the
+    previous visit's verdict (run 07c4b440 recorded visit 1's payload
+    byte-for-byte as visit 2's result). The container.log key is included
+    because _capture_container_log skips capture when a non-empty object
+    already exists (crash re-attach idempotency) — a stale one would suppress
+    the new attempt's capture. Best-effort: a failure logs and continues.
+    """
+    if store is None:
+        return
+    keys = (
+        result_key(run_id, step_id, attempt_no),
+        progress_key(run_id, step_id, attempt_no),
+        log_key(run_id, step_id, attempt_no, "agent"),
+        log_key(run_id, step_id, attempt_no, "diagnostics"),
+        log_key(run_id, step_id, attempt_no, "container"),
+    )
+    for key in keys:
+        try:
+            await store.delete(key)
+        except Exception as exc:  # noqa: BLE001 — best-effort hygiene
+            logger.warning(
+                "run %s: clearing stale attempt channel %s failed: %s",
+                run_id, key, exc)
+
+
 async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                     spec: dict, *, reviewer_feedback: str, handoff: dict | None,
                     publish=None,
@@ -469,6 +502,7 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                                     result_status=Result.FAILED_INFRA,
                                     step_id=step_id, attempt_no=attempt)
                     return ("failed", None)
+            await _clear_attempt_channels(store, str(run.id), step_id, attempt)
             h = await runtime.launch(str(run.id), step_id, attempt, env, context=context)
             row.fargate_task_arn = h.container_id
             record_transition(session, run.id, ExecState.RUNNING, ExecState.AWAITING_RESULT,
