@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from bheembhai.database import get_session, upsert_skill
@@ -57,6 +58,7 @@ from platform_api.schemas.admin import (
     ProjectUpdate,
     RoleResponse,
     SkillCreate,
+    SkillExportRequest,
     SkillFileCreate,
     SkillFileResponse,
     SkillFileUpdate,
@@ -78,9 +80,15 @@ from platform_api.schemas.admin import (
     WorkflowResponse,
     WorkflowUpdate,
 )
+from platform_api.skill_export import build_skills_zip
 from platform_api.skill_import import (
+    MAX_DECOMPRESSED_BYTES,
+    MAX_ENTRY_COUNT,
+    MAX_SINGLE_FILE_BYTES,
     MAX_UPLOAD_BYTES,
     ZipValidationError,
+    _normalize_entry_name,
+    _path_problem,
     analyze_zip,
     bundle_files_with_external,
 )
@@ -868,6 +876,101 @@ async def import_skills(
         summary["errors" if result.status == "error" else result.status] += 1
     logger.info("Skill import complete: %s", summary)
     return SkillImportResponse(results=results, summary=summary)
+
+
+# ── Skill zip export ──────────────────────────────────────────────────────────
+
+
+@router.post("/skills/export")
+async def export_skills(
+    body: SkillExportRequest,
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> Response:
+    """Zip selected platform skills, import-compatible and download-ready.
+
+    The zip's layout round-trips through ``POST /skills/import`` —
+    ``skills/<name>/<path>`` per file. Strict contract so the artifact is
+    guaranteed re-deployable; export never silently drops anything:
+
+    * unknown names → 404 (the selection must match the catalog exactly);
+    * a skill without SKILL.md → 422 (a SKILL.md-less dir would vanish on
+      re-import);
+    * unsafe file paths (absolute, drive letter, ``..``) or collisions after
+      normalization → 422 — import rejects the same zips as fatal;
+    * import-budget overruns (per-file / total decompressed / entry count)
+      → 422, so the exported zip is always re-importable.
+
+    Export keys by DB ``Skill.name``; if a skill's stored SKILL.md frontmatter
+    ``name:`` differs, re-import renames it — frontmatter wins on import.
+    """
+    names = list(dict.fromkeys(body.names))  # dedupe, preserve order
+    result = await db.execute(
+        select(Skill)
+        .options(selectinload(Skill.files))
+        .where(Skill.project_id.is_(None), Skill.name.in_(names))
+    )
+    by_name = {s.name: s for s in result.scalars().unique().all()}
+    missing = sorted(set(names) - set(by_name))
+    if missing:
+        raise HTTPException(404, f"Skill(s) not found: {', '.join(missing)}")
+
+    bundles: list[tuple[str, dict[str, str]]] = []
+    total_bytes = 0
+    total_entries = 0
+    for name in sorted(by_name):
+        skill = by_name[name]
+        if not any(f.path == "SKILL.md" for f in skill.files):
+            raise HTTPException(
+                422, f"Skill '{name}' has no SKILL.md — add files before exporting"
+            )
+        ordered: dict[str, str] = {}
+        for f in sorted(skill.files, key=lambda f: f.path):
+            path = _normalize_entry_name(f.path)
+            problem = _path_problem(path)
+            if problem is not None:
+                raise HTTPException(422, f"Skill '{name}': {problem}")
+            if path in ordered:
+                raise HTTPException(
+                    422,
+                    f"Skill '{name}': files collide after path normalization: {path}",
+                )
+            size = len(f.content.encode("utf-8"))
+            if size > MAX_SINGLE_FILE_BYTES:
+                raise HTTPException(
+                    422,
+                    f"Skill '{name}': file too large: {path} (max "
+                    f"{MAX_SINGLE_FILE_BYTES // (1024 * 1024)} MB uncompressed)",
+                )
+            total_bytes += size
+            if total_bytes > MAX_DECOMPRESSED_BYTES:
+                raise HTTPException(
+                    422,
+                    "export decompresses beyond the "
+                    f"{MAX_DECOMPRESSED_BYTES // (1024 * 1024)} MB budget",
+                )
+            ordered[path] = f.content
+        bundles.append((name, ordered))
+        total_entries += len(ordered)
+    if total_entries > MAX_ENTRY_COUNT:
+        raise HTTPException(
+            422, f"too many entries (max {MAX_ENTRY_COUNT})"
+        )
+
+    data = build_skills_zip(bundles)
+    filename = f"bheembhai-skills-{datetime.now(timezone.utc):%Y%m%d}.zip"
+    logger.info(
+        "Skill export: %d skills, %d entries, %d bytes → %s",
+        len(bundles), total_entries, len(data), filename,
+    )
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ── Skill Files ───────────────────────────────────────────────────────────────

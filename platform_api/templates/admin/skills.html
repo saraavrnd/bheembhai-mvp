@@ -10,6 +10,25 @@
 {% endblock %}
 
 {% block content %}
+<style>
+    /* Toast — same idiom as the import page */
+    .bb-toast {
+        position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+        background: #3e2f26; color: #fefcf7; padding: 10px 20px; border-radius: 10px;
+        font-size: 12.5px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        animation: bbFade 0.18s ease-out; max-width: 80vw;
+    }
+    @keyframes bbFade { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    /* The theme moves every native checkbox offscreen and only draws a styled
+       box when a <label> follows the input (Materialize pattern). Our
+       selection checkboxes carry no labels — restore the native control. */
+    #check-all, .row-check {
+        position: static !important;
+        left: auto !important;
+        opacity: 1 !important;
+        cursor: pointer;
+    }
+</style>
 <div class="row">
     <div class="col-12">
         <div class="box">
@@ -17,6 +36,9 @@
                 <h4 class="box-title">Agent Skills Library</h4>
                 <div class="box-controls pull-right">
                     <input type="text" class="form-control form-control-sm d-inline-block w-auto me-2" id="search-input" placeholder="Search skills..." oninput="filterSkills()" style="width: 200px;">
+                    <button class="btn btn-info btn-sm me-1" id="btn-export" onclick="exportSelected()" disabled>
+                        <i class="ti-download"></i> Export ZIP (<span id="export-count">0</span>)
+                    </button>
                     <a class="btn btn-success btn-sm me-1" href="/admin/skills/import">
                         <i class="ti-upload"></i> Import ZIP
                     </a>
@@ -30,6 +52,7 @@
                     <table class="table table-hover mb-0" id="skills-table">
                         <thead>
                             <tr>
+                                <th style="width: 36px;"><input type="checkbox" id="check-all" title="Select all"></th>
                                 <th>Name</th>
                                 <th>Model Tier</th>
                                 <th>Files</th>
@@ -38,7 +61,7 @@
                             </tr>
                         </thead>
                         <tbody id="skills-tbody">
-                            <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+                            <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -96,16 +119,22 @@
 {% block scripts %}
 <script>
 let allSkills = [];
+let selectedNames = new Set();  // export selection keyed by skill name
 
 function loadSkills() {
     fetch('/api/admin/skills')
         .then(r => r.json())
         .then(skills => {
             allSkills = skills;
+            // Drop selections for skills that no longer exist (deleted/renamed)
+            // — otherwise a later export would 404 on the stale name.
+            for (const name of Array.from(selectedNames)) {
+                if (!skills.some(s => s.name === name)) selectedNames.delete(name);
+            }
             renderTable(skills);
         })
         .catch(() => {
-            document.getElementById('skills-tbody').innerHTML = '<tr><td colspan="5" class="text-center text-danger">Failed to load skills.</td></tr>';
+            document.getElementById('skills-tbody').innerHTML = '<tr><td colspan="6" class="text-center text-danger">Failed to load skills.</td></tr>';
         });
 }
 
@@ -113,7 +142,8 @@ function renderTable(skills) {
     const tbody = document.getElementById('skills-tbody');
     document.getElementById('no-results').style.display = skills.length ? 'none' : '';
     if (!skills.length) {
-        tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No skills found. Create one!</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No skills found. Create one!</td></tr>';
+        updateExportCount();
         return;
     }
     tbody.innerHTML = skills.map(s => {
@@ -124,6 +154,7 @@ function renderTable(skills) {
                 : '<span class="badge rounded-pill bg-warning">Medium</span>';
         return `
             <tr>
+                <td><input type="checkbox" class="row-check" data-name="${esc(s.name)}" ${selectedNames.has(s.name) ? 'checked' : ''}></td>
                 <td><strong>${esc(s.name)}</strong></td>
                 <td>${modelBadge}</td>
                 <td><span class="badge rounded-pill bg-info">${s.files.length}</span></td>
@@ -139,6 +170,93 @@ function renderTable(skills) {
             </tr>
         `;
     }).join('');
+
+    // Check-all toggles only the VISIBLE rows; selections survive filtering
+    // (export ships everything selected, hidden rows included).
+    const checkAll = document.getElementById('check-all');
+    checkAll.checked = false;
+    checkAll.onclick = function () {
+        const on = this.checked;
+        tbody.querySelectorAll('.row-check').forEach(cb => {
+            if (cb.checked !== on) {
+                cb.checked = on;
+                if (on) selectedNames.add(cb.dataset.name);
+                else selectedNames.delete(cb.dataset.name);
+            }
+        });
+        updateExportCount();
+    };
+    // Skill names are user-controlled — read them from the DOM, never inline JS.
+    tbody.querySelectorAll('.row-check').forEach(cb => {
+        cb.addEventListener('change', () => {
+            if (cb.checked) selectedNames.add(cb.dataset.name);
+            else selectedNames.delete(cb.dataset.name);
+            updateExportCount();
+        });
+    });
+    updateExportCount();
+}
+
+function updateExportCount() {
+    const n = selectedNames.size;
+    document.getElementById('export-count').textContent = n;
+    document.getElementById('btn-export').disabled = n === 0;
+    const visible = document.querySelectorAll('.row-check');
+    document.getElementById('check-all').checked =
+        visible.length > 0 && Array.from(visible).every(cb => cb.checked);
+}
+
+async function exportSelected() {
+    const names = Array.from(selectedNames).sort();
+    if (!names.length) return;
+    const btn = document.getElementById('btn-export');
+    btn.disabled = true;
+    try {
+        const r = await fetch('/api/admin/skills/export', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ names })
+        });
+        if (!r.ok) {
+            let detail = r.statusText;
+            try {
+                const body = await r.json();
+                detail = detailText(body.detail) || detail;
+            } catch (e) { /* non-JSON error body — keep statusText */ }
+            throw new Error(detail);
+        }
+        const disp = r.headers.get('Content-Disposition') || '';
+        const m = disp.match(/filename="([^"]+)"/);
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = m ? m[1] : 'bheembhai-skills.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        toast('Export failed: ' + err.message);
+    } finally {
+        updateExportCount();
+    }
+}
+
+function detailText(detail) {
+    // Pydantic auto-422 bodies carry an array of {loc, msg, ...}; the
+    // endpoint's own HTTPExceptions carry a plain string.
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) return detail.map(d => d.msg || JSON.stringify(d)).join('; ');
+    return '';
+}
+
+function toast(msg) {
+    const el = document.createElement('div');
+    el.className = 'bb-toast';
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
 }
 
 function filterSkills() {

@@ -170,6 +170,15 @@ class SkillImportResponse(BaseModel):
     summary: dict[str, int] = Field(default_factory=dict)
 
 
+# ── Skill zip export ────────────────────────────────────────────────────────
+
+
+class SkillExportRequest(BaseModel):
+    """Names of platform skills to zip (export key = name, the import contract)."""
+
+    names: list[str] = Field(..., min_length=1)
+
+
 # ── Workflow categories ────────────────────────────────────────────────────
 
 
