@@ -133,23 +133,37 @@ fi
 # against a local repo without launching Claude Code.
 [ "${BB_STOP_AFTER_INIT:-0}" = "1" ] && exit 0
 
-# --- INIT: make skills discoverable where Claude Code looks (.claude/skills) ---
-# Default: the image ships skills at /skills; Claude loads project skills from
-# $PWD/.claude/skills, so symlink the baked library in (unless the repo tracks
-# its own .claude/skills).
-# Project skill overlay: the engine sets BB_SKILLS_DIR=/skills when the run's
-# project has DB-delivered project-scoped skills, and the runtime bind-mounts
-# the materialized library over /skills. The overlay is authoritative — DB
-# project skills shadow platform skills AND beat repo-tracked .claude/skills —
-# so the symlink is forced. The COMMIT block restores tracked .claude before
-# staging so the overlay never lands on the branch.
+# --- INIT: deliver the step's ONE skill into .claude/skills (Phase 1: S3) ---
+# The image is a pure runtime — no skills baked in. The engine pins this step's
+# skill bundle at init and signs a fresh presigned GET per launch, passed as
+# BB_SKILL_URL + BB_SKILL_SHA256. BheemBhai is authoritative: the download
+# OVERWRITES whatever .claude/skills the repo tracks (the COMMIT block restores
+# tracked .claude before staging so the bundle never lands on the branch).
+[ -n "${BB_SKILL_URL:-}" ] || fail failed_init "no BB_SKILL_URL (skill bundle) provided" 2
+progress skills "downloading skill bundle"
 mkdir -p "${WORKDIR_REPO}/.claude"
-if [ -n "${BB_SKILLS_DIR:-}" ]; then
-  rm -rf "${WORKDIR_REPO}/.claude/skills"
-  ln -sfn "$BB_SKILLS_DIR" "${WORKDIR_REPO}/.claude/skills"
-else
-  [ -e "${WORKDIR_REPO}/.claude/skills" ] || ln -sfn /skills "${WORKDIR_REPO}/.claude/skills"
+rm -rf "${WORKDIR_REPO}/.claude/skills"   # drops repo-tracked + stale symlinks alike
+mkdir -p "${WORKDIR_REPO}/.claude/skills"
+TARBALL="/tmp/bb-skill-${SKILL}.tar.gz"
+# -f: a 403 (expired presign) fails rather than writing the XML error body;
+# --retry covers transient network drops — the engine retries the rest.
+curl -fsSL --retry 2 --connect-timeout 15 "$BB_SKILL_URL" -o "$TARBALL" \
+  || fail failed_infra "skill bundle download failed for ${SKILL} (curl rc=$?)" 4
+if [ -n "${BB_SKILL_SHA256:-}" ]; then
+  # sha256sum -c with a stdin manifest (nb: no -s flag — busybox's sha256sum
+  # rejects it); non-zero exit = mismatch.
+  printf '%s  %s\n' "$BB_SKILL_SHA256" "$TARBALL" | sha256sum -c - >/dev/null 2>&1 \
+    || fail failed_infra "skill bundle sha256 mismatch for ${SKILL} — refusing to extract" 4
 fi
+# Untrusted archive: refuse any entry that escapes the skill dir (absolute path
+# or a `..` component) before extracting. grep exit 1 = clean listing.
+if tar -tzf "$TARBALL" 2>/dev/null | grep -qE '(^|/)\.\.(/|$)|^/'; then
+  fail failed_infra "skill bundle for ${SKILL} contains unsafe paths (absolute or ..)" 4
+fi
+tar -xzf "$TARBALL" -C "${WORKDIR_REPO}/.claude/skills" \
+  || fail failed_infra "skill bundle extract failed for ${SKILL}" 4
+rm -f "$TARBALL"
+progress skills "skill delivered: ${SKILL}"
 
 # Test hook: stop after the skills overlay — lets the overlay regression test
 # (tests/unit/agent/test_run_skill_reentry.py) run the real script against a
@@ -256,6 +270,15 @@ DIAG="${RESULT_DIR:-/out}/diagnostics.txt"
   echo "=== workspace writability ==="
   echo "$WORKSPACE writable: $( [ -w "$WORKSPACE" ] && echo YES || echo NO )"
   echo "/out writable:       $( [ -w "${RESULT_DIR:-/out}" ] && echo YES || echo NO )"
+  echo
+  echo "=== skill bundle (S3) ==="
+  # Presigned URL: print the HOST only — the query string is a bearer credential.
+  if [ -n "${BB_SKILL_URL:-}" ]; then
+    echo "  BB_SKILL_URL: SET (host=$(printf '%s' "$BB_SKILL_URL" | sed -E 's#^([a-z]+://[^/]+).*#\1#'))"
+  else
+    echo "  BB_SKILL_URL: MISSING"
+  fi
+  echo "  BB_SKILL_SHA256: $([ -n "${BB_SKILL_SHA256:-}" ] && echo SET || echo MISSING)"
 } > "$DIAG" 2>&1
 
 {
@@ -272,6 +295,18 @@ DIAG="${RESULT_DIR:-/out}/diagnostics.txt"
     fi
   done
 } >> "$DIAG" 2>&1
+
+# --- CONTEXT: materialize the engine's BB_CONTEXT env to the file the digest
+# below reads. Phase 1 dropped the /ctx bind mount — the context travels in the
+# env and the runner writes it here (under $HOME, ours alone by construction).
+if [ -n "${BB_CONTEXT:-}" ]; then
+  if [ -n "${CONTEXT_FILE:-}" ]; then
+    printf '%s' "$BB_CONTEXT" > "$CONTEXT_FILE" 2>/dev/null \
+      || echo "WARNING: could not write context to ${CONTEXT_FILE} — step runs without gate/reviewer context" >&2
+  else
+    echo "WARNING: BB_CONTEXT set but CONTEXT_FILE unset — context ignored" >&2
+  fi
+fi
 
 # --- CONTEXT (allowed statuses + gate flag) ---
 ALLOWED="[]"; GATE_FOLLOWS="false"; MEANINGS=""
@@ -523,13 +558,13 @@ FILES_JSON="[]"
 REPO="${WORKDIR_REPO:-/workspace}"
 if [ -d "${REPO}/.git" ]; then
   cd "$REPO"
-  # Project skill overlay: restore whatever .claude content the repo tracks
-  # (the symlink we planted over .claude/skills must never land on the branch),
+  # BheemBhai-authoritative skills: the downloaded bundle replaced whatever
+  # .claude/skills the repo tracked, and that content must never land on the
+  # branch — drop the download and restore the repo's own .claude before
+  # staging (repo-tracked skills come back unmodified, so no spurious diffs),
   # then let the plumbing filter below run as usual.
-  if [ -n "${BB_SKILLS_DIR:-}" ]; then
-    rm -f .claude/skills 2>/dev/null || true
-    git restore .claude 2>/dev/null || true
-  fi
+  rm -rf .claude/skills 2>/dev/null || true
+  git restore .claude 2>/dev/null || true
   # Never commit platform plumbing into the user's branch: the skills symlink and our MCP
   # config live in the working tree but must not land on their history. If the repo
   # TRACKS .claude it is the repo's OWN content (some projects version their skills) —

@@ -333,13 +333,20 @@ async def upsert_skill(
     return skill
 
 
-async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
+async def seed_default_skills(
+    skills_dir: str | Path | None = None, store=None
+) -> None:
     """Import skills from disk into the database (idempotent).
 
     Reads every skill directory under *skills_dir* (default: ``.agents/skills/``
     relative to the project root), parses the YAML frontmatter from each
     ``SKILL.md``, and upserts the skill + all its files (``SKILL.md``,
     ``references/*``, ``templates/*``, ``examples/*``).
+
+    With an ObjectStorage ``store``, each skill's S3 bundle is published and
+    the row stamped (Phase 1 — publish-on-write; the engine self-heals rows
+    seeded without one). ``store=None`` keeps callers without storage (unit
+    tests) working.
 
     Directories named ``.local``, ``_tooling``, or starting with ``_SHARED``
     are skipped, as are regular files (``README.md``, etc.). Frontmatter
@@ -389,7 +396,7 @@ async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
                         files[f"{subdir_name}/{sf.name}"] = sf.read_text()
 
         async with _sessionmaker() as session:
-            await upsert_skill(
+            skill = await upsert_skill(
                 session,
                 name=fm.name,
                 description=fm.description,
@@ -397,6 +404,23 @@ async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
                 compatibility=fm.compatibility,
                 files=files,
             )
+            if store is not None:
+                # Publish-on-write: reload with files (async can't lazy-load),
+                # pack + upload the bundle, and stamp the row before commit.
+                from sqlalchemy import select as sa_select
+                from sqlalchemy.orm import selectinload
+
+                from bheembhai.models.skill import Skill
+                from bheembhai.skill_publish import publish_skill
+
+                result = await session.execute(
+                    sa_select(Skill)
+                    .options(selectinload(Skill.files))
+                    .where(Skill.id == skill.id)
+                )
+                fresh = result.scalars().first()
+                fresh.s3_key, fresh.sha256 = await publish_skill(store, fresh)
+                await session.flush()
             await session.commit()
             count += 1
 

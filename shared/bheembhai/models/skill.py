@@ -32,6 +32,11 @@ class Skill(Base):
         Text, nullable=False, default="medium", server_default="medium"
     )
     compatibility: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # S3 bundle (Phase 1): content-addressed object key + sha256 of the
+    # deterministic tar.gz this row's current content packs to. NULL = never
+    # published (legacy rows — the engine self-heals at run init).
+    s3_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

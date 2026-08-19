@@ -12,7 +12,7 @@ The platform turns a fixed sequence of skills (story-design → test-creator →
 
 2. **Engine Service** (`engine_service/`) — The orchestrator. A long-lived asyncio process that claims work from `work_queue` (SKIP LOCKED), initializes runs (`_init_run`: branch creation via GitHub REST, model resolution), runs the workflow state machine, launches one container per step behind a **Runtime protocol** (`DockerRuntime` today; `FargateRuntime` deferred), reconciles results against exit codes, applies policy gates, enforces model/cost/loop limits. The agent is a *dumb worker*; the backend decides routing. `shared/bheembhai/` holds the SQLAlchemy models + config used by both services.
 
-3. **Agent container** (`agent/`) — A single Docker image (`node:20-slim` + Claude Code CLI + git + jq + uvx). Each invocation runs `run_skill.sh` against ONE skill: it clones/checks-out the run branch (git mode), runs Claude Code with `--dangerously-skip-permissions`, commits + pushes, and publishes a structured `bb_step_result.json` to the mounted `/out` directory.
+3. **Agent container** (`agent/`) — A single Docker image (`node:20-slim` + Claude Code CLI + git + jq + uvx) that is a **pure runtime: no skills baked in**. Each invocation runs `run_skill.sh` against ONE skill: it clones/checks-out the run branch (git mode), downloads the step's skill bundle from S3 (`BB_SKILL_URL` presigned GET + `BB_SKILL_SHA256` verify) and extracts it into `.claude/skills/<skill>` — unconditionally overwriting anything the repo tracks there — materializes `BB_CONTEXT` to `/home/node/context.json`, runs Claude Code with `--dangerously-skip-permissions`, commits + pushes, and publishes a structured `bb_step_result.json` to the mounted `/out` directory.
 
 4. **Web UI** (`platform_api/templates/` + `static/`) — server-rendered + polling UI. Shows the live pipeline, step status, artifacts, gate cards, and cost.
 
@@ -28,8 +28,8 @@ The platform turns a fixed sequence of skills (story-design → test-creator →
 | `platform_api/` | Platform API (FastAPI + Jinja2): auth, project/integration/workflow/policy CRUD, run submission (`routers/runs.py` — validates + enqueues only), engine webhook receiver (`routers/webhooks.py`), `submit_decision` → continue item |
 | `engine_service/` | Engine Service: `worker.py` (claim loop + per-run-lock dispatch), `run_init.py` (ADR-013 §2 `_init_run`), `state_machine.py` (`RunDriver`), `runtime.py` (Runtime protocol + `DockerRuntime` + reconcile), `workflow.py` (YAML parse/validate/tier resolve), `contexts.py` (step context + env bundle), `notifier.py` (engine→platform webhooks), `recovery.py` (2-step crash recovery) |
 | `shared/bheembhai/` | SQLAlchemy models (`Run`, `Step`, `Transition` with JSONB `payload`, `WorkQueueItem`, integrations), `AppConfig`/`EngineConfig`, DB init — shared by both services |
-| `agent/run_skill.sh` | Skill runner (~527 lines): git clone/branch management, MCP config injection (Jira + GitHub tokens), diagnostics, Claude Code invocation with model enforcement, commit/push, result extraction from `BB_OUTCOME:` / `BB_REVIEW:` lines |
-| `agent/Dockerfile` | Agent image: node:20-slim, installs git/python3/jq/curl/uv, Claude Code CLI, copies skills + MCP template, runs as non-root `node` user |
+| `agent/run_skill.sh` | Skill runner (~527 lines): git clone/branch management, skill-bundle delivery (`BB_SKILL_URL` curl + sha256 verify + path-safety check + extract into `.claude/skills/<skill>`), MCP config injection (Jira + GitHub tokens), context materialization (`BB_CONTEXT` → `CONTEXT_FILE`), diagnostics, Claude Code invocation with model enforcement, commit/push, result extraction from `BB_OUTCOME:` / `BB_REVIEW:` lines |
+| `agent/Dockerfile` | Agent image (pure runtime): node:20-slim, installs git/python3/jq/curl/uv, Claude Code CLI, MCP template only — no skills baked in, runs as non-root `node` user |
 | `agent/mcp.json` | MCP config template with `${JIRA_URL}`, `${JIRA_USERNAME}`, `${JIRA_API_TOKEN}`, `${GH_TOKEN}` placeholders — substituted at runtime by `run_skill.sh` |
 | `tests/unit/`, `tests/integration/` | Test suite: pure-logic unit tests (no DB) + integration tests against compose Postgres with a scripted `FakeRuntime` behind the Runtime protocol; select with `pytest -m unit` / `pytest -m integration` |
 | `engine.py`, `app.py`, `static/index.html` (root) | Legacy R&D engine + UI — reference only, superseded by the two-service structure |
@@ -49,9 +49,19 @@ Production tier → model mapping lives on each project's **AI-vendor integratio
 (`project_integrations.config.model_high/medium/low`) — the `config/` files are legacy R&D
 seed material.
 
-## Installed skills (agent/skills/)
+## Skill library (delivered per step from S3)
 
-Each skill is a directory with `SKILL.md` (the skill definition), `references/`, `templates/`, and `examples/`:
+Each skill is a catalog row (`skills` + `skill_files`) whose content is a directory of
+`SKILL.md` (the skill definition), `references/`, `templates/`, and `examples/`. The agent
+image contains **no skills**. On every content-changing save the platform packs the skill
+into a deterministic tar.gz and PUTs it to Object Storage under the content-addressed key
+`skills/<name>/<sha256>.tar.gz`, stamped on the row (`s3_key`/`sha256`). The engine freezes
+the key onto each step row at run init (self-healing unexported skills on the spot) and
+signs a fresh presigned GET per launch → `BB_SKILL_URL` + `BB_SKILL_SHA256` env;
+`run_skill.sh` downloads, verifies, and extracts it into `.claude/skills/<skill>` —
+BheemBhai is authoritative over anything the repo tracks there.
+
+The seeded skill catalog:
 
 - **story-design** — Design a story from a Jira ticket
 - **tech-design** — Revisit architecture decisions
@@ -110,7 +120,7 @@ version: 1
 start: story-design       # first step id
 steps:
   - id: story-design
-    skill: story-design   # must match a directory in agent/skills/
+    skill: story-design   # must match a skill name in the catalog (skills table)
     model: high           # per-step model tier (high/medium/low), backend-enforced via --model
     label: Design the story  # human-readable
     deadline: 900           # seconds

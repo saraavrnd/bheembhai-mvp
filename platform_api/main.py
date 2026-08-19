@@ -64,11 +64,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await run_migrations()
     await seed_default_roles()
     await seed_default_categories()
+
+    # ── Wire ObjectStorage provider (ADR-011) ──────────────────
+    # Same backend selection as the engine: both services share the store
+    # (local path under BB_WORKDIR, or the same S3 bucket). Built BEFORE the
+    # optional seed — skill seeds publish S3 bundles (Phase 1), so the store
+    # must exist first.
+    app.state.object_store = build_object_store(config.storage)
+    logger.info("Object storage wired: backend=%s",
+                getattr(app.state.object_store, "backend_name", "?"))
+
     if config.engine.seed_on_startup:
         # OPT-IN (BB_SEED_ON_STARTUP): both seeds are upserts that OVERWRITE DB
         # rows — never seed by default, a running instance must not clobber
         # user-edited skills/workflows.
-        await seed_default_skills()
+        await seed_default_skills(store=app.state.object_store)
         await seed_default_workflows()
 
     # ── Wire Cognito auth service (boto3 — login/refresh/signup) ──
@@ -113,14 +123,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "SecureStorage backend '%s' not recognised — secrets API will return 500",
             secure_cfg.backend,
         )
-
-    # ── Wire ObjectStorage provider (ADR-011) ──────────────────
-    # Same backend selection as the engine: both services share the store
-    # (local path under BB_WORKDIR, or the same S3 bucket). The platform only
-    # READS — serve logs from run_logs references, never scan storage.
-    app.state.object_store = build_object_store(config.storage)
-    logger.info("Object storage wired: backend=%s",
-                getattr(app.state.object_store, "backend_name", "?"))
 
     yield
 

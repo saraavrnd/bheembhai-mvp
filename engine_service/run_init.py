@@ -31,6 +31,7 @@ from bheembhai.models.project import ProjectIntegration
 from bheembhai.models.run import Run, Step
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.resolver import ResolvedIntegration, mask_credential, resolve_credentials
+from bheembhai.skill_publish import publish_skill
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,7 +39,6 @@ from engine_service.persistence import record_transition
 from engine_service.skills import (
     effective_skill_map,
     load_run_skills,
-    materialize_skills,
 )
 from engine_service.workflow import (
     PolicySpec,
@@ -77,7 +77,7 @@ class InitContext:
     source_branch: str
     run_branch: str
     model_map: dict[str, str]      # step_id -> resolved concrete vendor model id
-    skills_overlay: bool = False   # True → /skills bind mount + BB_SKILLS_DIR env
+    skill_bundle: dict[str, tuple[str, str]]  # skill name -> (s3_key, sha256)
 
 
 # ── Branch name derivation ──────────────────────────────────────────────
@@ -240,7 +240,7 @@ def _pick(resolved: list[ResolvedIntegration], integration_id) -> ResolvedIntegr
     return None
 
 
-async def init_run(session: AsyncSession, run_id, config, secure_storage) -> InitContext:
+async def init_run(session: AsyncSession, run_id, config, secure_storage, store=None) -> InitContext:
     """ADR-013 §2: load → validate → resolve models → create branch → persist.
 
     All-or-nothing: everything is staged on `session` and committed once at the
@@ -291,26 +291,40 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage) -> Ini
 
     # ── Validate workflow/policy pairing + skill existence ──
     # Project skills shadow platform skills by name; the effective set is what
-    # the run may reference and what gets materialized to /skills below.
+    # the run may reference.
     project_skills, platform_skills = await load_run_skills(session, run.project_id)
     effective_skills = effective_skill_map(project_skills, platform_skills)
     known_skills = set(effective_skills)
     validate_workflow(wf_spec, known_skills=known_skills)
     validate_pairing(wf_spec, pol_spec)
 
-    # ── Project skill overlay: materialize the FULL effective library ──
-    # The /skills bind mount replaces the image's baked copy, so everything
-    # the run may reference must be on disk at <workdir>/skills/<run_id>.
-    # init re-runs on every dispatch claim, so PM edits apply at the next
-    # dispatch without touching in-flight runs.
-    skills_overlay = bool(project_skills)
-    if skills_overlay:
-        try:
-            materialize_skills(config.engine.workdir, run_id, effective_skills)
-        except OSError as exc:
+    # ── Skill bundles: resolve + self-heal (Phase 1) ──
+    # Every workflow-referenced skill must carry an S3 bundle (key + sha) to
+    # download at launch. Rows created before publish-on-write landed have
+    # NULL keys — the engine packs + publishes them here (content-addressed,
+    # so re-publishing is idempotent and concurrent engines converge).
+    referenced = {
+        spec.get("skill", step_id) for step_id, spec in wf_spec.steps.items()
+    }
+    skill_bundle: dict[str, tuple[str, str]] = {}
+    for name in sorted(referenced):
+        skill = effective_skills[name]
+        if skill.s3_key and skill.sha256:
+            skill_bundle[name] = (skill.s3_key, skill.sha256)
+            continue
+        if store is None:
             raise InitFailure(
                 "failed_infra",
-                f"skill library materialization failed: {exc}") from exc
+                f"skill '{name}' has no exported bundle and no object store is configured")
+        try:
+            skill_bundle[name] = await publish_skill(store, skill)
+        except Exception as exc:
+            raise InitFailure(
+                "failed_infra",
+                f"skill '{name}' bundle publish failed: {exc}") from exc
+        skill.s3_key, skill.sha256 = skill_bundle[name]
+        logger.info("run %s: self-healed skill bundle for %s → %s",
+                    run_id, name, skill.s3_key)
 
     # ── Resolve models: tier → concrete id through the vendor's flat config ──
     model_map: dict[str, str] = {}
@@ -353,11 +367,16 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage) -> Ini
         ).scalars().first()
         if existing_steps is None:
             for step_id, spec in wf_spec.steps.items():
+                # Freeze the bundle pin at first init: the launch reads THIS
+                # row, so mid-run skill edits can never change the step.
+                bundle = skill_bundle[spec.get("skill", step_id)]
                 session.add(Step(
                     run_id=run_id,
                     step_id=step_id,
                     skill=spec.get("skill", step_id),
                     model_requested=model_map.get(step_id),
+                    skill_s3_key=bundle[0],
+                    skill_sha256=bundle[1],
                 ))
         record_transition(session, run_id, "pending", "running",
                           reason=f"branch created: {run_branch} (from {source_branch})")
@@ -365,6 +384,23 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage) -> Ini
                           reason="models resolved: " +
                                  ", ".join(f"{sid}={mid}" for sid, mid in model_map.items()))
         run.state = "running"
+    else:
+        # Backfill: pre-Phase-1 in-flight runs have Step rows with NULL pins.
+        # Stamp them from the freshly resolved map — the only deviation from
+        # "first_init only", kept for migration safety.
+        null_steps = (
+            await session.execute(
+                select(Step).where(
+                    Step.run_id == run_id, Step.skill_s3_key.is_(None)
+                )
+            )
+        ).scalars().all()
+        for step in null_steps:
+            bundle = skill_bundle.get(step.skill)
+            if bundle is not None:
+                step.skill_s3_key, step.skill_sha256 = bundle
+                logger.info("run %s: backfilled bundle pin for step %s",
+                            run_id, step.step_id)
 
     await session.commit()
     logger.info("run %s: init complete — branch=%s models=%s",
@@ -381,5 +417,5 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage) -> Ini
         source_branch=source_branch,
         run_branch=run_branch,
         model_map=model_map,
-        skills_overlay=skills_overlay,
+        skill_bundle=skill_bundle,
     )

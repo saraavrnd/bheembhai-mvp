@@ -15,12 +15,12 @@ from bheembhai.database import get_session
 from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import User
 from bheembhai.protocols.auth import Identity
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from platform_api.dependencies import require_project_manager
-from platform_api.routers._skill_shared import _skill_to_response
+from platform_api.routers._skill_shared import _skill_to_response, republish_skill
 from platform_api.schemas.admin import (
     SkillCreate,
     SkillFileCreate,
@@ -75,6 +75,7 @@ async def list_project_skills(
 async def create_project_skill(
     body: SkillCreate,
     project_id: str,
+    request: Request,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
     db: AsyncSession = Depends(get_session),
 ) -> SkillResponse:
@@ -107,6 +108,12 @@ async def create_project_skill(
         .where(Skill.id == skill.id)
     )
     skill = result.scalars().first()
+    # Publish-on-write: stamp the S3 bundle (empty-skill bundle too — the
+    # agent must download SOMETHING to run it).
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        await republish_skill(db, store, skill_id=str(skill.id))
+        await db.commit()
     logger.info(
         "Project skill created: %s name=%s project=%s", skill.id, skill.name, project_id
     )
@@ -169,6 +176,8 @@ async def delete_project_skill(
     """Delete a project skill and all its files (CASCADE).
 
     Runs then fall back to the platform skill of the same name at next init.
+    The S3 bundle is deliberately kept: in-flight runs pin its key, and
+    bundle GC is out of scope for Phase 1.
     """
     skill = await _get_project_skill_or_404(skill_id, project_id, db)
     await db.delete(skill)
@@ -206,6 +215,7 @@ async def create_project_skill_file(
     project_id: str,
     skill_id: str,
     body: SkillFileCreate,
+    request: Request,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
     db: AsyncSession = Depends(get_session),
 ) -> SkillFileResponse:
@@ -226,6 +236,11 @@ async def create_project_skill_file(
     db.add(sf)
     await db.commit()
     await db.refresh(sf)
+    # Content changed → republish the bundle.
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        await republish_skill(db, store, skill_id=skill_id)
+        await db.commit()
     logger.info("Project skill file added: skill=%s path=%s", skill_id, sf.path)
     return SkillFileResponse(
         id=str(sf.id),
@@ -241,6 +256,7 @@ async def update_project_skill_file(
     skill_id: str,
     file_id: str,
     body: SkillFileUpdate,
+    request: Request,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
     db: AsyncSession = Depends(get_session),
 ) -> SkillFileResponse:
@@ -252,6 +268,11 @@ async def update_project_skill_file(
     sf.content = body.content
     await db.commit()
     await db.refresh(sf)
+    # Content changed → republish the bundle.
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        await republish_skill(db, store, skill_id=skill_id)
+        await db.commit()
     logger.info("Project skill file updated: skill=%s path=%s", skill_id, sf.path)
     return SkillFileResponse(
         id=str(sf.id),
@@ -266,6 +287,7 @@ async def delete_project_skill_file(
     project_id: str,
     skill_id: str,
     file_id: str,
+    request: Request,
     _pm: tuple[User, Identity] = Depends(require_project_manager),
     db: AsyncSession = Depends(get_session),
 ):
@@ -276,5 +298,10 @@ async def delete_project_skill_file(
         raise HTTPException(404, f"File {file_id} not found in skill {skill_id}")
     await db.delete(sf)
     await db.commit()
+    # Content changed → republish the bundle.
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        await republish_skill(db, store, skill_id=skill_id)
+        await db.commit()
     logger.info("Project skill file deleted: skill=%s path=%s", skill_id, sf.path)
     return Response(status_code=204)

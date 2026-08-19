@@ -31,7 +31,11 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
 
 from platform_api.dependencies import require_admin
-from platform_api.routers._skill_shared import _get_skill_or_404, _skill_to_response
+from platform_api.routers._skill_shared import (
+    _get_skill_or_404,
+    _skill_to_response,
+    republish_skill,
+)
 from platform_api.routers._workflow_shared import (
     _parse_policy_yaml,
     _parse_workflow_yaml,
@@ -607,6 +611,12 @@ async def create_skill(
         .where(Skill.id == skill.id)
     )
     skill = result.scalars().first()
+    # Publish-on-write: stamp the S3 bundle (empty-skill bundle too — the
+    # agent must download SOMETHING to run it).
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        await republish_skill(db, store, skill_id=str(skill.id))
+        await db.commit()
     logger.info("Skill created: %s name=%s model=%s", skill.id, skill.name, skill.model)
     return _skill_to_response(skill)
 
@@ -765,6 +775,7 @@ async def analyze_skill_import(
 
 @router.post("/skills/import")
 async def import_skills(
+    request: Request,
     zip_file: UploadFile = File(...),
     decisions: str = Form(...),
     db: AsyncSession = Depends(get_session),
@@ -847,6 +858,12 @@ async def import_skills(
                     compatibility=bundle.compatibility,
                     files=files,
                 )
+                # Publish-on-write inside the savepoint: a publish failure
+                # rolls this skill's import back into the per-skill error row
+                # without killing the batch.
+                store = getattr(request.app.state, "object_store", None)
+                if store is not None:
+                    await republish_skill(db, store, skill_id=str(skill.id))
                 status = "overwritten" if (
                     action == "overwrite" and bundle.name in existing
                 ) else "imported"
@@ -1029,6 +1046,12 @@ async def create_skill_file(
     await db.commit()
     await db.refresh(sf)
 
+    # Content changed → republish the bundle.
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        await republish_skill(db, store, skill_id=skill_id)
+        await db.commit()
+
     logger.info("Skill file added: skill=%s path=%s", skill_id, sf.path)
     return SkillFileResponse(
         id=str(sf.id),
@@ -1058,6 +1081,12 @@ async def update_skill_file(
     await db.commit()
     await db.refresh(sf)
 
+    # Content changed → republish the bundle.
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        await republish_skill(db, store, skill_id=skill_id)
+        await db.commit()
+
     logger.info("Skill file updated: skill=%s path=%s", skill_id, sf.path)
     return SkillFileResponse(
         id=str(sf.id),
@@ -1084,6 +1113,12 @@ async def delete_skill_file(
 
     await db.delete(sf)
     await db.commit()
+
+    # Content changed → republish the bundle.
+    store = getattr(request.app.state, "object_store", None)
+    if store is not None:
+        await republish_skill(db, store, skill_id=skill_id)
+        await db.commit()
 
     logger.info("Skill file deleted: skill=%s path=%s", skill_id, sf.path)
     return Response(status_code=204)
@@ -1523,8 +1558,12 @@ async def copy_workflow_to_project(
         ))
 
     # Clone referenced platform skills into project-scoped rows (shared helper
-    # with the PM copy endpoint — they must not diverge).
-    await clone_referenced_skills(db, source, body.project_id)
+    # with the PM copy endpoint — they must not diverge). The store publishes
+    # each fresh clone's bundle (publish-on-write).
+    await clone_referenced_skills(
+        db, source, body.project_id,
+        store=getattr(request.app.state, "object_store", None),
+    )
 
     await db.commit()
 

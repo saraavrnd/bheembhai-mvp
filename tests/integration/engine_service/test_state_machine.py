@@ -10,6 +10,7 @@ dispatch guards, and crash-resume semantics — everything below the runtime sea
 """
 
 import asyncio
+import hashlib
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -30,6 +31,7 @@ from bheembhai.models.user import User
 from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.providers.env_secrets import EnvSecureStorage
+from bheembhai.providers.local_storage import LocalStorage
 from sqlalchemy import delete, select
 
 from conftest import FakeRuntime
@@ -176,19 +178,31 @@ async def _skill(session, name):
     return res.scalar_one_or_none()
 
 
+def _bundle_pin(name: str) -> tuple[str, str]:
+    """Deterministic dummy S3 pin for a catalog skill — the suites below pass
+    no object store, so the row must already look published (Phase 1 init
+    self-heal would otherwise fire and fail the run)."""
+    sha = hashlib.sha256(name.encode()).hexdigest()
+    return f"skills/{name}/{sha}.tar.gz", sha
+
+
 _PRESET_BRANCH = object()   # sentinel: default to a pre-set branch (init skips the network)
 
 
 async def make_world(session, created, secure_storage, *,
                      wf_yaml=WF_GATED, pol_yaml=POLICY_GATE_FIRST,
                      state="pending", current_step=None,
-                     step_overrides=None, run_branch=_PRESET_BRANCH):
+                     step_overrides=None, run_branch=_PRESET_BRANCH,
+                     stamp_bundles=True):
     """Insert a complete run world (user/project/integrations/workflow/policy/
     skills/run/step rows) with credentials resolvable from SecureStorage.
 
     `run_branch` is preset by default so init never touches the network — the
     GitHub REST path is unit-tested with httpx mocks. Pass `run_branch=None` to
     force the derive-and-create path (monkeypatch `create_branch_github`).
+
+    `stamp_bundles` (Phase 1): skill + step rows carry S3 bundle pins by
+    default. Disable it to exercise the engine's self-heal publish.
     """
     suffix = uuid.uuid4().hex[:8]
     user = User(external_id=f"ext-{suffix}", auth_provider="test",
@@ -228,12 +242,21 @@ async def make_world(session, created, secure_storage, *,
     await secure_storage.put(jira.credential_ref, jira_secret)
 
     # Skills are catalog rows — get-or-create (unique on name), never deleted.
+    # Phase 1: rows carry S3 bundle pins (key + sha). Default-stamped here with
+    # deterministic dummies so the init self-heal never fires in suites that
+    # pass no object store; the self-heal path gets its own test below.
     wf_spec = WorkflowSpec.load_yaml(wf_yaml)
+    bundle_pins: dict[str, tuple[str, str]] = {}
     for sid, spec in wf_spec.steps.items():
         skill = spec.get("skill", sid)
-        if await _skill(session, skill) is None:
-            session.add(Skill(name=skill, description=f"test skill {skill}",
-                              model="medium"))
+        row = await _skill(session, skill)
+        if row is None:
+            row = Skill(name=skill, description=f"test skill {skill}",
+                        model="medium")
+            session.add(row)
+        if stamp_bundles and not row.s3_key:
+            row.s3_key, row.sha256 = _bundle_pin(skill)
+        bundle_pins[skill] = (row.s3_key, row.sha256)
         await session.flush()
 
     workflow = Workflow(project_id=project.id, name=f"wf-{suffix}",
@@ -260,8 +283,12 @@ async def make_world(session, created, secure_storage, *,
     created.append((Run, run.id))
 
     for sid, spec in wf_spec.steps.items():
-        row = Step(run_id=run.id, step_id=sid, skill=spec.get("skill", sid),
+        skill = spec.get("skill", sid)
+        row = Step(run_id=run.id, step_id=sid, skill=skill,
                    model_requested=resolve_model_tier(spec.get("model"), vendor.config))
+        # Freeze the bundle pin on the step row exactly as first init would.
+        if stamp_bundles:
+            row.skill_s3_key, row.skill_sha256 = bundle_pins.get(skill, (None, None))
         if step_overrides and sid in step_overrides:
             for k, v in step_overrides[sid].items():
                 setattr(row, k, v)
@@ -328,6 +355,50 @@ async def test_start_drives_to_first_gate(session, secure_storage, config):
     assert any(e["type"] == "approval_required" for e in events)
     # cost accumulated
     assert float(run.cost_usd) == 0.01
+
+
+async def test_init_self_heals_unexported_skill(session, secure_storage, config, tmp_path):
+    """Phase 1 self-heal: a referenced skill with no S3 bundle (pre-migration
+    rows) is packed + published at init from its DB files, the pin is frozen on
+    the step row, and the launch carries a fresh presigned URL + sha."""
+    s, created = session
+    world = await make_world(s, created, secure_storage, stamp_bundles=False)
+    # make_world's catalog rows are get-or-create and PERSIST across tests —
+    # earlier suites leave them stamped with dummy pins. Clear them so init
+    # sees the pre-migration state this test models (NULL keys → self-heal).
+    for name in ("story-design", "test-creator", "implement"):
+        row = await _skill(s, name)
+        row.s3_key, row.sha256 = None, None
+    await s.commit()
+
+    rt = FakeRuntime({"story-design": ["ok"]})
+    store = LocalStorage(str(tmp_path / "artifacts"))
+
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
+
+    run = await get_run(s, world["run"].id)
+    assert run.state == "paused"          # story-design completed, gate open
+
+    # Init published + stamped every referenced skill row (empty bundle here —
+    # make_world catalog rows carry no files; pack_skill handles that).
+    skill_row = await _skill(s, "story-design")
+    assert skill_row.s3_key and skill_row.sha256
+    assert skill_row.s3_key == f"skills/story-design/{skill_row.sha256}.tar.gz"
+    assert (await store.head(skill_row.s3_key)) is not None
+
+    # The step row froze the same pin (launch reads the row, never a
+    # per-dispatch map — mid-run edits cannot change the step).
+    row = await step_row(s, run.id, "story-design")
+    assert (row.skill_s3_key, row.skill_sha256) == (skill_row.s3_key, skill_row.sha256)
+
+    # The launch got a fresh presigned URL (file:// under LocalStorage) + the
+    # pinned sha — the exact BB_SKILL_URL/BB_SKILL_SHA256 pair run_skill.sh
+    # downloads and verifies.
+    sd_envs = [env for sid, env in rt.envs if sid == "story-design"]
+    assert len(sd_envs) == 1
+    assert sd_envs[0]["BB_SKILL_URL"].startswith("file://")
+    assert sd_envs[0]["BB_SKILL_SHA256"] == skill_row.sha256
 
 
 async def test_approve_drives_to_completion(session, secure_storage, config):

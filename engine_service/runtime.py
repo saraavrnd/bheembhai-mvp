@@ -84,8 +84,8 @@ class Runtime(Protocol):
         context: dict | None = None,
     ) -> Handle:
         """Launch one step container. `env` is the fully composed bundle (ADR-013 §5);
-        `context` (the per-run context dict) is written to /ctx/context.json plus a
-        compact copy in BB_CONTEXT."""
+        `context` (the per-run context dict) rides in as BB_CONTEXT — the runner
+        writes CONTEXT_FILE inside the container (no /ctx mount in Phase 1)."""
         ...
 
     async def make_handle(
@@ -174,24 +174,11 @@ class DockerRuntime:
             except OSError:
                 log.debug("chmod %s 0o777 failed", workspace, exc_info=True)
 
-            # Per-run CONTEXT (see DESIGN note): the backend tells the skill its valid
-            # result-status vocabulary and whether a human gate follows — so the skill
-            # emits only routable statuses and can write its summary for a reviewer. It
-            # does NOT include routing targets: the skill learns what it may SAY and who's
-            # LISTENING, never where its words route the run. Written to /ctx/context.json;
-            # a compact copy also goes in BB_CONTEXT for convenience.
+            # Per-run CONTEXT travels as the compact BB_CONTEXT env copy only
+            # (Phase 1 dropped the /ctx bind mount) — the runner writes
+            # CONTEXT_FILE itself inside the container. `context` stays on the
+            # protocol so scripted runtimes (FakeRuntime) can record it.
             container_env = dict(env)
-            ctxdir = None
-            if context:
-                ctxdir = self.workdir / "context" / run_id / step_id / str(attempt_no)
-                ctxdir.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.chmod(ctxdir, 0o755)
-                except OSError:
-                    log.debug("chmod %s 0o755 failed", ctxdir, exc_info=True)
-                (ctxdir / "context.json").write_text(json.dumps(context, indent=2))
-                container_env["BB_CONTEXT"] = json.dumps(context, separators=(",", ":"))
-                container_env["CONTEXT_FILE"] = "/ctx/context.json"
 
             # Debugging knobs shared with the host — mock mode and CLAUDE_CODE tuning.
             # Credentials never travel through this path (they arrive in `env` from the
@@ -200,21 +187,11 @@ class DockerRuntime:
                 if os.environ.get(k):
                     container_env[k] = os.environ[k]
 
+            # Phase 1: only /out (result payload) and /workspace (git clone) are
+            # mounted. Skills arrive via BB_SKILL_URL download inside the
+            # container; context via BB_CONTEXT.
             vols = {str(outdir): {"bind": "/out", "mode": "rw"},
                     str(workspace): {"bind": "/workspace", "mode": "rw"}}
-            if ctxdir:
-                vols[str(ctxdir)] = {"bind": "/ctx", "mode": "ro"}
-
-            # Project skill overlay: replace the image's baked /skills with the
-            # materialized library for this run (init writes it when the project
-            # has project-scoped skills, and sets BB_SKILLS_DIR=/skills in the
-            # env). The non-empty guard is mandatory — Docker silently creates a
-            # missing bind source as an empty root-owned dir, which would mount
-            # empty over /skills and disable every skill. (A FargateRuntime must
-            # mount the same dir when it lands.)
-            skills_dir = self.workdir / "skills" / str(run_id)
-            if skills_dir.is_dir() and any(skills_dir.iterdir()):
-                vols[str(skills_dir)] = {"bind": "/skills", "mode": "ro"}
 
             log.info("launch step=%s attempt=%s image=%s", step_id, attempt_no, self.image)
             log.info("  result path (host): %s", outdir / RESULT_FILENAME)
