@@ -15,6 +15,7 @@ from bheembhai.models.run import Run
 from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import Membership, User
 from bheembhai.models.workflow import Policy, Workflow
+from bheembhai.models.workflow_category import WorkflowCategory
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -219,18 +220,27 @@ async def _workflow_to_response(workflow: Workflow, db: AsyncSession) -> Workflo
         project_name = project.name if project else None
         project_id = str(workflow.project_id)
 
+    # Category (shared reference data — platform and project copies share it)
+    category_name: str | None = None
+    if workflow.workflow_category_id:
+        category = await db.get(WorkflowCategory, workflow.workflow_category_id)
+        category_name = category.name if category else None
+
     return WorkflowResponse(
         id=str(workflow.id),
         project_id=project_id,
         project_name=project_name,
         name=workflow.name,
         version=workflow.version,
+        description=workflow.description or "",
         is_active=workflow.is_active,
         yaml_content=workflow.yaml_content,
         parsed=_parse_workflow_yaml(workflow.yaml_content),
         policy_count=policy_count,
         run_count=run_count,
         created_at=workflow.created_at.isoformat() if workflow.created_at else "",
+        category_id=str(workflow.workflow_category_id) if workflow.workflow_category_id else "",
+        category_name=category_name,
     )
 
 
@@ -262,7 +272,11 @@ async def _require_pm_of_workflow(
 
     Platform templates (``project_id IS NULL``) are admin-managed, so project
     managers never get write access to them through the project-scoped API.
+    Platform ADMINs bypass the check (they already manage templates through
+    the admin API).
     """
+    if current_user.platform_role == "ADMIN":
+        return
     if workflow.project_id is None:
         raise HTTPException(403, "Platform templates are managed by administrators")
 

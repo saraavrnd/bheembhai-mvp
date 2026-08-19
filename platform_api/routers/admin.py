@@ -14,6 +14,7 @@ from bheembhai.models.run import Run
 from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import Membership, ProjectRole, User
 from bheembhai.models.workflow import Policy, Workflow
+from bheembhai.models.workflow_category import WorkflowCategory
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
@@ -56,6 +57,9 @@ from platform_api.schemas.admin import (
     UpdatePlatformRole,
     UpdateUserEnabled,
     UserResponse,
+    WorkflowCategoryCreate,
+    WorkflowCategoryResponse,
+    WorkflowCategoryUpdate,
     WorkflowCreate,
     WorkflowResponse,
     WorkflowUpdate,
@@ -91,6 +95,7 @@ def _project_to_response(project, owner_name: str | None = None, member_count: i
     return ProjectResponseAdmin(
         id=str(project.id),
         name=project.name,
+        description=project.description,
         owner_id=str(project.owner_id),
         owner_name=owner_name,
         member_count=member_count,
@@ -313,7 +318,7 @@ async def update_project(
     db: AsyncSession = Depends(get_session),
     _admin: tuple[User, Identity] = Depends(require_admin),
 ) -> ProjectResponseAdmin:
-    """Update a project's name."""
+    """Update a project's name and/or description."""
     project = await _get_project_or_404(project_id, db)
 
     if body.name is not None:
@@ -325,6 +330,9 @@ async def update_project(
         if existing is not None:
             raise HTTPException(409, f"A project named '{name}' already exists")
         project.name = name
+
+    if body.description is not None:
+        project.description = body.description.strip()
 
     await db.commit()
     await db.refresh(project)
@@ -771,6 +779,129 @@ async def list_roles(
     ]
 
 
+# ── Workflow categories ─────────────────────────────────────────────────────
+
+
+def _category_to_response(category: WorkflowCategory) -> WorkflowCategoryResponse:
+    return WorkflowCategoryResponse(
+        id=str(category.id),
+        name=category.name,
+        description=category.description,
+        created_at=category.created_at.isoformat() if category.created_at else "",
+    )
+
+
+async def _find_category_name_duplicate(
+    db: AsyncSession, name: str, exclude_id=None
+) -> WorkflowCategory | None:
+    """Case-insensitive name duplicate (optionally excluding one row)."""
+    stmt = select(WorkflowCategory).where(
+        func.lower(WorkflowCategory.name) == name.lower()
+    )
+    if exclude_id is not None:
+        stmt = stmt.where(WorkflowCategory.id != exclude_id)
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
+@router.get("/workflow-categories")
+async def list_workflow_categories(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> list[WorkflowCategoryResponse]:
+    """List all workflow categories (for workflow editor/create dropdowns)."""
+    result = await db.execute(
+        select(WorkflowCategory).order_by(WorkflowCategory.name)
+    )
+    return [_category_to_response(c) for c in result.scalars().all()]
+
+
+@router.post("/workflow-categories", status_code=201)
+async def create_workflow_category(
+    body: WorkflowCategoryCreate,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> WorkflowCategoryResponse:
+    """Create a workflow category."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "Category name is required")
+    if await _find_category_name_duplicate(db, name) is not None:
+        raise HTTPException(409, f"A category named '{name}' already exists")
+
+    category = WorkflowCategory(name=name, description=body.description.strip())
+    db.add(category)
+    await db.commit()
+
+    logger.info("Workflow category created: %s name=%s", category.id, category.name)
+    return _category_to_response(category)
+
+
+@router.patch("/workflow-categories/{category_id}")
+async def update_workflow_category(
+    category_id: str,
+    body: WorkflowCategoryUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> WorkflowCategoryResponse:
+    """Update a workflow category's name or description."""
+    category = await db.get(WorkflowCategory, category_id)
+    if category is None:
+        raise HTTPException(404, f"Category {category_id} not found")
+
+    if body.name is not None:
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "Category name is required")
+        if await _find_category_name_duplicate(db, name, exclude_id=category.id) is not None:
+            raise HTTPException(409, f"A category named '{name}' already exists")
+        category.name = name
+    if body.description is not None:
+        category.description = body.description.strip()
+
+    await db.commit()
+
+    logger.info("Workflow category updated: %s", category_id)
+    return _category_to_response(category)
+
+
+@router.delete("/workflow-categories/{category_id}")
+async def delete_workflow_category(
+    category_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> Response:
+    """Delete a workflow category. 409 when workflows still reference it —
+    the admin must re-categorize (or clear) those workflows first.
+    """
+    category = await db.get(WorkflowCategory, category_id)
+    if category is None:
+        raise HTTPException(404, f"Category {category_id} not found")
+
+    in_use = (
+        await db.execute(
+            select(func.count(Workflow.id)).where(
+                Workflow.workflow_category_id == category.id
+            )
+        )
+    ).scalar() or 0
+    if in_use:
+        raise HTTPException(
+            409,
+            f"Category '{category.name}' is used by {in_use} workflow(s) — "
+            "re-categorize or clear them first",
+        )
+
+    await db.delete(category)
+    await db.commit()
+
+    logger.info("Workflow category deleted: %s name=%s", category_id, category.name)
+    return Response(status_code=204)
+
+
 # ── Workflows ───────────────────────────────────────────────────────────────
 
 
@@ -875,11 +1006,17 @@ async def create_workflow(
             f"A workflow named '{name}' version {version} already exists",
         )
 
+    category = await db.get(WorkflowCategory, body.category_id)
+    if category is None:
+        raise HTTPException(400, f"Category {body.category_id} not found")
+
     workflow = Workflow(
         name=name,
+        description=body.description.strip(),
         version=version,
         yaml_content=yaml_content,
         is_active=True,
+        workflow_category_id=category.id,
     )
     db.add(workflow)
     await db.commit()
@@ -927,6 +1064,19 @@ async def update_workflow(
             workflow.version = parsed.version
     if body.is_active is not None:
         workflow.is_active = body.is_active
+    if body.description is not None:
+        workflow.description = body.description.strip()
+    # Key present → set the category (clearing is rejected — workflows must
+    # always belong to a category); absent → unchanged.
+    if "category_id" in body.model_fields_set:
+        if not body.category_id:
+            raise HTTPException(
+                400, "Category is required — workflows must belong to a category"
+            )
+        category = await db.get(WorkflowCategory, body.category_id)
+        if category is None:
+            raise HTTPException(400, f"Category {body.category_id} not found")
+        workflow.workflow_category_id = category.id
 
     await db.commit()
 
@@ -1021,9 +1171,11 @@ async def copy_workflow_to_project(
     clone = Workflow(
         project_id=body.project_id,
         name=source.name,
+        description=source.description,
         version=source.version,
         yaml_content=source.yaml_content,
         is_active=True,
+        workflow_category_id=source.workflow_category_id,
     )
     db.add(clone)
     await db.flush()

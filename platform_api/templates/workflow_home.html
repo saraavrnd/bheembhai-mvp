@@ -1,0 +1,441 @@
+{% extends "user_base.html" %}
+
+{% block title %}Workflow — BheemBhai{% endblock %}
+
+{% block page_title %}<span id="wf-title">Workflow</span>{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a id="bc-project" href="#">Project</a></li>
+<li class="breadcrumb-item active" aria-current="page" id="bc-wf">Workflow</li>
+{% endblock %}
+
+{% block head %}
+<style>
+    /* ── Shared bits the workspace's head block normally provides ── */
+    .run-state-inline {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-size: 12px; font-weight: 500;
+    }
+    .run-state-dot {
+        width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+    }
+    .run-state-dot.needs-review { background: #e07b5a; }
+    .run-state-dot.running { background: #58a6ff; }
+    .run-state-dot.failed { background: #8b3a2a; }
+    .run-state-dot.completed { background: #5a9e6f; }
+    .run-state-dot.pending { background: #b5b5c3; }
+    .run-state-dot.cancelled { background: #6e7681; }
+    .run-state-dot.paused { background: #e07b5a; }
+    .bb-state-pill {
+        display: inline-block; font-size: 10.5px; font-weight: 700;
+        border-radius: 999px; padding: 3px 10px; white-space: nowrap;
+    }
+    .bb-state-pill.awaiting-me { background: #e07b5a; color: #fff; }
+    .bb-state-pill.awaiting-other { border: 1px solid #d9c9b4; color: #7a6a5a; }
+    .bb-state-pill.running { border: 1px solid #9fc1e8; color: #3f6ea5; }
+    .bb-state-pill.completed { background: #e4f0e8; color: #3f7a53; }
+    .bb-state-pill.failed { background: #f3e0dc; color: #8b3a2a; }
+    .bb-state-pill.pending { border: 1px solid #e3dacb; color: #a3907e; }
+    .filter-pills {
+        display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .filter-pill {
+        font-size: 12px; padding: 5px 14px; border-radius: 16px;
+        background: #eaeaef; color: #5a5a6e; cursor: pointer;
+        border: none; font-weight: 500; transition: all 0.15s;
+    }
+    .filter-pill:hover { background: #d5d5dd; }
+    .filter-pill.active { background: #2a62d5; color: #fff; }
+    .filter-pill .count { opacity: 0.7; margin-left: 4px; }
+    .runs-table { width: 100%; border-collapse: collapse; }
+    .runs-table th {
+        text-align: left; padding: 8px 12px; font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: 0.04em; color: #6e7681;
+        border-bottom: 2px solid #e8e0d6;
+    }
+    .runs-table td {
+        padding: 10px 12px; border-bottom: 1px solid #f0ebe0;
+        font-size: 13px; color: #3a3a4a; vertical-align: middle;
+    }
+    .runs-table tr { cursor: pointer; transition: background 0.1s; }
+    .runs-table tr:hover { background: rgba(0,0,0,0.02); }
+    .runs-table .story-col { font-weight: 500; }
+    .runs-table .story-col .story-id {
+        font-family: 'JetBrains Mono', monospace; font-size: 12px;
+        color: #58a6ff; font-weight: 600;
+    }
+    .runs-table .story-col .story-title {
+        font-size: 12px; color: #6e7681; margin-top: 1px;
+    }
+    .runs-table .updated-col { font-size: 11px; color: #8a7a6a; white-space: nowrap; }
+
+    /* ── Workflow home: header ── */
+    .bb-home-header { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 16px; }
+    .bb-home-head-main { flex: 1; min-width: 0; }
+    .bb-home-name { margin: 0 0 2px; font-size: 20px; font-weight: 700; color: #2a2a3a; }
+    .bb-home-id {
+        font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8a7a6a;
+    }
+    .bb-home-desc { font-size: 13px; color: #5a5a6e; margin-top: 6px; max-width: 640px; }
+    .bb-home-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .bb-home-actions .btn { font-size: 12px; }
+    .bb-badge-inactive {
+        display: inline-block; font-size: 10px; font-weight: 700;
+        letter-spacing: 0.05em; text-transform: uppercase;
+        color: #8a7a6a; background: #f0ebe0; border-radius: 4px; padding: 2px 8px;
+        margin-left: 8px; vertical-align: middle;
+    }
+
+    /* ── Definition strip ── */
+    .bb-def-strip {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 10px; margin-bottom: 16px;
+    }
+    .bb-def-step {
+        border: 1px solid #eee5d8; border-radius: 8px; padding: 10px 12px;
+        background: #fff; display: flex; flex-direction: column; gap: 3px;
+    }
+    .bb-def-num { font-size: 10px; font-weight: 700; color: #b5b5c3; letter-spacing: 0.05em; }
+    .bb-def-id {
+        font-family: 'JetBrains Mono', monospace; font-size: 12.5px;
+        font-weight: 700; color: #2a2a3a; word-break: break-all;
+    }
+    .bb-def-label { font-size: 11.5px; color: #6e7681; line-height: 1.35; }
+    .bb-def-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; }
+    .bb-def-model {
+        font-size: 10px; font-weight: 700; letter-spacing: 0.03em;
+        text-transform: uppercase; color: #3f6ea5; background: #e2f0f6;
+        border-radius: 4px; padding: 1px 7px;
+    }
+    .bb-def-gate {
+        font-size: 10px; font-weight: 700; color: #b34d2c; background: #fdeee7;
+        border: 1px solid #f2c3ac; border-radius: 4px; padding: 1px 7px;
+    }
+
+    /* ── Stat tiles ── */
+    .bb-stat-tiles {
+        display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px; margin-bottom: 16px;
+    }
+    .bb-stat-tile {
+        background: #fff; border: 1px solid #eee5d8; border-radius: 8px;
+        padding: 14px 16px;
+    }
+    .bb-stat-label {
+        font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.05em; color: #8a7a6a;
+    }
+    .bb-stat-value { font-size: 24px; font-weight: 700; color: #2a2a3a; margin-top: 4px; }
+    .bb-stat-sub { font-size: 11.5px; color: #6e7681; margin-top: 4px; }
+    .bb-stat-sub .terracotta { color: #b34d2c; font-weight: 600; }
+    .bb-exec-loop { color: #b34d2c; font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block content %}
+<script>window.BB_PROJECT_ID = '{{ project_id }}'; window.BB_WORKFLOW_ID = '{{ workflow_id }}';</script>
+
+<div class="row">
+    <div class="col-3">
+        {% include "_catalog_rail.html" %}
+    </div>
+    <div class="col-9">
+        <div id="bb-wf-home"><p class="text-muted">Loading workflow...</p></div>
+    </div>
+</div>
+
+{% include "_start_run_modal.html" %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.BB_CAT_ID = (new URLSearchParams(window.location.search)).get('cat') || '';
+
+let homeData = null;
+let myRole = null;
+let runFilter = 'all';
+
+window.BBOnRunCreated = function () { loadHome(); };
+
+window.addEventListener('bb:userReady', function(e) {
+    const data = e.detail;
+
+    const membership = (data.memberships || []).find(m => m.project_id === window.BB_PROJECT_ID);
+    if (!membership) {
+        // Platform ADMINs have full project access without a membership row
+        if (!data.platform_role || data.platform_role !== 'ADMIN') {
+            document.getElementById('bb-wf-home').innerHTML =
+                '<p style="color:#f85149;font-size:13px;">You are not a member of this project.</p>';
+            return;
+        }
+        myRole = 'project_manager';
+    } else {
+        myRole = membership.role;
+    }
+
+    // Project crumb lands back on the catalog, keeping the category deep link
+    const backHref = '/projects/' + window.BB_PROJECT_ID + '?tab=workflows'
+        + (window.BB_CAT_ID ? '&cat=' + encodeURIComponent(window.BB_CAT_ID) : '');
+    document.getElementById('bc-project').href = backHref;
+    if (membership) {
+        document.getElementById('bc-project').textContent = membership.project_name;
+    } else {
+        // Admin without a membership row: /api/projects/{id} is auth-only.
+        fetch('/api/projects/' + window.BB_PROJECT_ID, { headers: authHeaders() })
+            .then(r => r.json())
+            .then(p => { document.getElementById('bc-project').textContent = p.name || 'Project'; })
+            .catch(() => {});
+    }
+
+    loadHome();
+    loadRail();
+});
+
+function loadRail() {
+    // The rail needs the project's category list — the catalog endpoint.
+    fetch('/api/projects/' + window.BB_PROJECT_ID + '/workflow-catalog', { headers: authHeaders() })
+        .then(r => r.json())
+        .then(d => {
+            const wfs = d.workflows || [];
+            const allInFlight = wfs.reduce((n, w) => n + (w.in_flight || 0), 0);
+            const items = [{ id: '', name: 'All workflows', workflow_count: wfs.length, in_flight: allInFlight }]
+                .concat((d.categories || []).map(c => ({
+                    id: c.id, name: c.name,
+                    workflow_count: c.workflow_count, in_flight: c.in_flight,
+                })));
+            window.BBCatalogRail.render(items, window.BB_CAT_ID, function (catId) {
+                window.location.href = '/projects/' + window.BB_PROJECT_ID + '?tab=workflows'
+                    + (catId ? '&cat=' + encodeURIComponent(catId) : '');
+            });
+        })
+        .catch(() => {});
+}
+
+function loadHome() {
+    fetch('/api/workflows/' + window.BB_WORKFLOW_ID + '/home', { headers: authHeaders() })
+        .then(r => {
+            if (r.status === 404) throw new Error('This workflow has no run history or does not exist.');
+            if (r.status === 403) throw new Error('You are not a member of this project.');
+            if (!r.ok) throw new Error('Failed to load this workflow.');
+            return r.json();
+        })
+        .then(d => {
+            homeData = d;
+            renderHome();
+        })
+        .catch(err => {
+            document.getElementById('bb-wf-home').innerHTML =
+                '<p style="color:#f85149;font-size:13px;">' + esc(err.message) + '</p>';
+        });
+}
+
+function renderHome() {
+    const wf = homeData.workflow;
+    const stats = homeData.stats;
+    const isPM = myRole === 'project_manager'
+        || (window.BB.user && window.BB.user.platform_role === 'ADMIN');
+
+    const tint = (window.BBCatalogRail && window.BBCatalogRail.tint)
+        ? window.BBCatalogRail.tint(wf.category_name || '') : 0;
+
+    document.getElementById('bc-wf').textContent = wf.name;
+    document.getElementById('wf-title').textContent = wf.name;
+    document.title = wf.name + ' — BheemBhai';
+
+    let html = `
+        <div class="bb-home-header">
+            <div class="bb-home-head-main">
+                <h4 class="bb-home-name">
+                    <span class="bb-cat-dot bb-cat-dot-${tint}"></span> ${esc(wf.name)}
+                    ${wf.is_active ? '' : '<span class="bb-badge-inactive">inactive</span>'}
+                </h4>
+                <div class="bb-home-id">#${esc(wf.id.substring(0, 8))} · v${esc(wf.version)} · ${esc(wf.category_name || 'Uncategorised')}</div>
+                <div class="bb-home-desc">${esc(wf.description || 'No description')}</div>
+            </div>
+            <div class="bb-home-actions">
+                ${isPM ? '<a class="btn btn-outline-secondary" href="/projects/' + window.BB_PROJECT_ID + '/config/workflows/' + esc(wf.id) + '"><i class="fa fa-pen"></i> Edit workflow</a>' : ''}
+                <button class="btn btn-primary" onclick="createNewRun(window.BB_WORKFLOW_ID)"><i class="fa fa-play"></i> Start run</button>
+            </div>
+        </div>
+        ${renderDefStrip(wf)}
+        ${renderStats(stats)}
+        ${renderRunList(stats)}
+    `;
+    document.getElementById('bb-wf-home').innerHTML = html;
+
+    // Filter pills (All / Mine / Needs review)
+    document.querySelectorAll('#bb-home-filters .filter-pill').forEach(pill => {
+        pill.addEventListener('click', function () {
+            document.querySelectorAll('#bb-home-filters .filter-pill').forEach(p => p.classList.remove('active'));
+            this.classList.add('active');
+            runFilter = this.dataset.filter;
+            renderRunTable();
+        });
+    });
+    renderRunTable();
+}
+
+function renderDefStrip(wf) {
+    const steps = (wf.parsed && wf.parsed.steps) || [];
+    const gates = (homeData.active_policy && homeData.active_policy.gates) || {};
+    if (!steps.length) return '';
+
+    const cells = steps.map((s, i) => {
+        const gate = gates[s.id];
+        // Gate pills come from the NEWEST ACTIVE policy — a definition view;
+        // a specific run may have run under a different policy version.
+        const gatePill = gate
+            ? '<span class="bb-def-gate" title="Human approval gate">gate · ' + esc(gate.role || 'any') + '</span>'
+            : '';
+        return `
+            <div class="bb-def-step">
+                <div class="bb-def-num">${i + 1}</div>
+                <div class="bb-def-id">${esc(s.id)}</div>
+                <div class="bb-def-label">${esc(s.label || s.skill || '')}</div>
+                <div class="bb-def-meta">
+                    <span class="bb-def-model">${esc(s.model)}</span>
+                    ${gatePill}
+                </div>
+            </div>`;
+    }).join('');
+
+    return '<div class="bb-def-strip">' + cells + '</div>';
+}
+
+function renderStats(stats) {
+    const by = stats.by_state || {};
+    const mineCount = (stats.awaiting_review.items || []).filter(it =>
+        myRole === 'project_manager' || it.gate_role === myRole).length;
+    const loopEdge = stats.most_common_loop_edge;
+
+    return `
+        <div class="bb-stat-tiles">
+            <div class="bb-stat-tile">
+                <div class="bb-stat-label">Runs · 30 days</div>
+                <div class="bb-stat-value">${stats.runs_total}</div>
+                <div class="bb-stat-sub">${by.completed || 0} completed · ${by.failed || 0} failed · ${by.cancelled || 0} cancelled · ${stats.live} live</div>
+            </div>
+            <div class="bb-stat-tile">
+                <div class="bb-stat-label">Median duration</div>
+                <div class="bb-stat-value">${fmtDur(stats.median_duration_s)}</div>
+                <div class="bb-stat-sub">median gate wait ${fmtDur(stats.median_gate_wait_s)}</div>
+            </div>
+            <div class="bb-stat-tile">
+                <div class="bb-stat-label">Loop-back rate</div>
+                <div class="bb-stat-value">${stats.loop_back_rate_pct}%</div>
+                <div class="bb-stat-sub">${loopEdge
+                    ? 'most common: ' + esc(loopEdge.from_step) + ' → ' + esc(loopEdge.to_step) + ' (' + loopEdge.count + ')'
+                    : 'no loop-backs in the window'}</div>
+            </div>
+            <div class="bb-stat-tile">
+                <div class="bb-stat-label">Awaiting review</div>
+                <div class="bb-stat-value">${stats.awaiting_review.total}</div>
+                <div class="bb-stat-sub"><span class="terracotta">${mineCount} is yours</span></div>
+            </div>
+        </div>`;
+}
+
+function renderRunList(stats) {
+    const runs = homeData.runs || [];
+    const mineIds = new Set((stats.awaiting_review.items || []).filter(it =>
+        myRole === 'project_manager' || it.gate_role === myRole).map(it => it.run_id));
+    const countMine = runs.filter(r => mineIds.has(r.run_id)).length;
+    const countReview = runs.filter(r => r.needs_review).length;
+
+    return `
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title"><i class="fa fa-list me-2"></i>Runs · last 30 days</h4>
+            </div>
+            <div class="box-body">
+                <div class="filter-pills" id="bb-home-filters">
+                    <button class="filter-pill active" data-filter="all">All <span class="count">${runs.length}</span></button>
+                    <button class="filter-pill" data-filter="mine">Mine <span class="count">${countMine}</span></button>
+                    <button class="filter-pill" data-filter="needs-review">Needs review <span class="count">${countReview}</span></button>
+                </div>
+                <div id="bb-home-runs"></div>
+            </div>
+        </div>`;
+}
+
+function renderRunTable() {
+    const el = document.getElementById('bb-home-runs');
+    if (!el) return;
+    const runs = homeData.runs || [];
+    const stats = homeData.stats;
+    const mineIds = new Set((stats.awaiting_review.items || []).filter(it =>
+        myRole === 'project_manager' || it.gate_role === myRole).map(it => it.run_id));
+
+    let filtered = runs;
+    if (runFilter === 'mine') filtered = runs.filter(r => mineIds.has(r.run_id));
+    else if (runFilter === 'needs-review') filtered = runs.filter(r => r.needs_review);
+
+    if (!filtered.length) {
+        el.innerHTML = '<p class="text-muted mb-0">No runs match this filter.</p>';
+        return;
+    }
+
+    el.innerHTML = `
+        <div class="table-responsive">
+            <table class="runs-table">
+                <thead>
+                    <tr>
+                        <th>Run</th>
+                        <th>State</th>
+                        <th>Executions</th>
+                        <th>Updated</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${filtered.map(r => runRow(r, mineIds)).join('')}
+                </tbody>
+            </table>
+        </div>`;
+
+    el.querySelectorAll('tr[data-run-id]').forEach(row => {
+        row.addEventListener('click', function () {
+            window.location.href = '/projects/' + window.BB_PROJECT_ID + '/runs/' + this.dataset.runId;
+        });
+    });
+}
+
+function runRow(r, mineIds) {
+    const mine = mineIds.has(r.run_id);
+    const stateHtml = r.needs_review
+        ? '<span class="bb-state-pill ' + (mine ? 'awaiting-me' : 'awaiting-other') + '">'
+            + (mine ? 'Needs your review' : 'Needs review') + '</span>'
+        : '<span class="run-state-inline"><span class="run-state-dot ' + esc(r.state) + '"></span>'
+            + cap(r.state) + '</span>';
+    const execHtml = r.loop_backs > 0
+        ? r.executions + ' <span class="bb-exec-loop">· ' + r.loop_backs + ' loop-back' + (r.loop_backs === 1 ? '' : 's') + '</span>'
+        : String(r.executions);
+    return `
+        <tr data-run-id="${esc(r.run_id)}">
+            <td class="story-col">
+                <div class="story-id">${esc(r.story_id)}</div>
+                <div class="story-title">#${esc(r.run_id.substring(0, 8))}</div>
+            </td>
+            <td>${stateHtml}</td>
+            <td>${execHtml}</td>
+            <td class="updated-col">${esc(r.updated || '')}</td>
+            <td class="text-end"><i class="fa fa-arrow-right" style="color:#b5b5c3;"></i></td>
+        </tr>`;
+}
+
+function fmtDur(s) {
+    if (s === null || s === undefined) return '—';
+    const secs = Math.round(s);
+    const m = Math.floor(secs / 60);
+    const r = secs % 60;
+    if (m === 0) return r + 's';
+    return m + 'm ' + r + 's';
+}
+
+function cap(s) {
+    if (!s) return '';
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+</script>
+{% endblock %}

@@ -11,12 +11,17 @@ from typing import TYPE_CHECKING
 from bheembhai.database import get_session
 from bheembhai.models.skill import Skill
 from bheembhai.models.user import Membership, ProjectRole, User
+from bheembhai.models.workflow_category import WorkflowCategory
 from bheembhai.protocols.auth import Identity
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 
 from platform_api.dependencies import get_current_enabled_user
-from platform_api.schemas.admin import RoleResponse, SkillNameResponse
+from platform_api.schemas.admin import (
+    RoleResponse,
+    SkillNameResponse,
+    WorkflowCategoryResponse,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +44,26 @@ async def list_roles(
     ]
 
 
+@router.get("/workflow-categories")
+async def list_workflow_categories(
+    db: AsyncSession = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+) -> list[WorkflowCategoryResponse]:
+    """List all workflow categories (for workflow editor/create dropdowns)."""
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+    result = await db.execute(select(WorkflowCategory).order_by(WorkflowCategory.name))
+    return [
+        WorkflowCategoryResponse(
+            id=str(c.id),
+            name=c.name,
+            description=c.description,
+            created_at=c.created_at.isoformat() if c.created_at else "",
+        )
+        for c in result.scalars().all()
+    ]
+
+
 @router.get("/skills/names")
 async def list_skill_names(
     project_id: str | None = Query(None),
@@ -58,16 +83,18 @@ async def list_skill_names(
 
     stmt = select(Skill.id, Skill.name, Skill.project_id)
     if project_id:
-        membership = (
-            await db.execute(
-                select(Membership).where(
-                    Membership.user_id == current_user.id,
-                    Membership.project_id == project_id,
+        if current_user.platform_role != "ADMIN":
+            # Verify membership (platform ADMINs bypass)
+            membership = (
+                await db.execute(
+                    select(Membership).where(
+                        Membership.user_id == current_user.id,
+                        Membership.project_id == project_id,
+                    )
                 )
-            )
-        ).scalar_one_or_none()
-        if membership is None:
-            raise HTTPException(403, "You are not a member of this project")
+            ).scalar_one_or_none()
+            if membership is None:
+                raise HTTPException(403, "You are not a member of this project")
         # Union replaces the platform-only filter — chaining .where() would
         # AND the two and project rows could never match.
         stmt = stmt.where(

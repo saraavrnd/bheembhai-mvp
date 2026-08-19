@@ -117,6 +117,15 @@ async def require_admin(
     return user, identity
 
 
+def is_platform_admin(user: User) -> bool:
+    """True when the user holds the platform ADMIN role.
+
+    Platform ADMINs bypass project membership/role checks (full project
+    access) — see require_project_member / require_project_manager.
+    """
+    return user.platform_role == "ADMIN"
+
+
 async def _project_membership(
     project_id: str,
     db: AsyncSession,
@@ -151,12 +160,14 @@ async def require_project_member(
 ) -> tuple[User, Identity]:
     """Require membership in the project named by the ``project_id`` path param.
 
+    Platform ADMINs bypass the membership check (full project access).
     401 unauthenticated · 404 unknown project · 403 non-member.
     """
     if enabled is None:
         raise HTTPException(401, "Authentication required")
     user, identity = enabled
-    await _project_membership(project_id, db, user)
+    if not is_platform_admin(user):
+        await _project_membership(project_id, db, user)
     return user, identity
 
 
@@ -167,12 +178,14 @@ async def require_project_manager(
 ) -> tuple[User, Identity]:
     """Require the ``project_manager`` role in the project named by ``project_id``.
 
+    Platform ADMINs bypass the membership + role check (full project access).
     401 unauthenticated · 404 unknown project · 403 non-member or wrong role.
     """
     if enabled is None:
         raise HTTPException(401, "Authentication required")
     user, identity = enabled
-    membership = await _project_membership(project_id, db, user)
-    if membership.role != "project_manager":
-        raise HTTPException(403, "Only a project manager can do this")
+    if not is_platform_admin(user):
+        membership = await _project_membership(project_id, db, user)
+        if membership.role != "project_manager":
+            raise HTTPException(403, "Only a project manager can do this")
     return user, identity

@@ -46,6 +46,7 @@ class ProjectCreateAdmin(BaseModel):
 class ProjectResponseAdmin(BaseModel):
     id: str
     name: str
+    description: str = ""
     owner_id: str
     owner_name: str | None = None
     member_count: int = 0
@@ -56,6 +57,7 @@ class ProjectResponseAdmin(BaseModel):
 
 class ProjectUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=200)
+    description: str | None = Field(None, max_length=500)
 
 
 # ── Membership ────────────────────────────────────────────────────────────────
@@ -129,6 +131,28 @@ class SkillFileUpdate(BaseModel):
     content: str = Field(..., min_length=1)
 
 
+# ── Workflow categories ────────────────────────────────────────────────────
+
+
+class WorkflowCategoryResponse(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    created_at: str  # ISO-8601
+
+    model_config = {"from_attributes": True}
+
+
+class WorkflowCategoryCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+
+
+class WorkflowCategoryUpdate(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=500)
+
+
 # ── Workflows ───────────────────────────────────────────────────────────────
 
 
@@ -156,12 +180,15 @@ class WorkflowResponse(BaseModel):
     project_name: str | None = None
     name: str
     version: int
+    description: str = ""
     is_active: bool
     yaml_content: str
     parsed: WorkflowParsed | None = None
     policy_count: int = 0
     run_count: int = 0
     created_at: str  # ISO-8601
+    category_id: str = ""  # empty string = uncategorized (project_id convention)
+    category_name: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -170,12 +197,16 @@ class WorkflowCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
     yaml_content: str = Field(default="", min_length=0)
+    category_id: str  # required — every workflow must belong to a category
 
 
 class WorkflowUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=100)
+    description: str | None = Field(None, max_length=500)
     yaml_content: str | None = None
     is_active: bool | None = None
+    # Key present (even null) → set/clear; absent → unchanged (model_fields_set)
+    category_id: str | None = None
 
 
 # ── Policies ────────────────────────────────────────────────────────────────
