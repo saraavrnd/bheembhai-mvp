@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,6 +14,7 @@ from bheembhai.config import DatabaseConfig
 from bheembhai.models.base import Base
 
 if TYPE_CHECKING:
+    from bheembhai.models.skill import Skill
     from bheembhai.models.workflow_category import WorkflowCategory
 
 _logger = logging.getLogger(__name__)
@@ -192,6 +194,145 @@ async def _get_or_create_category(session: AsyncSession, name: str) -> WorkflowC
     return category
 
 
+# SKILL.md frontmatter model names → DB tier (skills.model has a
+# CheckConstraint IN ('high', 'medium', 'low')). Shared by the disk seed and
+# the admin zip-import endpoint — lives here so platform_api imports from
+# shared, never the other way around.
+MODEL_TIER_MAP = {
+    "opus": "high",
+    "sonnet": "medium",
+    "haiku": "low",
+    "high": "high",
+    "medium": "medium",
+    "low": "low",
+}
+
+
+@dataclass
+class SkillFrontmatter:
+    """Parsed SKILL.md frontmatter with DB-ready values."""
+
+    name: str
+    description: str
+    model: str  # mapped to high|medium|low via MODEL_TIER_MAP
+    compatibility: str | None
+    warnings: list[str] = field(default_factory=list)
+
+
+def parse_skill_frontmatter(content: str, fallback_name: str) -> SkillFrontmatter | None:
+    """Parse SKILL.md YAML frontmatter into DB-ready fields.
+
+    Returns ``None`` only when the content starts with a ``---`` block whose
+    YAML is unparseable — the seed treats ``None`` as "skip skill" (existing
+    behavior), the zip import treats it as "defaults + warning". Everything
+    else falls back to defaults: name → *fallback_name* (the skill dir),
+    description → ``""``, model → ``"medium"`` (unknown values warn).
+    """
+    import yaml
+
+    warnings: list[str] = []
+    frontmatter: dict = {}
+    if content.startswith("---"):
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            warnings.append(
+                "SKILL.md frontmatter is missing a closing '---' — using defaults"
+            )
+        else:
+            try:
+                fm = yaml.safe_load(parts[1])
+                if isinstance(fm, dict):
+                    frontmatter = fm
+            except yaml.YAMLError:
+                return None
+
+    # YAML parses a bare `name:` as None — coerce None/empty to the fallback
+    # (and never let str(None) sneak in as the literal "None").
+    raw_name = frontmatter.get("name") or fallback_name
+    name = str(raw_name).strip() or fallback_name
+    description = str(frontmatter.get("description", "") or "")
+    raw_model = str(frontmatter.get("model", "medium") or "medium").strip().lower()
+    if raw_model not in MODEL_TIER_MAP:
+        warnings.append(f"unknown model '{raw_model}' — defaulted to medium")
+        raw_model = "medium"
+    compatibility = (
+        str(frontmatter["compatibility"])
+        if frontmatter.get("compatibility") is not None
+        else None
+    )
+    return SkillFrontmatter(
+        name=name,
+        description=description,
+        model=MODEL_TIER_MAP[raw_model],
+        compatibility=compatibility,
+        warnings=warnings,
+    )
+
+
+async def upsert_skill(
+    session,
+    *,
+    name: str,
+    description: str,
+    model: str,
+    compatibility: str | None,
+    files: dict[str, str],
+) -> Skill:
+    """Upsert a PLATFORM skill (project_id IS NULL) by name, replacing its
+    file set to exactly match ``files`` (stale rows deleted).
+
+    Flushes only — never commits; callers decide transaction scope (the seed
+    commits per skill, the import endpoint wraps a batch in savepoints).
+    Project-scoped rows with the same name are never touched.
+    """
+    from sqlalchemy import select
+
+    from bheembhai.models.skill import Skill, SkillFile
+
+    result = await session.execute(
+        select(Skill).where(
+            Skill.name == name, Skill.project_id.is_(None)
+        )
+    )
+    skill = result.scalar_one_or_none()
+    if skill is None:
+        skill = Skill(
+            name=name,
+            description=description,
+            model=model,
+            compatibility=compatibility,
+        )
+        session.add(skill)
+        await session.flush()
+        _logger.info("  Created skill: %s", name)
+    else:
+        skill.description = description
+        skill.model = model
+        skill.compatibility = compatibility
+        _logger.info("  Updated skill: %s", name)
+
+    existing_files_result = await session.execute(
+        select(SkillFile).where(SkillFile.skill_id == skill.id)
+    )
+    existing_by_path: dict[str, SkillFile] = {
+        f.path: f for f in existing_files_result.scalars().all()
+    }
+
+    for fpath, fcontent in files.items():
+        ef = existing_by_path.pop(fpath, None)
+        if ef is None:
+            session.add(SkillFile(skill_id=skill.id, path=fpath, content=fcontent))
+        else:
+            ef.content = fcontent
+
+    # Remove files that no longer exist in the bundle
+    for stale in existing_by_path.values():
+        await session.delete(stale)
+
+    await session.flush()
+    return skill
+
+
 async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
     """Import skills from disk into the database (idempotent).
 
@@ -201,13 +342,10 @@ async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
     ``references/*``, ``templates/*``, ``examples/*``).
 
     Directories named ``.local``, ``_tooling``, or starting with ``_SHARED``
-    are skipped, as are regular files (``README.md``, etc.).
+    are skipped, as are regular files (``README.md``, etc.). Frontmatter
+    ``model:`` values map to DB tiers via :data:`MODEL_TIER_MAP`
+    (opus → high, sonnet → medium, haiku → low).
     """
-
-    import yaml
-
-    from bheembhai.models.skill import Skill, SkillFile
-
     if skills_dir is None:
         # Resolve relative to project root: database.py is at shared/bheembhai/
         project_root = Path(__file__).resolve().parent.parent.parent
@@ -233,89 +371,32 @@ async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
             _logger.debug("Skipping %s — no SKILL.md", name)
             continue
 
-        # Parse YAML frontmatter from SKILL.md
         content = skill_md.read_text()
-        frontmatter: dict[str, str] = {}
-        if content.startswith("---"):
-            parts = content.split("---", 2)
-            if len(parts) >= 3:
-                try:
-                    fm = yaml.safe_load(parts[1])
-                    if isinstance(fm, dict):
-                        frontmatter = fm
-                except yaml.YAMLError:
-                    _logger.debug("Bad frontmatter in %s/SKILL.md — skipping", name)
-                    continue
+        fm = parse_skill_frontmatter(content, name)
+        if fm is None:
+            _logger.debug("Bad frontmatter in %s/SKILL.md — skipping", name)
+            continue
+        for warning in fm.warnings:
+            _logger.warning("  %s: %s", name, warning)
 
-        skill_name = frontmatter.get("name", name)
-        description = frontmatter.get("description", "")
-        model = frontmatter.get("model", "medium")
-        if model not in ("high", "medium", "low"):
-            model = "medium"
-        compatibility = frontmatter.get("compatibility")
+        # SKILL.md always included, then references/templates/examples (depth 1)
+        files: dict[str, str] = {"SKILL.md": content}
+        for subdir_name in ("references", "templates", "examples"):
+            subdir = entry / subdir_name
+            if subdir.is_dir():
+                for sf in sorted(subdir.iterdir()):
+                    if sf.is_file():
+                        files[f"{subdir_name}/{sf.name}"] = sf.read_text()
 
         async with _sessionmaker() as session:
-            from sqlalchemy import select
-
-            # Upsert skill — platform scope only: project skills with the same
-            # name must never be touched (or the lookup would be ambiguous).
-            result = await session.execute(
-                select(Skill).where(
-                    Skill.name == skill_name, Skill.project_id.is_(None)
-                )
+            await upsert_skill(
+                session,
+                name=fm.name,
+                description=fm.description,
+                model=fm.model,
+                compatibility=fm.compatibility,
+                files=files,
             )
-            skill = result.scalar_one_or_none()
-            if skill is None:
-                skill = Skill(
-                    name=skill_name,
-                    description=description,
-                    model=model,
-                    compatibility=compatibility,
-                )
-                session.add(skill)
-                await session.flush()
-                _logger.info("  Created skill: %s", skill_name)
-            else:
-                skill.description = description
-                skill.model = model
-                skill.compatibility = compatibility
-                _logger.info("  Updated skill: %s", skill_name)
-
-            # Collect all files
-            file_entries: list[tuple[str, str]] = []
-            # SKILL.md always included
-            file_entries.append(("SKILL.md", content))
-            for subdir_name in ("references", "templates", "examples"):
-                subdir = entry / subdir_name
-                if subdir.is_dir():
-                    for sf in sorted(subdir.iterdir()):
-                        if sf.is_file():
-                            rel = f"{subdir_name}/{sf.name}"
-                            file_entries.append((rel, sf.read_text()))
-
-            # Upsert each file
-            existing_files_result = await session.execute(
-                select(SkillFile).where(SkillFile.skill_id == skill.id)
-            )
-            existing_by_path: dict[str, SkillFile] = {
-                f.path: f for f in existing_files_result.scalars().all()
-            }
-
-            for fpath, fcontent in file_entries:
-                ef = existing_by_path.pop(fpath, None)
-                if ef is None:
-                    session.add(SkillFile(
-                        skill_id=skill.id,
-                        path=fpath,
-                        content=fcontent,
-                    ))
-                else:
-                    ef.content = fcontent
-
-            # Remove files that no longer exist on disk
-            for stale in existing_by_path.values():
-                await session.delete(stale)
-
             await session.commit()
             count += 1
 

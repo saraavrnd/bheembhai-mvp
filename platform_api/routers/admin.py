@@ -5,17 +5,27 @@ All endpoints require the platform ADMIN role via ``require_admin``.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
-from bheembhai.database import get_session
+from bheembhai.database import get_session, upsert_skill
 from bheembhai.models.project import Project, ProjectIntegration
 from bheembhai.models.run import Run
 from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import Membership, ProjectRole, User
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.models.workflow_category import WorkflowCategory
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from sqlalchemy import and_, func, select
 from sqlalchemy.orm import selectinload
 
@@ -50,6 +60,10 @@ from platform_api.schemas.admin import (
     SkillFileCreate,
     SkillFileResponse,
     SkillFileUpdate,
+    SkillImportAnalyzeResponse,
+    SkillImportResponse,
+    SkillImportResult,
+    SkillImportSkillAnalysis,
     SkillNameResponse,
     SkillResponse,
     SkillUpdate,
@@ -63,6 +77,12 @@ from platform_api.schemas.admin import (
     WorkflowCreate,
     WorkflowResponse,
     WorkflowUpdate,
+)
+from platform_api.skill_import import (
+    MAX_UPLOAD_BYTES,
+    ZipValidationError,
+    analyze_zip,
+    bundle_files_with_external,
 )
 
 if TYPE_CHECKING:
@@ -643,6 +663,211 @@ async def delete_skill(
 
     logger.info("Skill deleted: %s name=%s", skill_id, skill.name)
     return Response(status_code=204)
+
+
+# ── Skill zip import ──────────────────────────────────────────────────────────
+
+_VALID_DECISIONS = {"import", "overwrite", "skip"}
+_SKILL_NAME_MAX = 100  # mirrors SkillCreate.name max_length
+
+
+async def _read_zip_upload(zip_file: UploadFile) -> bytes:
+    """Chunked read with a 5 MiB cap — no body-size middleware exists, so the
+    limit is enforced here on the bytes actually received."""
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await zip_file.read(1024 * 1024):
+        total += len(chunk)
+        if total > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                413, f"Zip exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _existing_platform_skill_names(db: AsyncSession, names: list[str]) -> set[str]:
+    """Names among *names* that already exist as platform skills."""
+    if not names:
+        return set()
+    result = await db.execute(
+        select(Skill.name).where(
+            Skill.project_id.is_(None), Skill.name.in_(names)
+        )
+    )
+    return set(result.scalars().all())
+
+
+def _import_analysis_response(analysis, existing: set[str]) -> SkillImportAnalyzeResponse:
+    """Bundle dataclasses → analysis-table response, with exists flags.
+
+    ``files``/``file_contents`` cover everything the skill will import with:
+    its own files plus zip-backed refs outside the skill dir (tagged by
+    ``external_references`` in the UI).
+    """
+    return SkillImportAnalyzeResponse(
+        skills=[
+            SkillImportSkillAnalysis(
+                name=b.name,
+                directory=b.directory,
+                description=b.description,
+                model=b.model,
+                compatibility=b.compatibility,
+                warnings=b.warnings,
+                files=list(b.files) + list(b.external_files),
+                file_contents={**b.files, **b.external_files},
+                missing_referenced=b.missing_referenced,
+                external_references=b.external_references,
+                exists=b.name in existing,
+            )
+            for b in analysis.skills
+        ],
+        invalid_dirs=analysis.invalid_dirs,
+        other_entries=analysis.other_entries,
+        warnings=analysis.warnings,
+    )
+
+
+@router.post("/skills/import/analyze")
+async def analyze_skill_import(
+    zip_file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> SkillImportAnalyzeResponse:
+    """Analyze an uploaded skills zip (stateless — the zip is never stored).
+
+    Returns one row per importable skill: name, dependent files, missing
+    references, and whether a platform skill with that name already exists.
+    """
+    data = await _read_zip_upload(zip_file)
+    try:
+        analysis = analyze_zip(data)
+    except ZipValidationError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    existing = await _existing_platform_skill_names(
+        db, [b.name for b in analysis.skills]
+    )
+    logger.info(
+        "Skill import analysis: %d skills, %d existing, %d invalid dirs",
+        len(analysis.skills), len(existing), len(analysis.invalid_dirs),
+    )
+    return _import_analysis_response(analysis, existing)
+
+
+@router.post("/skills/import")
+async def import_skills(
+    zip_file: UploadFile = File(...),
+    decisions: str = Form(...),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> SkillImportResponse:
+    """Apply per-skill import decisions from the analysis step.
+
+    The zip is re-uploaded and re-validated (stateless two-phase flow); the
+    decision keys must cover the analyzed name set exactly, catching a zip
+    that changed between phases. Each skill runs in its own savepoint — one
+    bad skill never kills the batch.
+    """
+    data = await _read_zip_upload(zip_file)
+    try:
+        analysis = analyze_zip(data)
+    except ZipValidationError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    try:
+        parsed = json.loads(decisions)
+    except json.JSONDecodeError:
+        raise HTTPException(422, "decisions must be a JSON object") from None
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+    ):
+        raise HTTPException(422, "decisions must map skill names to actions")
+    bad_actions = {k: v for k, v in parsed.items() if v not in _VALID_DECISIONS}
+    if bad_actions:
+        raise HTTPException(
+            422, f"invalid decision action(s): {', '.join(sorted(bad_actions))}"
+        )
+
+    zip_names = {b.name for b in analysis.skills}
+    decision_names = set(parsed)
+    missing = sorted(zip_names - decision_names)
+    unknown = sorted(decision_names - zip_names)
+    if missing or unknown:
+        raise HTTPException(
+            422,
+            "decisions must cover exactly the analyzed skills — "
+            f"missing: {', '.join(missing) or 'none'}; "
+            f"unknown: {', '.join(unknown) or 'none'}",
+        )
+
+    existing = await _existing_platform_skill_names(db, zip_names)
+    results: list[SkillImportResult] = []
+
+    for bundle in analysis.skills:
+        action = parsed[bundle.name]
+        if action == "skip":
+            results.append(SkillImportResult(
+                name=bundle.name, action=action, status="skipped",
+            ))
+            continue
+        if len(bundle.name) > _SKILL_NAME_MAX:
+            results.append(SkillImportResult(
+                name=bundle.name, action=action, status="error",
+                message=f"skill name exceeds {_SKILL_NAME_MAX} characters",
+            ))
+            continue
+        try:
+            async with db.begin_nested():
+                if action == "import" and bundle.name in existing:
+                    # Mirrors the 409 text of POST /skills — but as a per-skill
+                    # error row so the rest of the batch still imports.
+                    results.append(SkillImportResult(
+                        name=bundle.name, action=action, status="error",
+                        message=(
+                            f"A skill named '{bundle.name}' already exists — "
+                            "choose Overwrite"
+                        ),
+                    ))
+                    continue
+                files = bundle_files_with_external(bundle)
+                skill = await upsert_skill(
+                    db,
+                    name=bundle.name,
+                    description=bundle.description,
+                    model=bundle.model,
+                    compatibility=bundle.compatibility,
+                    files=files,
+                )
+                status = "overwritten" if (
+                    action == "overwrite" and bundle.name in existing
+                ) else "imported"
+                message = None
+                if bundle.external_files:
+                    message = (
+                        f"included {len(bundle.external_files)} referenced "
+                        "file(s) from outside the skill dir — SKILL.md "
+                        "references updated"
+                    )
+                results.append(SkillImportResult(
+                    name=bundle.name, action=action, status=status,
+                    message=message, skill_id=str(skill.id),
+                ))
+        except Exception as exc:  # per-skill isolation is the point
+            logger.exception("Skill import failed: %s", bundle.name)
+            results.append(SkillImportResult(
+                name=bundle.name, action=action, status="error",
+                message=str(exc),
+            ))
+
+    await db.commit()
+
+    summary = {"imported": 0, "overwritten": 0, "skipped": 0, "errors": 0}
+    for result in results:
+        # per-row status is "error" (singular); the summary bucket is plural
+        summary["errors" if result.status == "error" else result.status] += 1
+    logger.info("Skill import complete: %s", summary)
+    return SkillImportResponse(results=results, summary=summary)
 
 
 # ── Skill Files ───────────────────────────────────────────────────────────────
