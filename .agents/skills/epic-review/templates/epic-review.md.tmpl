@@ -1,0 +1,61 @@
+# Epic Review — {{epic_key}}: {{epic_title}}
+
+**Status:** APPROVED · **Date:** {{date}} · **Stories reviewed:** {{story_key_list}}
+
+> Audit trail for the cross-story gap drill: which stories were loaded together, what was
+> actually wrong when compared across them (not visible from any single story alone), what was
+> asked, what was answered, and which stories changed as a result. Lives at
+> `docs/product/epics/{{epic_key}}/_epic/epic-review.md`.
+
+## Context loaded
+<!-- Every story in the epic (list them), which architecture/data-model/api-contract/ADR/
+     ui-conventions slices were read, and which other epics were checked for legitimate
+     cross-epic dependencies. -->
+
+## Gaps found
+<!-- One entry per real cross-story gap that survived references/gap-checklist.md's categories.
+     Name every story key each gap touches. Nitpicks and single-story-only concerns (story-
+     review's job) don't need an entry — only what actually changed something here. -->
+
+### Gap 1 — {{category, e.g. "Cross-story actor & role consistency"}}
+- **Stories touched:** {{STORY-A, STORY-B, ...}}
+- **What was missing/ambiguous/contradictory:** …
+- **Question asked:** …
+- **Answer:** …
+- **Resulting change:** … (per story, or "same change applied to all listed stories")
+
+### Gap 2 — {{category}}
+- **Stories touched:** …
+- **What was missing/ambiguous/contradictory:** …
+- **Question asked:** …
+- **Answer:** …
+- **Resulting change:** …
+
+## Architecture impact
+<!-- "None — all gaps were cross-story ambiguity or missing dependency notes, resolved above."
+     OR: a gap that turned out to need something the architecture doesn't support and isn't
+     credibly any epic's planned deliverable — describe it and state that tech-design (amend
+     mode) should run before any affected story starts story-design. -->
+None — all gaps were cross-story ambiguity or missing dependency notes, resolved above.
+
+## Story changes summary
+<!-- Short before/after per touched story: what the acceptance criteria, story statement, out-of-
+     scope, or Notes/dependencies section looked like before vs. after this pass. Point at the
+     updated section in stories.md rather than duplicating the full rewritten story here. -->
+
+## Requirement coverage check
+<!-- Confirmed every FR/NFR epic-map.json assigns to this epic is exercised by at least one
+     story's acceptance criteria, with no unresolved contradicting claims between stories:
+     yes/no + notes. Confirmed the FR/NFR wording still matches the current PRD.md: yes/no. -->
+
+## Dependency-note sanity check
+<!-- Confirmed every "Depends on X" / "prerequisite for Y" note in stories.md refers to a real
+     story and is reciprocated on the other side: yes/no + any mismatches found and how they
+     were reconciled. Remember: this is a sanity check, not a build-order computation — that's
+     epic-sequence. -->
+
+---
+*On approval: `docs/product/epics/{{epic_key}}/_epic/stories.md` updated in place for every
+touched story{{"; Jira epic " + epic_key + " and its touched child stories updated via Atlassian
+MCP" if Jira keys were given}}. Next: `story-review` for any story that still feels individually
+underspecified, then `story-design`.*

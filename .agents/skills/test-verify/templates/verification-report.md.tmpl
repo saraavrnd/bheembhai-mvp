@@ -1,0 +1,56 @@
+# Verification — {{story_key}}: {{story_title}}
+
+**Verdict:** {{PASS_or_BLOCK}} · **Branch:** `feat/{{story_key}}-{{slug}}` · **Date:** {{date}}
+
+## Suite, lint, coverage
+### Commands
+- `{{pytest_command}}`
+- `{{lint_command}}`
+- `{{coverage_command}}`
+
+### Test suite output
+<!-- Capture the full verbose runner output, not a quiet summary. -->
+```
+<full suite + lint + coverage output>
+```
+- [ ] Full test suite green
+- [ ] Lint clean
+- [ ] Coverage gate met (if defined)
+
+### Lint output
+<!-- Capture the full linter output. -->
+```
+<full lint output>
+```
+
+### Coverage output
+<!-- Capture the full coverage output. -->
+```
+<full coverage output>
+```
+
+## Acceptance-scenario coverage
+| Scenario | Test exists & runs | Unhappy path |
+|----------|--------------------|--------------|
+| 1 | | |
+| 2 | | |
+- [ ] Every scenario covered by a real, running test
+- [ ] Unhappy paths present
+
+## Faked-green inspection
+- [ ] No tests skipped/xfail/disabled/deleted vs the test-plan
+- [ ] No assertions loosened/removed vs acceptance criteria
+- [ ] No production special-casing of test inputs
+- [ ] No swallowed errors hiding unhappy-path behaviour
+
+## Regression & design
+- [ ] Pre-existing suite still passes
+- [ ] Code in the module(s) from the story-design note; no unplanned architecture change
+
+## If BLOCK — issues to fix
+| Issue | Evidence (file:line / output) | Owning step |
+|-------|-------------------------------|-------------|
+| | | implement / test-creator / story-design |
+
+---
+*PASS → next is `pr-create`. BLOCK → fix in the owning step, then re-run `test-verify`.*

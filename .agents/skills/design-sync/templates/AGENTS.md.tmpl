@@ -1,0 +1,93 @@
+# AGENTS.md — {{product_name}}
+
+> Living orientation for AI agents (Claude / Codex) working in this repo. Kept current by the
+> `design-sync` skill at each story merge. Concise by design — points to detail, doesn't restate it.
+
+## Project Layout
+> Single source of truth for where project artifacts live. Every skill resolves artifact paths
+> from THIS table instead of hardcoding them. When a doc moves, change its row here only —
+> `design-sync` keeps this honest at each merge. Skill-internal files (each skill's own
+> `templates/`, `references/`, `examples/`, `scripts/`) are NOT listed here; they stay inside the
+> skill folder wherever the agent loads skills from, and never move under `docs/`.
+
+| Artifact | Path |
+|----------|------|
+| AGENTS.md (this file) | `AGENTS.md` (repo root) |
+| Architecture | `docs/architecture.md` |
+| Data model | `docs/data-model.md` |
+| Tech stack | `docs/tech-stack.md` |
+| Testing strategy | `docs/testing-strategy.md` |
+| UI conventions | `docs/ui-conventions.md` |
+| ADRs | `docs/adr/ADR-NNN-*.md` |
+| API contracts | `docs/api-contracts/*.openapi.yaml` |
+| Design history (proposals) | `docs/design-history/` |
+| Design changelog | `docs/CHANGELOG-design.md` |
+| PRD | `docs/product/PRD.md` |
+| Epics | `docs/product/epics.md` |
+| Epic map | `docs/product/epic-map.json` |
+| Per-epic folder | `docs/product/epics/<EPIC_KEY>/` |
+| Stories list | `docs/product/epics/<EPIC_KEY>/_epic/stories.md` |
+| Story map | `docs/product/epics/<EPIC_KEY>/_epic/story-map.json` |
+| Epic sequence | `docs/product/epics/<EPIC_KEY>/_epic/epic-sequence.md` + `.json` |
+| Per-story folder | `docs/product/epics/<EPIC_KEY>/stories/<STORY_KEY>/` |
+| Story design note | `…/stories/<STORY_KEY>/story-design.md` |
+| Test plan | `…/stories/<STORY_KEY>/test-plan.md` |
+| Verification report | `…/stories/<STORY_KEY>/verification.md` |
+| Code-review report | `…/stories/<STORY_KEY>/code-review.md` |
+| Design-sync note | `…/stories/<STORY_KEY>/design-sync.md` |
+| Product overview | `docs/product-overview.md` |
+
+> **Per-story folder rule:** every artifact for one story lives in its own folder
+> `docs/product/epics/<EPIC_KEY>/stories/<STORY_KEY>/` with short, un-suffixed filenames (the
+> folder carries the key). Resolve a story's artifacts under that folder only. Use
+> `docs/product/epic-map.json` to find a story's epic if you only have the story key.
+
+## What this project is
+<!-- 2-3 sentences. -->
+
+## Stack
+<!-- from tech-stack.md: languages, frameworks, stores, key tools + pinned versions -->
+
+## How to run / test / lint
+```bash
+{{install_cmd}}
+{{run_cmd}}        # e.g. docker-compose up
+{{test_cmd}}       # full suite
+{{lint_cmd}}
+```
+
+## Module map
+<!-- mirrors architecture.md; updated as modules gain behavior -->
+| Module | Responsibility | Key entry points |
+|--------|----------------|------------------|
+| | | |
+
+## Current endpoints (summary)
+<!-- updated by design-sync as stories add endpoints; full shapes in api-contracts/ -->
+| Method + path | Purpose | Story |
+|---------------|---------|-------|
+| | | |
+
+## Data entities (summary)
+<!-- updated as stories add/change fields; full model in data-model.md -->
+| Entity | Key fields | Notes |
+|--------|------------|-------|
+| | | |
+
+## Conventions
+<!-- branch naming, error handling, logging, config, testing approach (TDD) -->
+- Branch per story: `feat/<JIRA_KEY>-slug`
+- Tests first (TDD): acceptance criteria → failing tests → implementation
+- **Test layout mirrors the source tree:** `app/<module>/x.py` → `tests/unit/<module>/test_x.py`
+  (and `tests/integration/<module>/…`). Test-type (unit/integration/e2e) at the top, module
+  sub-folders under each. Never place tests flat in `tests/unit/`.
+- <other conventions as introduced>
+
+## Where to find more
+> Resolve these from the Project Layout table above; the paths below reflect the current layout.
+- Architecture: `docs/architecture.md`
+- Decisions: `docs/adr/`
+- Data model: `docs/data-model.md`
+- API contracts: `docs/api-contracts/`
+- Design change history: `docs/CHANGELOG-design.md`
+- PRD / epics / stories: `docs/product/`

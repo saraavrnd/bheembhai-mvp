@@ -1,0 +1,10 @@
+{
+  "epic_key": "LEARN-11",
+  "approved": true,
+  "stories": [
+    { "story_key": "LEARN-21", "title": "Upload course materials", "wave": 1, "depends_on": [], "edge_sources": {} },
+    { "story_key": "LEARN-22", "title": "Prepare materials for retrieval", "wave": 2, "depends_on": ["LEARN-21"], "edge_sources": { "LEARN-21": { "source": "artifact", "confidence": "firm" } } },
+    { "story_key": "LEARN-23", "title": "Ground tutoring responses in retrieved material", "wave": 3, "depends_on": ["LEARN-22"], "edge_sources": { "LEARN-22": { "source": "artifact", "confidence": "firm" } } }
+  ],
+  "cycles": []
+}
