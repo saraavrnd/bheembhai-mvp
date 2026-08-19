@@ -24,6 +24,7 @@ from bheembhai.database import (
     init_database,
     run_migrations,
 )
+from bheembhai.log_keys import result_key
 from bheembhai.models.project import Project, ProjectIntegration
 from bheembhai.models.run import Run, Step, Transition
 from bheembhai.models.skill import Skill
@@ -39,7 +40,6 @@ from engine_service import worker as worker_mod
 from engine_service.metrics import METRICS
 from engine_service.recovery import recover_on_startup
 from engine_service.run_init import InitFailure
-from engine_service.runtime import RESULT_FILENAME
 from engine_service.state_machine import drive_run
 from engine_service.workflow import ExecState, Result, WorkflowSpec, resolve_model_tier
 
@@ -189,6 +189,14 @@ def _bundle_pin(name: str) -> tuple[str, str]:
 _PRESET_BRANCH = object()   # sentinel: default to a pre-set branch (init skips the network)
 
 
+def _store(tmp_path):
+    """Per-test LocalStorage — the ADR-014 agent channels land here. The
+    FakeRuntime publishes its results through the same instance, so reconcile
+    exercises the real object-store read path (a store-less runtime would make
+    every step classify failed_incomplete)."""
+    return LocalStorage(str(tmp_path / "artifacts"))
+
+
 async def make_world(session, created, secure_storage, *,
                      wf_yaml=WF_GATED, pol_yaml=POLICY_GATE_FIRST,
                      state="pending", current_step=None,
@@ -329,14 +337,16 @@ async def step_row(session, run_id, step_id):
 
 # ── Core flows ──────────────────────────────────────────────────────────
 
-async def test_start_drives_to_first_gate(session, secure_storage, config):
+async def test_start_drives_to_first_gate(session, secure_storage, config, tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage)
-    rt = FakeRuntime({"story-design": ["ok"], "test-creator": ["ok"], "implement": ["ok"]})
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"], "test-creator": ["ok"], "implement": ["ok"]},
+                     store=store)
     events = []
 
     await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
-                    publish=_collector(events))
+                    publish=_collector(events), store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"
@@ -371,8 +381,8 @@ async def test_init_self_heals_unexported_skill(session, secure_storage, config,
         row.s3_key, row.sha256 = None, None
     await s.commit()
 
-    rt = FakeRuntime({"story-design": ["ok"]})
-    store = LocalStorage(str(tmp_path / "artifacts"))
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"]}, store=store)
 
     await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
                     store=store)
@@ -399,19 +409,24 @@ async def test_init_self_heals_unexported_skill(session, secure_storage, config,
     assert len(sd_envs) == 1
     assert sd_envs[0]["BB_SKILL_URL"].startswith("file://")
     assert sd_envs[0]["BB_SKILL_SHA256"] == skill_row.sha256
+    # ADR-014: LocalStorage cannot presign PUTs — the upload contract is
+    # omitted from the launch env, never a failure.
+    assert "BB_RESULT_PUT_URL" not in sd_envs[0]
 
 
-async def test_approve_drives_to_completion(session, secure_storage, config):
+async def test_approve_drives_to_completion(session, secure_storage, config, tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage)
-    rt = FakeRuntime({"story-design": ["ok"], "test-creator": ["ok"], "implement": ["ok"]})
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"], "test-creator": ["ok"], "implement": ["ok"]},
+                     store=store)
     events = []
     await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
-                    publish=_collector(events))
+                    publish=_collector(events), store=store)
 
     await drive_run(s, continue_item(world["run"], {
         "action": "approve", "actor": "reviewer@test.co", "comment": "lgtm"}),
-        config, rt, secure_storage, publish=_collector(events))
+        config, rt, secure_storage, publish=_collector(events), store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "completed"
@@ -431,18 +446,20 @@ async def test_approve_drives_to_completion(session, secure_storage, config):
     assert tc_ctx["upstream_handoff"] is None
 
 
-async def test_approve_honours_route_to_hint(session, secure_storage, config):
+async def test_approve_honours_route_to_hint(session, secure_storage, config, tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage,
                              wf_yaml=WF_BLOCK_ROUTE_TO, pol_yaml=POLICY_GATE_BLOCK)
-    rt = FakeRuntime({"story-design": ["block"], "implement": ["ok"]})
-    await drive_run(s, start_item(world["run"]), config, rt, secure_storage)
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["block"], "implement": ["ok"]}, store=store)
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"          # BLOCK verdict hits the gate
 
     await drive_run(s, continue_item(world["run"], {"action": "approve"}),
-                    config, rt, secure_storage)
+                    config, rt, secure_storage, store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "completed"
@@ -450,12 +467,14 @@ async def test_approve_honours_route_to_hint(session, secure_storage, config):
     assert [c[0] for c in rt.calls] == ["story-design", "implement"]
 
 
-async def test_send_back_resets_and_replays(session, secure_storage, config):
+async def test_send_back_resets_and_replays(session, secure_storage, config, tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage, pol_yaml=POLICY_GATE_MID)
+    store = _store(tmp_path)
     rt = FakeRuntime({"story-design": ["ok", "ok"], "test-creator": ["ok", "ok"],
-                      "implement": ["ok"]})
-    await drive_run(s, start_item(world["run"]), config, rt, secure_storage)
+                      "implement": ["ok"]}, store=store)
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"
     assert run.current_step == "test-creator"
@@ -463,7 +482,7 @@ async def test_send_back_resets_and_replays(session, secure_storage, config):
     await drive_run(s, continue_item(world["run"], {
         "action": "send_back", "send_back_to": "story-design",
         "actor": "pm@test.co", "comment": "tighten the acceptance criteria"}),
-        config, rt, secure_storage)
+        config, rt, secure_storage, store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"          # re-ran and hit the test-creator gate again
@@ -487,12 +506,15 @@ async def test_send_back_resets_and_replays(session, secure_storage, config):
     assert res.scalar_one() is not None
 
 
-async def test_transient_failure_retries_in_fresh_container(session, secure_storage, config):
+async def test_transient_failure_retries_in_fresh_container(session, secure_storage,
+                                                            config, tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage, pol_yaml=POLICY_FAST)
+    store = _store(tmp_path)
     rt = FakeRuntime({"story-design": ["crash", "ok"],
-                      "test-creator": ["ok"], "implement": ["ok"]})
-    await drive_run(s, start_item(world["run"]), config, rt, secure_storage)
+                      "test-creator": ["ok"], "implement": ["ok"]}, store=store)
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "completed"
@@ -506,12 +528,15 @@ async def test_transient_failure_retries_in_fresh_container(session, secure_stor
     assert res.scalar_one() is not None
 
 
-async def test_deterministic_failure_fails_run(session, secure_storage, config):
+async def test_deterministic_failure_fails_run(session, secure_storage, config,
+                                               tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage, pol_yaml=POLICY_FAST)
+    store = _store(tmp_path)
     rt = FakeRuntime({"story-design": ["exit-nonzero"],
-                      "test-creator": ["ok"], "implement": ["ok"]})
-    await drive_run(s, start_item(world["run"]), config, rt, secure_storage)
+                      "test-creator": ["ok"], "implement": ["ok"]}, store=store)
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "failed"
@@ -524,12 +549,15 @@ async def test_deterministic_failure_fails_run(session, secure_storage, config):
     assert [c[0] for c in rt.calls] == ["story-design"]    # no retry, no next steps
 
 
-async def test_block_verdict_hands_off_to_next_step(session, secure_storage, config):
+async def test_block_verdict_hands_off_to_next_step(session, secure_storage, config,
+                                                    tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage,
                              wf_yaml=WF_BLOCK_ROUTE_TO, pol_yaml=POLICY_FAST)
-    rt = FakeRuntime({"story-design": ["block"], "implement": ["ok"]})
-    await drive_run(s, start_item(world["run"]), config, rt, secure_storage)
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["block"], "implement": ["ok"]}, store=store)
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "completed"
@@ -544,12 +572,14 @@ async def test_block_verdict_hands_off_to_next_step(session, secure_storage, con
     assert handoff["report_files"] == ["docs/verification.md"]
 
 
-async def test_visit_cap_halts_runaway_loop(session, secure_storage, config):
+async def test_visit_cap_halts_runaway_loop(session, secure_storage, config, tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage,
                              wf_yaml=WF_SELF_LOOP, pol_yaml=POLICY_FAST)
-    rt = FakeRuntime({"story-design": ["changes"]})
-    await drive_run(s, start_item(world["run"]), config, rt, secure_storage)
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["changes"]}, store=store)
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "failed"
@@ -563,7 +593,8 @@ async def test_visit_cap_halts_runaway_loop(session, secure_storage, config):
 
 # ── Crash-resume ────────────────────────────────────────────────────────
 
-async def test_crash_resume_relaunches_same_attempt(session, secure_storage, config):
+async def test_crash_resume_relaunches_same_attempt(session, secure_storage, config,
+                                                    tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage, state="running",
                              current_step="story-design",
@@ -571,10 +602,12 @@ async def test_crash_resume_relaunches_same_attempt(session, secure_storage, con
                                  "exec_state": ExecState.RUNNING, "attempt_no": 1,
                                  "fargate_task_arn": "container-abc",
                                  "started_at": datetime.now(timezone.utc)}})
-    rt = FakeRuntime({"story-design": ["ok"]}, reattach_script={"story-design": "gone"})
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"]}, store=store,
+                     reattach_script={"story-design": "gone"})
 
     await drive_run(s, continue_item(world["run"], {"action": "resume"}),
-                    config, rt, secure_storage)
+                    config, rt, secure_storage, store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"
@@ -586,7 +619,8 @@ async def test_crash_resume_relaunches_same_attempt(session, secure_storage, con
     assert len(rt.rehandles) == 1      # re-attach was attempted first
 
 
-async def test_crash_resume_reattaches_live_container(session, secure_storage, config):
+async def test_crash_resume_reattaches_live_container(session, secure_storage, config,
+                                                      tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage, state="running",
                              current_step="story-design",
@@ -594,17 +628,20 @@ async def test_crash_resume_reattaches_live_container(session, secure_storage, c
                                  "exec_state": ExecState.RUNNING, "attempt_no": 1,
                                  "fargate_task_arn": "container-abc",
                                  "started_at": datetime.now(timezone.utc)}})
-    rt = FakeRuntime({"story-design": ["ok"]}, reattach_script={"story-design": "ok"})
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"]}, store=store,
+                     reattach_script={"story-design": "ok"})
     # simulate the pre-crash launch: the container ran and published its result
-    # before the engine died. Seed the file the re-attached handle reconciles
-    # against directly — launch() would record a call and break the assertion.
-    outdir = rt._base / "results" / str(world["run"].id) / "story-design" / "1"
-    outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / RESULT_FILENAME).write_text(json.dumps(
-        {"status": "completed", "cost_usd": 0.01, "summary": "story-design done"}))
+    # before the engine died. Seed the object-store key the re-attached handle
+    # reconciles against directly — launch() would record a call and break the
+    # assertion.
+    await store.put(result_key(str(world["run"].id), "story-design", 1),
+                    json.dumps({"status": "completed", "cost_usd": 0.01,
+                                "summary": "story-design done"}).encode(),
+                    content_type="application/json")
 
     await drive_run(s, continue_item(world["run"], {"action": "resume"}),
-                    config, rt, secure_storage)
+                    config, rt, secure_storage, store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"
@@ -614,17 +651,21 @@ async def test_crash_resume_reattaches_live_container(session, secure_storage, c
     assert row.result_status == Result.COMPLETED
 
 
-async def test_resume_at_open_gate_renotifies_without_rerunning(session, secure_storage, config):
+async def test_resume_at_open_gate_renotifies_without_rerunning(session, secure_storage,
+                                                                config, tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage)
-    rt = FakeRuntime({"story-design": ["ok"]})
-    await drive_run(s, start_item(world["run"]), config, rt, secure_storage)
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"]}, store=store)
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"
 
     events = []
     await drive_run(s, continue_item(world["run"], {"action": "resume"}),
-                    config, rt, secure_storage, publish=_collector(events))
+                    config, rt, secure_storage, publish=_collector(events),
+                    store=store)
 
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"        # still waiting for the human
@@ -672,7 +713,7 @@ async def test_init_failure_marks_run_failed_and_item_done(session, secure_stora
 
 
 async def test_run_source_branch_override_wins_over_integration_config(
-        session, secure_storage, config, monkeypatch):
+        session, secure_storage, config, tmp_path, monkeypatch):
     """ADR-013 source-branch override: the run row carries the user's choice
     (or the submit-time fallback) — init must not let the live integration
     config (base_branch: main) clobber it."""
@@ -693,8 +734,10 @@ async def test_run_source_branch_override_wins_over_integration_config(
 
     monkeypatch.setattr("engine_service.run_init.create_branch_github",
                         fake_create_branch)
-    rt = FakeRuntime({"story-design": ["ok"]})
-    worker_mod.configure_worker(runtime=rt, secure_storage=secure_storage)
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"]}, store=store)
+    worker_mod.configure_worker(runtime=rt, secure_storage=secure_storage,
+                                store=store)
 
     item = start_item(world["run"])
     s.add(item)
@@ -716,11 +759,14 @@ async def test_run_source_branch_override_wins_over_integration_config(
     assert run.state == "paused"     # first (gated) step completed after init
 
 
-async def test_supersede_demotes_sibling_claims(session, secure_storage, config):
+async def test_supersede_demotes_sibling_claims(session, secure_storage, config,
+                                                tmp_path):
     s, created = session
     world = await make_world(s, created, secure_storage)
-    rt = FakeRuntime({"story-design": ["ok"]})
-    worker_mod.configure_worker(runtime=rt, secure_storage=secure_storage)
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"]}, store=store)
+    worker_mod.configure_worker(runtime=rt, secure_storage=secure_storage,
+                                store=store)
 
     item_a = start_item(world["run"])
     item_b = continue_item(world["run"], {"action": "approve"})
@@ -864,17 +910,19 @@ async def test_reaper_demotes_stale_claim_leaves_fresh_and_pending(session,
 
 async def test_worker_loop_reaps_then_reclaims_and_drives_run(session,
                                                               secure_storage,
-                                                              config):
+                                                              config, tmp_path):
     """The deadlock this fixes end-to-end: a run whose dispatch died mid-step is
     left with a `claimed` item the restarted engine would previously keep fresh
     forever. Now the reaper demotes it on the next poll, the loop re-claims it,
     and the dispatch resumes the run from persisted state."""
     s, created = session
     world = await make_world(s, created, secure_storage)
-    rt = FakeRuntime({"story-design": ["ok"], "test-creator": ["ok"], "implement": ["ok"]})
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"], "test-creator": ["ok"], "implement": ["ok"]},
+                     store=store)
     events = []
     worker_mod.configure_worker(runtime=rt, secure_storage=secure_storage,
-                                publish=_collector(events))
+                                publish=_collector(events), store=store)
     config.engine.poll_interval_seconds = 1  # speed the reap+claim loop
 
     item = start_item(world["run"])
@@ -929,7 +977,7 @@ async def _wait_until(predicate, what, timeout=20.0):
 
 
 async def test_e2e_mock_run_with_real_gate_decision_via_worker_loop(
-        session, secure_storage, config):
+        session, secure_storage, config, tmp_path):
     """M5 review gate — the platform's queued decision drives the run through the
     REAL worker loop: claim (SKIP LOCKED) → dispatch → drive_run → item done.
 
@@ -940,10 +988,12 @@ async def test_e2e_mock_run_with_real_gate_decision_via_worker_loop(
     """
     s, created = session
     world = await make_world(s, created, secure_storage)
-    rt = FakeRuntime({"story-design": ["ok"], "test-creator": ["ok"], "implement": ["ok"]})
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"], "test-creator": ["ok"], "implement": ["ok"]},
+                     store=store)
     events = []
     worker_mod.configure_worker(runtime=rt, secure_storage=secure_storage,
-                                publish=_collector(events))
+                                publish=_collector(events), store=store)
     config.engine.poll_interval_seconds = 1  # speed the claim loop
 
     # Platform run-submit: enqueue a start token (POST /api/runs writes this row).

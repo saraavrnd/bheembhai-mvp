@@ -64,3 +64,10 @@ async def test_put_overwrites_same_key(tmp_path):
     head = await store.head(key)
     assert head.size == len(b"v2-longer")
     assert await store.get_range(key) == b"v2-longer"
+
+
+async def test_presigned_put_url_is_none(tmp_path):
+    """LocalStorage cannot offer PUT-able file:// URLs to curl — the engine
+    omits the ADR-014 upload contract and run_skill.sh skips those channels."""
+    store = LocalStorage(base_path=str(tmp_path / "store"))
+    assert await store.presigned_put_url("results/r1/design/1/bb_step_result.json") is None

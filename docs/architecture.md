@@ -106,10 +106,10 @@ Browser    Edge Proxy   Platform API    Postgres        Engine Service    Runtim
   │         │             │                │  (agent clones the pre-existing branch,     │
   │         │             │                │   runs skill, commits, pushes)             │
   │         │             │                │                │──result──►│  │          │
-  │         │             │                │                │ (mounted /out)            │
+  │         │             │                │                │ (PUT to object storage)   │
   │         │             │                │                │◄─task done──│          │
   │         │             │                │                │              │          │
-  │         │             │                │                │ read result from /out     │
+  │         │             │                │                │ read result from S3      │
   │         │             │                │                │ reconcile → classify  │   │
   │         │             │                │                │ persist step──────────►│   │
   │         │             │                │                │              │          │
@@ -292,7 +292,7 @@ Notes on the run-level machine (ADR-013 implementation, BEEM-24):
 | **Agent Container** | One-skill execution: clone the pre-existing run branch, download the step's skill bundle (presigned S3 URL), run Claude Code, commit + push, publish result | Runtime (Docker today; Fargate later), GitHub (clone/push), Object Storage (skill bundle GET), Jira MCP | Docker (node:20 + Claude Code + bash) |
 | **PostgreSQL (RDS)** | All persistent state: users, projects, integrations, workflows, policies, runs, steps, transitions | Platform API, Engine Service | RDS PostgreSQL 16 |
 | **Object Storage** | Pluggable artifact storage (ADR-011). Stores skill bundles (content-addressed tar.gz, ADR-013 §3), `bb_step_result.json`, agent logs, diagnostics. Exposes put/get/list/presigned_url operations behind a Protocol. First implementation: S3. Protocol designed for Azure Blob, MinIO, local FS. | Platform API (skill bundle put), Engine Service (presign + read), Agent Container (skill bundle GET), Browser (pre-signed URLs via Platform API) | Python Protocol + boto3 (S3), azure-storage-blob, minio |
-| **S3** | First ObjectStorage backend. Execution artifacts with lifecycle policy (expire after 90 days). | ObjectStorage provider (write/read), Browser (signed URLs via Platform API) | S3 Standard |
+| **S3** | First ObjectStorage backend. Skill bundles (`skills/…`), step channels (`results/…`, `logs/…` — ADR-014) with lifecycle policy (expire after 90 days). | ObjectStorage provider (write/read), agent containers (presigned PUTs), Browser (signed URLs via Platform API) | S3 Standard |
 | **Secure Storage** | Pluggable credential storage (ADR-012). Stores per-integration GitHub/Jira tokens. Exposes get/put/delete behind a Protocol. First implementation: AWS Secrets Manager. Protocol designed for Azure Key Vault, HashiCorp Vault, encrypted env. | Platform API (put at integration setup), Engine Service (get at step launch) | Python Protocol + boto3 (Secrets Manager), azure-keyvault-secrets, hvac |
 | **Auth Provider** | Pluggable identity verification (ADR-010). Validates JWT tokens, normalizes claims to `Identity` (external_id, email, display_name, provider). First implementation: Cognito. Protocol designed for Azure AD, Okta, etc. | Browser (via edge proxy), Platform API (middleware) | Python Protocol + `pyjwt[crypto]` + `httpx` (JWKS fetch) |
 | **Edge Proxy** | TLS termination, OAuth login flow (hosted UI, redirect, callback), JWT forwarding to backend. Cognito User Pool is the first configured IdP. | Browser, Auth Provider (Cognito, Azure AD, etc.), Platform API | AWS ALB (or Azure App Gateway, nginx, etc.) |
@@ -312,11 +312,11 @@ Notes on the run-level machine (ADR-013 implementation, BEEM-24):
 ### Step execution
 1. **Engine init (`_init_run`, ADR-013 §2)** — before any launch: load run/workflow/policy/integrations; validate pairing + skills; derive branch `feat/<safe_story>/<DDMMYYYYHHmm>-<first-4-of-run-uuid>`; create it via the GitHub REST API (idempotent on same sha, suffix-bump on different); resolve every step's `model:` tier through the AI-vendor integration's `model_high/medium/low` config keys; persist `run_branch`, `state=running`, and ALL step rows (pending). Init failures classify the run `failed` with zero containers launched.
 2. Engine loads step context: allowed result statuses, gate flag, result status meanings, reviewer feedback, upstream hand-off (if any) — never routing targets
-3. Engine calls `Runtime.launch()` (DockerRuntime → docker-py) with the ADR-013 §5 env bundle (git coordinates + `RUN_BRANCH`, Jira MCP env, tier-resolved `BB_MODEL` + vendor key, `RUN_ID/STEP_ID/ATTEMPT_NO/SKILL/RESULT_DIR`, context) — secrets resolved fresh per launch from Secure Storage, last-4 fingerprints only
+3. Engine calls `Runtime.launch()` (DockerRuntime → docker-py) with the ADR-013 §5 env bundle (git coordinates + `RUN_BRANCH`, Jira MCP env, tier-resolved `BB_MODEL` + vendor key, `RUN_ID/STEP_ID/ATTEMPT_NO/SKILL/RESULT_DIR`, context) plus the four ADR-014 presigned PUT URLs — secrets resolved fresh per launch from Secure Storage, last-4 fingerprints only
 4. Agent container starts: writes diagnostics, clones the **pre-existing** run branch (`run_skill.sh` only creates it when missing), downloads the step's skill bundle via `BB_SKILL_URL` (presigned GET) + verifies `BB_SKILL_SHA256` + extracts into `.claude/skills/<skill>` (overwriting anything the repo tracks there), materializes `BB_CONTEXT` to `/home/node/context.json`, runs Claude Code with `--model <tier> --dangerously-skip-permissions --mcp-config`, commits, pushes
-5. Agent writes `bb_step_result.json` to the mounted `/out` result volume (DockerRuntime); Object Storage artifact read/write is the FargateRuntime story (ADR-011, deferred)
-6. Container exits; engine polls the runtime for exit status, with progress heartbeats from `progress.json`
-7. Reconciler joins the two signals — result payload (from the container, at `/out/bb_step_result.json`) + exit status (from the runtime) → classifies outcome (completed/BLOCK/changes_requested/escalation_required/failed_*)
+5. Agent uploads `bb_step_result.json` to `results/<run>/<slug step>/<attempt>/` via `BB_RESULT_PUT_URL` at exit (CRITICAL — PUT failure rewrites the verdict to `failed_infra` and exits 4), and keeps `progress.json` + `agent.log` fresh via heartbeat PUTs every 5s (ADR-014; zero host mounts)
+6. Container exits; engine polls the runtime for exit status; the reconciler reads the result and `progress.json` back from Object Storage (fast status poll 0.4s, slow S3 poll ~2s plus a read-on-exit within the grace window)
+7. Reconciler joins the two signals — result payload (from Object Storage, at `results/<run>/<slug step>/<attempt>/bb_step_result.json`) + exit status (from the runtime) → classifies outcome (completed/BLOCK/changes_requested/escalation_required/failed_*)
 8. Engine persists step outcome to Postgres (steps + transitions rows) — step completion, routing, and any gate pause commit in ONE transaction; `current_step` always points at the next unrun (or gated) step
 9. Engine evaluates policy gate for this step+status → if gate required, **pause the run** (`run.state="paused"`; the gated step row stays `exec_state="completed"`; the gate card is persisted on the `awaiting_approval` transition's JSONB payload) and push an `approval_required` event to the platform
 10. If no gate, consult workflow `on:` map → route to next step or DONE
@@ -331,7 +331,7 @@ owns the information:
 | Channel | Owner | Medium | What it carries |
 |---------|-------|--------|-----------------|
 | **Run branch** | Agent | git (committed + pushed) | The work product itself: code, design docs, report files like `verification.md` |
-| **Result payload** | Agent | `/out/bb_step_result.json` (host dir per run/step/attempt, rw mount) | The verdict word (`completed` / `BLOCK` / `changes_requested` / `escalation_required` / `failed_*`), `summary`, curated `review_files` (from `BB_REVIEW:` lines), all `files`, `commit` sha |
+| **Result payload** | Agent | `results/<run>/<slug step>/<attempt>/bb_step_result.json` in Object Storage (agent uploads via `BB_RESULT_PUT_URL` presigned PUT at exit — ADR-014) | The verdict word (`completed` / `BLOCK` / `changes_requested` / `escalation_required` / `failed_*`), `summary`, curated `review_files` (from `BB_REVIEW:` lines), all `files`, `commit` sha |
 | **Step context** | Engine | `BB_CONTEXT` env → written by the runner to `/home/node/context.json` (no mount) | `allowed_result_statuses`, `result_status_meanings`, `gate_follows` / `gate_role`, `advice`, `reviewer_feedback`, `upstream_handoff` — the skill's vocabulary and audience, **never routing targets** |
 | **Handoff** | Engine | inside `upstream_handoff` of the context file | The prior step's non-happy verdict: `{from_step, status, summary, report_files}` |
 | **Reviewer feedback** | Human | inside `reviewer_feedback` of the context file | The send-back comment the re-run must address |
@@ -569,7 +569,7 @@ Engine-1 (dies)          Runtime             Postgres               Engine-1 (re
 | Workflow management (create/edit) | `workflows` table (versioned YAML); Platform API CRUD; validation on save |
 | Policy management (create/edit) | `policies` table (versioned YAML, tied to workflow FK); Platform API CRUD; pairing validation on save |
 | Executions — view past results | `runs` + `steps` tables; Platform API history endpoints with pagination |
-| Execution — detailed results | Result volume: host-mount `/out` per container under `DockerRuntime` (agent logs, diagnostics, `bb_step_result.json`, summaries); Object Storage artifacts + pre-signed URLs are the deferred `FargateRuntime` story (ADR-011) |
+| Execution — detailed results | Zero-mount step containers (ADR-014): the agent uploads `bb_step_result.json` / `progress.json` / agent.log / diagnostics via presigned PUT URLs (`results/…`, `logs/…` keys); the engine uploads `container.log` from the docker API and registers `run_logs` rows for the platform's log viewer |
 | Approval & feedback flows | Gate cards in UI; `/runs/{id}/decision` enqueues a `continue` work item (validates `state=paused`, no state mutation); `send_back` rewinds to the named `send_back_to` step per ADR-007 |
 | Fargate integration | Deferred — `FargateRuntime` behind the existing Runtime protocol; `steps.fargate_task_arn` is reused today as the generic runtime handle (container id), which crash recovery re-attaches to |
 | Per-run budget cap | `cost_usd` columns on runs/steps; cap enforcement (designed, build deferred) |

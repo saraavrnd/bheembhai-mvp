@@ -34,7 +34,6 @@ def test_engine_config_env_overrides(monkeypatch):
     monkeypatch.setenv("BB_RUNTIME", "fargate")
     monkeypatch.setenv("BB_AGENT_IMAGE", "acme/agent:7")
     monkeypatch.setenv("DOCKER_ENDPOINT", "tcp://dockerd:2375")
-    monkeypatch.setenv("BB_WORKDIR", "/srv/bb")
     monkeypatch.setenv("BB_MAX_STEP_VISITS", "5")
     monkeypatch.setenv("BB_MAX_ATTEMPTS", "3")
     monkeypatch.setenv("BB_KEEP_CONTAINERS", "1")
@@ -48,7 +47,6 @@ def test_engine_config_env_overrides(monkeypatch):
     assert e.runtime == "fargate"
     assert e.agent_image == "acme/agent:7"
     assert e.docker_endpoint == "tcp://dockerd:2375"
-    assert e.workdir == "/srv/bb"
     assert e.max_step_visits == 5
     assert e.max_attempts == 3
     assert e.keep_containers is True

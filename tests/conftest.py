@@ -1,13 +1,12 @@
 """Shared test fixtures — available to all test layers."""
 
 import json
-import tempfile
 import time
-from pathlib import Path
 
 import pytest
+from bheembhai.log_keys import result_key
 
-from engine_service.runtime import RESULT_FILENAME, Handle
+from engine_service.runtime import Handle
 
 
 def pytest_collection_modifyitems(config, items):
@@ -46,7 +45,7 @@ class FakeRuntime:
     Launch records go to .calls (step_id, attempt_no) and .contexts (step_id, context).
     """
 
-    def __init__(self, script=None, base_dir=None, reattach_script=None):
+    def __init__(self, script=None, store=None, reattach_script=None):
         self.script = script or {}
         # Re-attach behaviours (crash resume): step_id -> behaviour stamped on the
         # rebuilt Handle. Default "gone" — a crashed container rarely survives.
@@ -57,7 +56,10 @@ class FakeRuntime:
         self.cleaned: list[Handle] = []
         self.stopped: list[Handle] = []
         self.rehandles: list[Handle] = []
-        self._base = Path(base_dir) if base_dir else Path(tempfile.mkdtemp(prefix="bbfake-"))
+        # Object store the fake "containers" publish results into (ADR-014): when
+        # set, launch() writes payloads at the exact agent keys so reconcile's
+        # store reads exercise the real channel. None = no result publication.
+        self.store = store
 
     def _behaviour(self, step_id: str, attempt_no: int) -> str:
         behaviours = self.script.get(step_id, ["ok"])
@@ -67,9 +69,6 @@ class FakeRuntime:
         self.calls.append((step_id, attempt_no))
         self.contexts.append((step_id, context))
         self.envs.append((step_id, dict(env)))
-        outdir = self._base / "results" / str(run_id) / step_id / str(attempt_no)
-        outdir.mkdir(parents=True, exist_ok=True)
-        path = outdir / RESULT_FILENAME
         b = self._behaviour(step_id, attempt_no)
         payloads = {
             "ok": {"status": "completed", "cost_usd": 0.01, "summary": f"{step_id} done"},
@@ -81,10 +80,16 @@ class FakeRuntime:
             "hint": {"status": "completed", "cost_usd": 0.01, "next": "somewhere-else"},
             "exit-nonzero": {"status": "completed", "cost_usd": 0.01},
         }
-        if b in payloads:
-            path.write_text(json.dumps(payloads[b]))
+        # Publish at the exact agent key (ADR-014) — the "container" PUTs its
+        # result to Object Storage, like the real run_skill.sh EXIT trap does.
+        if b in payloads and self.store is not None:
+            await self.store.put(
+                result_key(str(run_id), step_id, attempt_no),
+                json.dumps(payloads[b]).encode(),
+                content_type="application/json")
         # "silent", "crash", "hung", "vanish", "error" write nothing
-        h = Handle(f"fake-{step_id}-{attempt_no}", path, time.time())
+        h = Handle(f"fake-{step_id}-{attempt_no}", time.time(),
+                   str(run_id), step_id, attempt_no)
         h.behaviour = b  # type: ignore[attr-defined] — dataclass without slots
         return h
 
@@ -103,8 +108,7 @@ class FakeRuntime:
         return {"state": "exited", "exit_code": 0}
 
     async def make_handle(self, run_id, step_id, attempt_no, container_id, started_at):
-        outdir = self._base / "results" / str(run_id) / step_id / str(attempt_no)
-        h = Handle(container_id, outdir / RESULT_FILENAME, started_at)
+        h = Handle(container_id, started_at, str(run_id), step_id, attempt_no)
         h.behaviour = self.reattach_script.get(step_id, "gone")  # type: ignore[attr-defined]
         self.rehandles.append(h)
         return h

@@ -1,15 +1,18 @@
-"""Unit — container-log capture + object-store upload (ADR-011 engine side).
+"""Unit — container-log capture + object-store registration (ADR-011/ADR-014).
 
 The capture must happen while the container still exists (docker logs die
-with it), so reconcile's kill paths (cancel/timeout) dump first and every
-other terminal return is covered by the state machine's own dump. The
-upload is best-effort: a failed put must never fail the step.
+with it), so reconcile's kill paths (cancel/timeout) capture first and every
+other terminal return is covered by the state machine's own capture. Both
+the capture and the log registration are best-effort: a failed put or head
+must never fail the step.
 """
 
 import asyncio
 from types import SimpleNamespace
 
 import pytest
+from bheembhai.log_keys import log_key
+from bheembhai.providers.local_storage import LocalStorage
 
 import engine_service.runtime as rt
 from conftest import FakeRuntime
@@ -35,84 +38,106 @@ class _LogRuntime(FakeRuntime):
         return self.logs_text
 
 
-# ── _dump_container_log ──────────────────────────────────────────────
+# ── _capture_container_log ────────────────────────────────────────────
 
 
-async def test_dump_container_log_writes_capture():
-    r = _LogRuntime(logs_text="line a\nline b\n")
+def _store(tmp_path) -> LocalStorage:
+    return LocalStorage(base_path=str(tmp_path / "artifacts"))
+
+
+async def test_capture_container_log_writes_to_store(tmp_path):
+    store = _store(tmp_path)
+    r = _LogRuntime(logs_text="line a\nline b\n", store=store)
     h = await r.launch("r1", "design", 1, {})
-    await rt._dump_container_log(r, h)
-    target = h.result_path.parent / "container.log"
-    assert target.read_text() == "line a\nline b\n"
+    await rt._capture_container_log(store, r, h)
+    obj = await store.get(log_key("r1", "design", 1, "container"))
+    assert obj.data == b"line a\nline b\n"
     assert r.log_calls == [(h, rt.CONTAINER_LOG_TAIL_LINES)]
 
 
-async def test_dump_container_log_idempotent_when_file_exists():
-    """A second dump must not clobber the first capture (reconcile already
-    wrote it on its own kill path before the state machine's blanket dump)."""
-    r = _LogRuntime(logs_text="first capture")
+async def test_capture_container_log_idempotent_when_object_exists(tmp_path):
+    """A second capture must not clobber the first (reconcile already
+    captured it on its own kill path before the state machine's blanket
+    capture) — the head-check skips the second docker logs call entirely."""
+    store = _store(tmp_path)
+    r = _LogRuntime(logs_text="first capture", store=store)
     h = await r.launch("r1", "design", 1, {})
-    await rt._dump_container_log(r, h)
+    await rt._capture_container_log(store, r, h)
     r.logs_text = "second capture"
-    await rt._dump_container_log(r, h)
-    assert (h.result_path.parent / "container.log").read_text() == "first capture"
+    await rt._capture_container_log(store, r, h)
+    obj = await store.get(log_key("r1", "design", 1, "container"))
+    assert obj.data == b"first capture"
     assert len(r.log_calls) == 1
 
 
-async def test_dump_container_log_skips_when_logs_empty():
-    r = _LogRuntime(logs_text="")
+async def test_capture_container_log_skips_when_logs_empty(tmp_path):
+    store = _store(tmp_path)
+    r = _LogRuntime(logs_text="", store=store)
     h = await r.launch("r1", "design", 1, {})
-    await rt._dump_container_log(r, h)
-    assert not (h.result_path.parent / "container.log").exists()
+    await rt._capture_container_log(store, r, h)
+    assert await store.get(log_key("r1", "design", 1, "container")) is None
 
 
-async def test_dump_container_log_truncates_oversized_output(monkeypatch):
+async def test_capture_container_log_truncates_oversized_output(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "CONTAINER_LOG_MAX_BYTES", 10)
-    r = _LogRuntime(logs_text="0123456789ABCDEF")
+    store = _store(tmp_path)
+    r = _LogRuntime(logs_text="0123456789ABCDEF", store=store)
     h = await r.launch("r1", "design", 1, {})
-    await rt._dump_container_log(r, h)
-    assert (h.result_path.parent / "container.log").read_text() == "6789ABCDEF"
+    await rt._capture_container_log(store, r, h)
+    obj = await store.get(log_key("r1", "design", 1, "container"))
+    assert obj.data == b"6789ABCDEF"
 
 
-async def test_reconcile_cancel_captures_container_log():
-    """The cancel branch dumps BEFORE the caller's stop() — the container
+async def test_reconcile_cancel_captures_container_log(tmp_path):
+    """The cancel branch captures BEFORE the caller's stop() — the container
     still exists at reconcile return."""
-    r = _LogRuntime(logs_text="killed mid-run")
+    store = _store(tmp_path)
+    r = _LogRuntime(logs_text="killed mid-run", store=store)
     r.script = {"design": ["hung"]}
     h = await r.launch("r1", "design", 1, {})
     ev = asyncio.Event()
     ev.set()
-    outcome = await rt.reconcile(r, h, deadline_s=5, cancel_event=ev)
+    outcome = await rt.reconcile(r, h, deadline_s=5, cancel_event=ev, store=store)
     assert outcome["status"] == rt.CANCELLED
-    assert (h.result_path.parent / "container.log").read_text() == "killed mid-run"
+    obj = await store.get(log_key("r1", "design", 1, "container"))
+    assert obj.data == b"killed mid-run"
 
 
-async def test_reconcile_timeout_captures_container_log():
-    r = _LogRuntime(logs_text="timed out output")
+async def test_reconcile_timeout_captures_container_log(tmp_path):
+    store = _store(tmp_path)
+    r = _LogRuntime(logs_text="timed out output", store=store)
     r.script = {"design": ["hung"]}
     h = await r.launch("r1", "design", 1, {})
-    outcome = await rt.reconcile(r, h, deadline_s=0.2)
+    outcome = await rt.reconcile(r, h, deadline_s=0.2, store=store)
     assert outcome["status"] == rt.Result.FAILED_TIMEOUT
-    assert (h.result_path.parent / "container.log").read_text() == "timed out output"
+    obj = await store.get(log_key("r1", "design", 1, "container"))
+    assert obj.data == b"timed out output"
 
 
-# ── upload_step_logs ─────────────────────────────────────────────────
+# ── upload_step_logs (registration-only) ─────────────────────────────
 
 
 RUN_ID = "11111111-2222-3333-4444-555555555555"
 
 
 class _Store:
-    """Duck-typed object store recording put_file calls."""
+    """Duck-typed object store: pre-seeded objects served by head(), put_file
+    calls recorded so tests can assert no data movement happens (ADR-014 —
+    the agents/engine upload to the final keys, the engine only registers)."""
 
-    def __init__(self, fail_keys=()):
-        self.uploads: list[tuple[str, str]] = []
-        self.fail_keys = set(fail_keys)
+    def __init__(self, objects=None, head_boom=()):
+        self.objects = dict(objects or {})
+        self.head_boom = set(head_boom)
+        self.puts = []
+
+    async def head(self, key):
+        if key in self.head_boom:
+            raise RuntimeError(f"head boom for {key}")
+        data = self.objects.get(key)
+        return None if data is None else SimpleNamespace(size=len(data))
 
     async def put_file(self, key, path, content_type=None):
-        if key in self.fail_keys:
-            raise RuntimeError(f"upload boom for {key}")
-        self.uploads.append((key, path))
+        self.puts.append((key, path))
 
 
 def _stmt_kind(stmt):
@@ -149,30 +174,24 @@ class _Run:
     id = RUN_ID
 
 
-async def _attempt_with_logs(files: dict[str, bytes]):
-    """Launch a FakeRuntime attempt dir and drop the given log files into it."""
-    r = FakeRuntime()
-    h = await r.launch("r1", "design", 1, {})
-    for name, data in files.items():
-        (h.result_path.parent / name).write_bytes(data)
-    return h
-
-
-async def test_upload_step_logs_uploads_each_kind_and_adds_rows():
-    h = await _attempt_with_logs({
-        "agent.log": b"agent stuff",
-        "container.log": b"container stuff",
-        "diagnostics.txt": b"diag stuff",
-    })
+def _attempt_with_logs(files: dict[str, bytes]) -> _Store:
+    """Seed a store with the given log artifacts at the attempt's final keys."""
     store = _Store()
+    for kind, data in files.items():
+        store.objects[log_key(RUN_ID, "design", 1, kind)] = data
+    return store
+
+
+async def test_upload_step_logs_registers_each_kind_and_adds_rows():
+    store = _attempt_with_logs({
+        "agent": b"agent stuff",
+        "container": b"container stuff",
+        "diagnostics": b"diag stuff",
+    })
     session = _Session()
-    added = await upload_step_logs(session, _Run(), "design", 1, h, store)
+    added = await upload_step_logs(session, _Run(), "design", 1, store)
     assert added == 3
-    assert [k for k, _ in store.uploads] == [
-        f"logs/{RUN_ID}/design/1/agent.log",
-        f"logs/{RUN_ID}/design/1/container.log",
-        f"logs/{RUN_ID}/design/1/diagnostics.txt",
-    ]
+    assert store.puts == []                    # registration moves no data
     by_kind = {row.kind: row for row in session.added}
     assert set(by_kind) == {"agent", "container", "diagnostics"}
     row = by_kind["agent"]
@@ -183,47 +202,54 @@ async def test_upload_step_logs_uploads_each_kind_and_adds_rows():
     assert row.attempt_no == 1
 
 
-async def test_upload_skips_missing_and_empty_files():
-    h = await _attempt_with_logs({
-        "agent.log": b"",                      # empty → skip
-        "container.log": b"only container",    # diagnostics.txt absent → skip
+async def test_upload_skips_missing_and_empty_objects():
+    store = _attempt_with_logs({
+        "agent": b"",                  # empty → skip
+        "container": b"only container",  # diagnostics absent → skip
     })
-    store = _Store()
-    added = await upload_step_logs(_Session(), _Run(), "design", 1, h, store)
+    session = _Session()
+    added = await upload_step_logs(session, _Run(), "design", 1, store)
     assert added == 1
-    assert [k for k, _ in store.uploads] == [f"logs/{RUN_ID}/design/1/container.log"]
+    assert [row.kind for row in session.added] == ["container"]
 
 
 async def test_upload_none_store_returns_zero():
-    h = await _attempt_with_logs({"agent.log": b"x"})
-    assert await upload_step_logs(_Session(), _Run(), "design", 1, h, None) == 0
+    assert await upload_step_logs(_Session(), _Run(), "design", 1, None) == 0
 
 
-async def test_upload_failed_put_does_not_stop_other_kinds():
-    """A failed put is logged and skipped — the other kinds still upload and
-    the step's transaction still commits."""
-    h = await _attempt_with_logs({
-        "agent.log": b"a",
-        "container.log": b"c",
-    })
-    store = _Store(fail_keys={f"logs/{RUN_ID}/design/1/agent.log"})
+async def test_upload_absent_object_adds_no_row():
+    """No artifact, no reference row — the platform's logs endpoint would
+    404 a stale pointer otherwise."""
+    store = _attempt_with_logs({})
     session = _Session()
-    added = await upload_step_logs(session, _Run(), "design", 1, h, store)
+    added = await upload_step_logs(session, _Run(), "design", 1, store)
+    assert added == 0
+    assert session.added == []
+
+
+async def test_upload_head_failure_skips_kind_and_keeps_going():
+    """A failed head is logged and skipped — the other kinds still register
+    and the step's transaction still commits."""
+    store = _attempt_with_logs({
+        "agent": b"a",
+        "container": b"c",
+    })
+    store.head_boom = {log_key(RUN_ID, "design", 1, "agent")}
+    session = _Session()
+    added = await upload_step_logs(session, _Run(), "design", 1, store)
     assert added == 1
-    assert [k for k, _ in store.uploads] == [f"logs/{RUN_ID}/design/1/container.log"]
     assert [row.kind for row in session.added] == ["container"]
 
 
 async def test_upload_does_not_duplicate_existing_row():
-    """Crash re-entry: the reference row already exists — the re-upload is
-    idempotent and no second row is added."""
-    h = await _attempt_with_logs({
-        "agent.log": b"a",
-        "container.log": b"c",
-        "diagnostics.txt": b"d",
+    """Crash re-entry: the reference row already exists — the re-registration
+    is idempotent and no second row is added."""
+    store = _attempt_with_logs({
+        "agent": b"a",
+        "container": b"c",
+        "diagnostics": b"d",
     })
-    store = _Store()
     session = _Session(existing_kinds={"container"})
-    added = await upload_step_logs(session, _Run(), "design", 1, h, store)
+    added = await upload_step_logs(session, _Run(), "design", 1, store)
     assert added == 3                       # all three ensured...
     assert [row.kind for row in session.added] == ["agent", "diagnostics"]

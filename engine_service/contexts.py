@@ -95,6 +95,9 @@ def build_env_bundle(ctx: "InitContext", *, step_id: str, attempt_no: int,
         "STEP_ID": step_id,
         "ATTEMPT_NO": str(attempt_no),
         "SKILL": skill,
+        # Image-owned container-local staging dir (ADR-014: zero mounts). The
+        # per-attempt PUT URLs are launch-time presigns added in state_machine,
+        # not part of this bundle — same pattern as BB_SKILL_URL.
         "RESULT_DIR": "/out",
         "STORY_ID": ctx.run.story_id or "",
         # Git group

@@ -61,6 +61,11 @@ class ObjectStorage(Protocol):
         """Generate a time-limited pre-signed download URL."""
         ...
 
+    async def presigned_put_url(self, key: str, expires_in: int = 3600) -> PresignedUrl | None:
+        """Generate a time-limited pre-signed upload URL. None when the backend
+        cannot offer one (LocalStorage: file:// URLs cannot be PUT by curl)."""
+        ...
+
     async def list(self, prefix: str) -> AsyncIterator[str]:
         """List keys with the given prefix."""
         ...

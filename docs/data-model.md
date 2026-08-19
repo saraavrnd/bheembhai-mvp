@@ -370,7 +370,7 @@ integration layer. Run with `pytest -m unit` / `pytest -m integration`.
 | Workflow management | `workflows` (versioned YAML, is_active) |
 | Policy management | `policies` (versioned YAML, is_active, FK → workflows) |
 | Executions — history | `runs` (per project, paginated), `steps`, `transitions` |
-| Executions — detail | Result volume host-mount under `DockerRuntime` (diagnostics, `bb_step_result.json`); `steps.artifact_storage_key` is the deferred FargateRuntime/ObjectStorage story (ADR-011) |
+| Executions — detail | Zero-mount step containers (ADR-014): agent uploads `bb_step_result.json` / `progress.json` / logs via presigned PUTs to Object Storage (`results/…`, `logs/…` keys, refs in `run_logs`); engine uploads `container.log` from the docker API |
 | Approval & feedback | `transitions` (actor=user email, reason=feedback text; gate card in `payload` on `awaiting_approval` rows). Decisions arrive as `work_queue` continue items — the platform never mutates run state. Gate approval checks the user's `memberships.role` against the policy gate's role requirement. |
 | Fargate integration | Deferred — `steps.fargate_task_arn` reused as the generic runtime handle (container id under DockerRuntime; task ARN once FargateRuntime lands) |
 | Budget cap | `runs.cost_usd`, `steps.cost_usd` |

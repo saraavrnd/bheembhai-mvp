@@ -76,7 +76,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     runtime = DockerRuntime(
         ec.agent_image,
         endpoint=ec.docker_endpoint or None,
-        workdir=ec.workdir,
         mem_limit=ec.mem_limit,
         network=ec.network,
         keep_containers=ec.keep_containers,
@@ -92,7 +91,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         publish=notifier.publish,
         store=store,
     )
-    logger.info("Runtime wired: %s image=%s workdir=%s", ec.runtime, ec.agent_image, ec.workdir)
+    logger.info("Runtime wired: %s image=%s", ec.runtime, ec.agent_image)
     logger.info("Object storage wired: backend=%s", getattr(store, "backend_name", "?"))
 
     # Crash recovery: re-enqueue stale work before starting the worker loop

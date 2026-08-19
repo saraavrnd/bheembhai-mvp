@@ -25,6 +25,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from bheembhai.log_keys import log_key, progress_key, result_key
 from bheembhai.models.run import Run, Step, Transition
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,7 +38,7 @@ from engine_service.persistence import (
     record_transition,
 )
 from engine_service.run_init import init_run
-from engine_service.runtime import CANCELLED, Handle, _dump_container_log, reconcile
+from engine_service.runtime import CANCELLED, Handle, _capture_container_log, reconcile
 from engine_service.workflow import (
     TRANSIENT,
     ExecState,
@@ -291,6 +292,30 @@ async def _loop(session: AsyncSession, ctx, config, runtime, *, start: str,
 
 # ── One step: launch / reconcile / classify / route ─────────────────────
 
+async def _launch_upload_contract(store, run_id: str, step_id: str, attempt_no: int,
+                                  deadline: float) -> dict[str, str]:
+    """Presign the four PUT URLs for one launch (ADR-014): the agent uploads its
+    result payload, progress, agent.log, and diagnostics to deterministic keys —
+    zero mounts. Raises on presign failure (the caller retries as failed_infra).
+    Entries a backend declines (None — LocalStorage) are omitted, and the agent
+    skips those uploads. URLs are bearer credentials: log keys, never URLs.
+    """
+    # The critical result PUT happens at exit — cover the full deadline plus
+    # slack (heartbeat PUTs after expiry degrade to stale progress, harmless).
+    expires_in = max(3600, int(deadline) + 600)
+    out: dict[str, str] = {}
+    for env_name, key in (
+        ("BB_RESULT_PUT_URL", result_key(run_id, step_id, attempt_no)),
+        ("BB_PROGRESS_PUT_URL", progress_key(run_id, step_id, attempt_no)),
+        ("BB_LOG_PUT_URL", log_key(run_id, step_id, attempt_no, "agent")),
+        ("BB_DIAG_PUT_URL", log_key(run_id, step_id, attempt_no, "diagnostics")),
+    ):
+        presigned = await store.presigned_put_url(key, expires_in=expires_in)
+        if presigned is not None:
+            out[env_name] = presigned.url
+    return out
+
+
 async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                     spec: dict, *, reviewer_feedback: str, handoff: dict | None,
                     publish=None,
@@ -358,7 +383,7 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                             h.container_id[:12], remaining)
                 outcome = await reconcile(runtime, h, remaining, on_progress=(
                     _progress_publisher(publish, run.id, step_id, attempt)),
-                    cancel_event=cancel_event)
+                    cancel_event=cancel_event, store=store)
             else:
                 h = None
                 record_transition(session, run.id, ExecState.RUNNING, ExecState.RUNNING,
@@ -401,7 +426,7 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
             else:
                 try:
                     presigned = await store.presigned_get_url(skill_key, expires_in=900)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 — any presign failure classifies as infra
                     reason = f"presign failed for skill bundle {skill_key}: {exc}"
                     logger.error("run %s: %s", run.id, reason)
                     record_transition(session, run.id, ExecState.RUNNING,
@@ -417,6 +442,33 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
                     return ("failed", None)
                 env["BB_SKILL_URL"] = presigned.url
                 env["BB_SKILL_SHA256"] = skill_sha
+            # Result/progress/log channels (ADR-014): presign fresh PUT URLs for
+            # this attempt's deterministic keys so the agent uploads its own
+            # artifacts — zero mounts. Pre-launch failures mirror the skill-
+            # presign path above: retry the attempt, then fail failed_infra.
+            if store is None:
+                logger.warning(
+                    "run %s: no object store — launching step '%s' without PUT URLs; "
+                    "engine cannot read its result/progress (tests/minimal deployments)",
+                    run.id, step_id)
+            else:
+                try:
+                    env.update(await _launch_upload_contract(
+                        store, str(run.id), step_id, attempt, deadline))
+                except Exception as exc:  # noqa: BLE001 — any presign failure classifies as infra
+                    reason = f"presign PUT failed for step '{step_id}': {exc}"
+                    logger.error("run %s: %s", run.id, reason)
+                    record_transition(session, run.id, ExecState.RUNNING,
+                                      ExecState.RETRYING, step_id=step_id,
+                                      attempt_no=attempt,
+                                      result_status=Result.FAILED_INFRA, reason=reason)
+                    await session.commit()
+                    if attempt < max_attempts:
+                        continue
+                    await _fail_run(session, run, reason=reason,
+                                    result_status=Result.FAILED_INFRA,
+                                    step_id=step_id, attempt_no=attempt)
+                    return ("failed", None)
             h = await runtime.launch(str(run.id), step_id, attempt, env, context=context)
             row.fargate_task_arn = h.container_id
             record_transition(session, run.id, ExecState.RUNNING, ExecState.AWAITING_RESULT,
@@ -425,7 +477,7 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
             await session.commit()    # persist the handle BEFORE reconciling
             outcome = await reconcile(runtime, h, deadline, on_progress=(
                 _progress_publisher(publish, run.id, step_id, attempt)),
-                cancel_event=cancel_event)
+                cancel_event=cancel_event, store=store)
         resuming = False
 
         st = outcome.get("status")
@@ -433,8 +485,9 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
         # Capture container output while the container still exists — docker
         # logs die with it, and the cancel branch below stops it right after.
         # reconcile already captured on its own kill paths (cancel/timeout);
-        # this covers every other terminal return. Idempotent by design.
-        await _dump_container_log(runtime, h)
+        # this covers every other terminal return. Idempotent by design
+        # (head-check); no-op without a store.
+        await _capture_container_log(store, runtime, h)
 
         # Stop-run: reconcile aborted on the cancel event (in-process), or the
         # DB shows the run cancelled (a cross-engine cancel handler wrote it
@@ -455,7 +508,7 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
             row.cost_usd = float(row.cost_usd or 0) + cost
             # The attempt's logs commit atomically with its terminal row —
             # even a cancelled attempt's partial log is worth keeping.
-            await upload_step_logs(session, run, step_id, attempt, h, store)
+            await upload_step_logs(session, run, step_id, attempt, store)
             record_transition(session, run.id, ExecState.AWAITING_RESULT, ExecState.FAILED,
                               step_id=step_id, attempt_no=attempt, result_status=CANCELLED,
                               reason="run cancelled while this step was running — container stopped")
@@ -470,7 +523,7 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
 
         # Log artifacts land in object storage with their reference rows in
         # the SAME transaction as the step's terminal transition below.
-        await upload_step_logs(session, run, step_id, attempt, h, store)
+        await upload_step_logs(session, run, step_id, attempt, store)
 
         # Transparency (engine.py 795-816): out-of-vocabulary statuses and ignored
         # hints are recorded, never routed.

@@ -108,7 +108,6 @@ class EngineConfig:
     runtime: str = "docker"                 # "docker" | "fargate"
     agent_image: str = "bheembhai/agent:latest"
     docker_endpoint: str = ""               # unix socket / tcp://… ; empty -> docker.from_env()
-    workdir: str = "/tmp/bheembhai"         # host dir for results/clones/context mounts
     max_step_visits: int = 3                # runaway-loop seatbelt (BB_MAX_STEP_VISITS)
     max_attempts: int = 2                   # per-step container attempts (BB_MAX_ATTEMPTS)
     mem_limit: str = "4g"
@@ -144,7 +143,6 @@ class EngineConfig:
             runtime=os.getenv("BB_RUNTIME", "docker"),
             agent_image=os.getenv("BB_AGENT_IMAGE", "bheembhai/agent:latest"),
             docker_endpoint=os.getenv("DOCKER_ENDPOINT", ""),
-            workdir=os.getenv("BB_WORKDIR", "/tmp/bheembhai"),
             max_step_visits=int(os.getenv("BB_MAX_STEP_VISITS", "3")),
             max_attempts=int(os.getenv("BB_MAX_ATTEMPTS", "2")),
             mem_limit=os.getenv("BB_MEM_LIMIT", "4g"),

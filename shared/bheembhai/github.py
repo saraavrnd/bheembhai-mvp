@@ -26,7 +26,7 @@ GITHUB_API_HEADERS = {
     "X-GitHub-Api-Version": "2022-11-28",
 }
 
-# Content viewer cap — mirrors platform_api.routers.runs._ARTIFACT_TEXT_MAX.
+# Content viewer cap — the single cap for served text (git fetch + logs tail).
 ARTIFACT_TEXT_MAX = 2 * 1024 * 1024
 
 

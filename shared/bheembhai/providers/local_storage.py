@@ -21,7 +21,12 @@ def _read_range(target: Path, start: int, end: int | None) -> bytes:
 
 
 class LocalStorage:
-    """Writes artifacts to the local filesystem. Dev/testing only."""
+    """Writes artifacts to the local filesystem. Dev/testing only.
+
+    Host-run tests only: its ``file://`` URLs are host paths that step
+    containers cannot resolve, so ``presigned_put_url`` returns None (real
+    containers cannot upload through this backend — see ADR-014).
+    """
 
     backend_name = "local"
 
@@ -83,6 +88,14 @@ class LocalStorage:
             url=f"file://{self._resolve(key)}",
             expires_at=time.time() + expires_in,
         )
+
+    async def presigned_put_url(
+        self, key: str, expires_in: int = 3600
+    ) -> PresignedUrl | None:
+        # file:// URLs are host paths — curl inside a step container cannot
+        # PUT them. This backend is for host-run tests, where the test harness
+        # writes objects directly instead of going through presigned URLs.
+        return None
 
     async def list(self, prefix: str) -> AsyncIterator[str]:
         base = self._resolve(prefix)

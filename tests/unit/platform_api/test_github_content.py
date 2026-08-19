@@ -145,17 +145,20 @@ STUBS = {"changes.diff": "stub diff content", "reviewed.diff": "stub reviewed"}
 
 
 def test_chain_git_wins():
-    content, source, path = build_chain("git content", "clone content", "a.py", STUBS)
+    content, source, path = build_chain("git content", "a.py", STUBS)
     assert (content, source, path) == ("git content", "git", "a.py")
 
 
-def test_chain_clone_second():
-    content, source, path = build_chain(None, "clone content", "a.py", STUBS)
-    assert (content, source, path) == ("clone content", "clone", "a.py")
+def test_chain_git_miss_never_returns_clone():
+    # ADR-014 removed the clone-tree stage: a git miss must fall straight to
+    # stubs/placeholder — "clone" is not a valid source any more.
+    for path in ("a.py", "changes.diff", "out/changes.diff.txt", "unknown.md"):
+        _, source, _ = build_chain(None, path, STUBS)
+        assert source != "clone"
 
 
 def test_chain_stub_exact_match():
-    content, source, path = build_chain(None, "", "changes.diff", STUBS)
+    content, source, path = build_chain(None, "changes.diff", STUBS)
     assert (content, source, path) == ("stub diff content", "stub", "changes.diff")
 
 
@@ -163,12 +166,12 @@ def test_chain_stub_substring_rewrites_path():
     # Legacy clients may pass a path that only loosely matches a stub key —
     # the chain resolves it and hands back the key so the viewer type is
     # derived from the real file name.
-    content, source, path = build_chain(None, "", "out/changes.diff.txt", STUBS)
+    content, source, path = build_chain(None, "out/changes.diff.txt", STUBS)
     assert (content, source, path) == ("stub diff content", "stub", "changes.diff")
 
 
 def test_chain_placeholder_terminal():
-    content, source, path = build_chain(None, "", "unknown.md", STUBS)
+    content, source, path = build_chain(None, "unknown.md", STUBS)
     assert source == "placeholder"
     assert path == "unknown.md"
     assert "File content not available" in content
