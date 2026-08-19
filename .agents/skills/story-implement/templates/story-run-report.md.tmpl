@@ -1,0 +1,33 @@
+# Story Run — {{story_key}}: {{story_title}}
+
+**Entry point:** story-implement · **Branch:** `feat/{{story_key}}-{{slug}}` · **Date:** {{date}}
+
+## Sequence executed
+| Step | Skill | Result |
+|------|-------|--------|
+| 1 | story-design | approved (Checkpoint 1) {{escalation_note}} |
+| 2 | test-creator | N failing tests (red) |
+| 3 | implement | green |
+| 4 | test-verify | PASS {{block_loops}} |
+| 5 | code-review | {{findings_summary}} {{fix_loops}} |
+| 6 | pr-create (+design-sync) | PR opened (Checkpoint 2) |
+
+## Loops taken
+<!-- e.g. "test-verify BLOCKed once (routed to implement, re-verified PASS)"; "1 High review
+     finding accepted → implement → re-verified"; "no escalation". "none" if fully linear. -->
+
+## Checkpoints
+- Checkpoint 1 (story-design approval): {{c1}}
+- Checkpoint 2 (PR review/merge): PR open at {{pr_url}}, awaiting human review
+
+## design-sync
+<!-- synced / no-op + which in-progress stories were flagged -->
+
+## Outcome
+- PR: {{pr_url}}
+- Jira status lifecycle: To Do → **In Progress** (at start) → **In Review** (at PR)
+- Requirements covered: {{req_ids}}
+
+---
+*Loop complete pending human review. Start the next story by invoking `story-implement` with its
+key.*

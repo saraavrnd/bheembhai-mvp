@@ -43,9 +43,11 @@ test-results/
 playwright-report/
 
 # Agent infrastructure (never committed per CLAUDE.md)
-.claude/
 .mcp.json
-.agents/
+# .claude/ and .agents/ ARE tracked — the shared skill catalog and project
+# settings live there. Machine-local state stays out:
+.claude/settings.local.json
+.agents/skills/.local/
 
 # Terraform — local variables (the file itself says never commit)
 infra/terraform.tfvars

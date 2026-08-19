@@ -1,0 +1,56 @@
+# Story Design — {{story_key}}: {{story_title}}
+
+**Status:** AWAITING APPROVAL · **Epic:** {{epic_key}} · **Date:** {{date}}
+**Domain:** {{backend | frontend | full-stack}}   <!-- drives which implement lens + test types -->
+
+> Thin design note. Review and approve before test-creator writes tests. Change anything;
+> I'll realign and re-confirm.
+
+## Target module(s)
+<!-- Where this lives, per architecture.md. Backend → app/<service> modules; frontend → UI
+     components; full-stack → both. The domain tag above should match these. -->
+
+## Interfaces / endpoints
+<!-- Concrete signatures test-creator will test against. For UI: components + props/state and the
+     API contract(s) consumed. For backend: endpoints/functions. -->
+| Kind | Signature | Request → Response |
+|------|-----------|--------------------|
+| | | |
+
+## Data-model deltas
+<!-- New fields/tables/migrations, or "none". Consistent with data-model.md. -->
+
+## Reuse
+<!-- Existing functions/components/services this builds on, named. -->
+
+## Approach
+<!-- 2-5 sentences. Strategy, not full pseudocode. -->
+
+## Test surface
+- [ ] Unit:
+- [ ] Integration:
+- [ ] E2E:
+
+## Out of scope
+<!-- Restated from the story to keep this bounded. -->
+
+## Architecture impact
+<!-- Usually "none — fits existing architecture". If the story needs something the architecture
+     doesn't support, describe the gap and recommend escalating to tech-design + an ADR.
+     Do NOT bend the architecture silently here. -->
+None — fits existing architecture.
+
+## Dependencies discovered (feeds epic-sequence)
+<!-- Firm produces/consumes from this design, for the sequence to self-correct.
+     "Consumes <endpoint/table/field/module> produced by <STORY_KEY>" → that story must precede this.
+     Note whether this matches the current (provisional) epic order or changes it. "none" if this
+     story is self-contained. -->
+- Consumes: <thing> — produced by <STORY_KEY>
+- Effect on sequence: matches provisional order / changes it (explain) / none
+
+## Traceability
+**Requirements covered:** <!-- FR/NFR IDs -->
+
+---
+*On approval: next step is `test-creator` (failing tests from these interfaces + the story's
+acceptance criteria), then `implement`.*

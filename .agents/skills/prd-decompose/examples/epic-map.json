@@ -1,0 +1,14 @@
+{
+  "project_key": "LEARN",
+  "source_prd": "PRD.md",
+  "epics": [
+    { "epic_key": "LEARN-10", "summary": "Socratic dialogue engine", "feature_area": "FA-1", "release": "MVP", "requirement_ids": ["FR-001", "FR-002", "FR-003"] },
+    { "epic_key": "LEARN-11", "summary": "Curriculum knowledge base", "feature_area": "FA-2", "release": "MVP", "requirement_ids": ["FR-004", "FR-005", "FR-006"] },
+    { "epic_key": "LEARN-12", "summary": "Visual & diagram learning", "feature_area": "FA-3", "release": "mixed", "requirement_ids": ["FR-007", "FR-008", "FR-009"] },
+    { "epic_key": "LEARN-13", "summary": "Answer grounding & accuracy", "feature_area": "FA-4", "release": "mixed", "requirement_ids": ["FR-010", "FR-011"] },
+    { "epic_key": "LEARN-14", "summary": "Teacher dashboard", "feature_area": "FA-5", "release": "mixed", "requirement_ids": ["FR-012", "FR-013"] },
+    { "epic_key": "LEARN-15", "summary": "SIS integration", "feature_area": "FA-6", "release": "MVP", "requirement_ids": ["FR-014", "FR-015", "FR-016"] },
+    { "epic_key": "LEARN-16", "summary": "Safety, privacy & compliance", "feature_area": "FA-7", "release": "MVP", "requirement_ids": ["FR-017", "FR-018", "NFR-001", "NFR-002", "NFR-003", "NFR-004"] },
+    { "epic_key": "LEARN-17", "summary": "Deployment & operations", "feature_area": "FA-8", "release": "MVP", "requirement_ids": ["NFR-005"] }
+  ]
+}
