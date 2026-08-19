@@ -5,6 +5,8 @@ import sys
 import types
 
 import pytest
+from bheembhai.log_keys import log_key, progress_key, result_key
+from bheembhai.providers.local_storage import LocalStorage
 
 import engine_service.runtime as rt
 from conftest import FakeRuntime
@@ -18,11 +20,21 @@ def _fast_polling(monkeypatch):
     monkeypatch.setattr(rt, "GRACE_SECONDS", 0.05)
 
 
+def _store(tmp_path) -> LocalStorage:
+    return LocalStorage(base_path=str(tmp_path / "artifacts"))
 
-async def test_reconcile_completed():
-    r = FakeRuntime()
+
+async def _run(store, script=None, *, deadline_s=5, **kw):
+    """Drive one reconcile with a fresh FakeRuntime wired to the same store."""
+    r = FakeRuntime(script, store=store)
     h = await r.launch("r1", "design", 1, {})
-    outcome = await reconcile(r, h, deadline_s=5)
+    outcome = await reconcile(r, h, deadline_s=deadline_s, store=store, **kw)
+    return r, h, outcome
+
+
+async def test_reconcile_completed(tmp_path):
+    store = _store(tmp_path)
+    _, _, outcome = await _run(store)
     assert outcome["status"] == Result.COMPLETED
     assert outcome["cost_usd"] == 0.01
     assert outcome["summary"] == "design done"
@@ -32,94 +44,114 @@ async def test_reconcile_completed():
     assert outcome["cost_partial"] is False
 
 
-async def test_reconcile_zero_cost_with_flag_stays_reported():
+async def test_reconcile_zero_cost_with_flag_stays_reported(tmp_path):
     """An explicit cost_reported:true on a $0.00 session is honest reporting,
     not "unknown" — e.g. a mock run that really did spend nothing."""
-    r = FakeRuntime()
+    store = _store(tmp_path)
+    await store.put(result_key("r1", "design", 1),
+                    json.dumps({"status": "completed", "cost_usd": 0,
+                                "cost_reported": True}).encode(),
+                    content_type="application/json")
+    r = FakeRuntime()   # no store — launch must not overwrite the seeded payload
     h = await r.launch("r1", "design", 1, {})
-    h.result_path.write_text(json.dumps(
-        {"status": "completed", "cost_usd": 0, "cost_reported": True}))
-    outcome = await reconcile(r, h, deadline_s=5)
+    outcome = await reconcile(r, h, deadline_s=5, store=store)
     assert outcome["cost_usd"] == 0
     assert outcome["cost_reported"] is True
 
 
-async def test_reconcile_zero_cost_without_flag_reads_unknown():
-    r = FakeRuntime()
+async def test_reconcile_zero_cost_without_flag_reads_unknown(tmp_path):
+    store = _store(tmp_path)
+    await store.put(result_key("r1", "design", 1),
+                    json.dumps({"status": "completed", "cost_usd": 0}).encode(),
+                    content_type="application/json")
+    r = FakeRuntime()   # no store — launch must not overwrite the seeded payload
     h = await r.launch("r1", "design", 1, {})
-    h.result_path.write_text(json.dumps({"status": "completed", "cost_usd": 0}))
-    outcome = await reconcile(r, h, deadline_s=5)
+    outcome = await reconcile(r, h, deadline_s=5, store=store)
     assert outcome["cost_usd"] == 0
     assert outcome["cost_reported"] is False
 
 
 
 async def test_scrape_partial_cost_reads_terminal_result_event(tmp_path):
-    log_path = tmp_path / "agent.log"
-    log_path.write_text(json.dumps({"type": "result", "total_cost_usd": 0.42}) + "\n")
-    assert await rt._scrape_partial_cost(log_path) == 0.42
+    store = _store(tmp_path)
+    await store.put(log_key("r1", "design", 1, "agent"),
+                    (json.dumps({"type": "result", "total_cost_usd": 0.42}) + "\n").encode(),
+                    content_type="text/plain")
+    assert await rt._scrape_partial_cost(store, log_key("r1", "design", 1, "agent")) == 0.42
 
 
 async def test_scrape_partial_cost_last_match_wins(tmp_path):
-    log_path = tmp_path / "agent.log"
-    log_path.write_text(
-        json.dumps({"type": "assistant", "total_cost_usd": 0.10}) + "\n"
-        + json.dumps({"type": "result", "total_cost_usd": 0.99}) + "\n")
-    assert await rt._scrape_partial_cost(log_path) == 0.99
+    store = _store(tmp_path)
+    await store.put(
+        log_key("r1", "design", 1, "agent"),
+        (json.dumps({"type": "assistant", "total_cost_usd": 0.10}) + "\n"
+         + json.dumps({"type": "result", "total_cost_usd": 0.99}) + "\n").encode(),
+        content_type="text/plain")
+    assert await rt._scrape_partial_cost(store, log_key("r1", "design", 1, "agent")) == 0.99
 
 
-async def test_scrape_partial_cost_missing_file_is_none(tmp_path):
-    assert await rt._scrape_partial_cost(tmp_path / "nope.log") is None
+async def test_scrape_partial_cost_missing_object_is_none(tmp_path):
+    store = _store(tmp_path)
+    assert await rt._scrape_partial_cost(store, log_key("r1", "design", 1, "agent")) is None
 
 
 async def test_scrape_partial_cost_no_cost_event_is_none(tmp_path):
-    log_path = tmp_path / "agent.log"
-    log_path.write_text('{"type": "system", "subtype": "init"}\nnot json\n')
-    assert await rt._scrape_partial_cost(log_path) is None
+    store = _store(tmp_path)
+    await store.put(log_key("r1", "design", 1, "agent"),
+                    b'{"type": "system", "subtype": "init"}\nnot json\n',
+                    content_type="text/plain")
+    assert await rt._scrape_partial_cost(store, log_key("r1", "design", 1, "agent")) is None
 
 
 async def test_scrape_partial_cost_rejects_negative(tmp_path):
-    log_path = tmp_path / "agent.log"
-    log_path.write_text(json.dumps({"type": "result", "total_cost_usd": -1.5}) + "\n")
-    assert await rt._scrape_partial_cost(log_path) is None
+    store = _store(tmp_path)
+    await store.put(log_key("r1", "design", 1, "agent"),
+                    (json.dumps({"type": "result", "total_cost_usd": -1.5}) + "\n").encode(),
+                    content_type="text/plain")
+    assert await rt._scrape_partial_cost(store, log_key("r1", "design", 1, "agent")) is None
 
 
-async def test_reconcile_cancel_recovers_partial_cost_from_log():
+async def test_reconcile_cancel_recovers_partial_cost_from_log(tmp_path):
     """A kill lands mid-session — whatever the CLI reported before dying must
     still count, flagged partial (the session would have spent more)."""
     import asyncio
-    r = FakeRuntime({"design": ["hung"]})
+    store = _store(tmp_path)
+    await store.put(log_key("r1", "design", 1, "agent"),
+                    (json.dumps({"type": "result", "total_cost_usd": 1.25}) + "\n").encode(),
+                    content_type="text/plain")
+    r = FakeRuntime({"design": ["hung"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
-    (h.result_path.parent / "agent.log").write_text(
-        json.dumps({"type": "result", "total_cost_usd": 1.25}) + "\n")
     ev = asyncio.Event()
     ev.set()
-    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev)
+    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev, store=store)
     assert outcome["status"] == rt.CANCELLED
     assert outcome["cost_usd"] == 1.25
     assert outcome["cost_reported"] is True
     assert outcome["cost_partial"] is True
 
 
-async def test_reconcile_cancel_without_log_marks_cost_unknown():
+async def test_reconcile_cancel_without_log_marks_cost_unknown(tmp_path):
     import asyncio
-    r = FakeRuntime({"design": ["hung"]})
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["hung"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
     ev = asyncio.Event()
     ev.set()
-    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev)
+    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev, store=store)
     assert outcome["status"] == rt.CANCELLED
     assert outcome["cost_usd"] == 0
     assert outcome["cost_reported"] is False
     assert outcome["cost_partial"] is False
 
 
-async def test_reconcile_timeout_recovers_partial_cost_before_cleanup():
-    r = FakeRuntime({"design": ["hung"]})
+async def test_reconcile_timeout_recovers_partial_cost_before_cleanup(tmp_path):
+    store = _store(tmp_path)
+    await store.put(log_key("r1", "design", 1, "agent"),
+                    (json.dumps({"type": "result", "total_cost_usd": 0.55}) + "\n").encode(),
+                    content_type="text/plain")
+    r = FakeRuntime({"design": ["hung"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
-    (h.result_path.parent / "agent.log").write_text(
-        json.dumps({"type": "result", "total_cost_usd": 0.55}) + "\n")
-    outcome = await reconcile(r, h, deadline_s=0.2)
+    outcome = await reconcile(r, h, deadline_s=0.2, store=store)
     assert outcome["status"] == Result.FAILED_TIMEOUT
     assert outcome["cost_usd"] == 0.55
     assert outcome["cost_reported"] is True
@@ -127,80 +159,88 @@ async def test_reconcile_timeout_recovers_partial_cost_before_cleanup():
 
 
 
-async def test_reconcile_exit_nonzero_downgrades_completed():
-    r = FakeRuntime({"design": ["exit-nonzero"]})
+async def test_reconcile_exit_nonzero_downgrades_completed(tmp_path):
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["exit-nonzero"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
-    outcome = await reconcile(r, h, deadline_s=5)
+    outcome = await reconcile(r, h, deadline_s=5, store=store)
     assert outcome["status"] == Result.FAILED_EXECUTION
 
 
 
-async def test_reconcile_nonzero_exit_keeps_domain_status():
+async def test_reconcile_nonzero_exit_keeps_domain_status(tmp_path):
     """Only a *completed* payload is downgraded on a bad exit — a BLOCK verdict with a
     crashing container stays BLOCK (the verdict is what matters, the exit is noise)."""
-    r = FakeRuntime({"design": ["block"]})
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["block"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
     # force the container to look like it crashed after writing the payload
     h.behaviour = "crash"
-    outcome = await reconcile(r, h, deadline_s=5)
+    outcome = await reconcile(r, h, deadline_s=5, store=store)
     assert outcome["status"] == Result.BLOCK
     assert outcome["next_hint"] == "implement"
 
 
 
-async def test_reconcile_gone_is_infra_failure():
-    r = FakeRuntime({"design": ["vanish"]})
+async def test_reconcile_gone_is_infra_failure(tmp_path):
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["vanish"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
-    outcome = await reconcile(r, h, deadline_s=5)
+    outcome = await reconcile(r, h, deadline_s=5, store=store)
     assert outcome["status"] == Result.FAILED_INFRA
     assert "vanished" in outcome["reason"]
 
 
 
-async def test_reconcile_exited_without_result_is_incomplete():
-    r = FakeRuntime({"design": ["silent"]})
+async def test_reconcile_exited_without_result_is_incomplete(tmp_path):
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["silent"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
-    outcome = await reconcile(r, h, deadline_s=5)
+    outcome = await reconcile(r, h, deadline_s=5, store=store)
     assert outcome["status"] == Result.FAILED_INCOMPLETE
 
 
 
-async def test_reconcile_timeout_cleans_up():
-    r = FakeRuntime({"design": ["hung"]})
+async def test_reconcile_timeout_cleans_up(tmp_path):
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["hung"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
-    outcome = await reconcile(r, h, deadline_s=0.2)
+    outcome = await reconcile(r, h, deadline_s=0.2, store=store)
     assert outcome["status"] == Result.FAILED_TIMEOUT
     assert h in r.cleaned   # deadline cleanup, not just on happy paths
 
 
 
-async def test_reconcile_status_error_is_infra_failure():
-    r = FakeRuntime({"design": ["error"]})
+async def test_reconcile_status_error_is_infra_failure(tmp_path):
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["error"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
-    outcome = await reconcile(r, h, deadline_s=5)
+    outcome = await reconcile(r, h, deadline_s=5, store=store)
     assert outcome["status"] == Result.FAILED_INFRA
 
 
 
-async def test_reconcile_cancel_event_aborts_immediately():
+async def test_reconcile_cancel_event_aborts_immediately(tmp_path):
     """A set cancel event aborts reconcile with the CANCELLED sentinel even
     while the container is still running — the caller owns stopping it."""
     import asyncio
-    r = FakeRuntime({"design": ["hung"]})
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["hung"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
     ev = asyncio.Event()
     ev.set()
-    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev)
+    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev, store=store)
     assert outcome["status"] == rt.CANCELLED
     assert h not in r.cleaned    # cancel path is stop(), not cleanup()
 
 
 
-async def test_reconcile_cancel_event_set_midrun_aborts():
+async def test_reconcile_cancel_event_set_midrun_aborts(tmp_path):
     """The event is checked every poll tick — a stop request lands within one
     POLL_INTERVAL while the container keeps reporting 'running'."""
     import asyncio
-    r = FakeRuntime({"design": ["hung"]})
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["hung"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
     ev = asyncio.Event()
 
@@ -209,7 +249,7 @@ async def test_reconcile_cancel_event_set_midrun_aborts():
         ev.set()
 
     async def _watch():
-        return await reconcile(r, h, deadline_s=5, cancel_event=ev)
+        return await reconcile(r, h, deadline_s=5, cancel_event=ev, store=store)
 
     watch = asyncio.create_task(_watch())
     press = asyncio.create_task(_press_stop())
@@ -220,52 +260,65 @@ async def test_reconcile_cancel_event_set_midrun_aborts():
 
 
 
-async def test_reconcile_cancel_beats_published_result():
+async def test_reconcile_cancel_beats_published_result(tmp_path):
     """The event check leads the loop: even an already-published result cannot
     beat a set cancel event (the user pressed stop — that step's push stands,
     the run ends cancelled)."""
     import asyncio
-    r = FakeRuntime()
-    h = await r.launch("r1", "design", 1, {})   # payload written at launch
+    store = _store(tmp_path)
+    r = FakeRuntime(store=store)
+    h = await r.launch("r1", "design", 1, {})   # payload published at launch
     ev = asyncio.Event()
     ev.set()
-    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev)
+    outcome = await reconcile(r, h, deadline_s=5, cancel_event=ev, store=store)
     assert outcome["status"] == rt.CANCELLED
 
 
 
-async def test_reconcile_without_cancel_event_never_aborts():
+async def test_reconcile_without_cancel_event_never_aborts(tmp_path):
     """cancel_event=None (crash-recovery resume path) behaves as before."""
-    r = FakeRuntime({"design": ["hung"]})
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["hung"]}, store=store)
     h = await r.launch("r1", "design", 1, {})
-    outcome = await reconcile(r, h, deadline_s=0.2, cancel_event=None)
+    outcome = await reconcile(r, h, deadline_s=0.2, cancel_event=None, store=store)
     assert outcome["status"] == Result.FAILED_TIMEOUT
 
 
 
-async def test_reconcile_reports_progress_changes():
-    r = FakeRuntime()
-    h = await r.launch("r1", "design", 1, {})
+async def test_reconcile_reports_progress_changes(tmp_path):
+    store = _store(tmp_path)
     progress = {"phase": "writing", "note": "draft 1", "elapsed_s": 4}
-    (h.result_path.parent / "progress.json").write_text(json.dumps(progress))
+    await store.put(progress_key("r1", "design", 1), json.dumps(progress).encode(),
+                    content_type="application/json")
+    r = FakeRuntime(store=store)
+    h = await r.launch("r1", "design", 1, {})
     seen = []
-    await reconcile(r, h, deadline_s=5, on_progress=lambda p: seen.append(p))
+    await reconcile(r, h, deadline_s=5, on_progress=lambda p: seen.append(p), store=store)
     assert progress in seen
 
 
 
-async def test_fake_runtime_writes_result_to_correct_path():
-    r = FakeRuntime({"design": ["ok"]})
+async def test_fake_runtime_publishes_result_to_object_store(tmp_path):
+    store = _store(tmp_path)
+    r = FakeRuntime({"design": ["ok"]}, store=store)
     h = await r.launch("run-42", "design", 2, {"RUN_ID": "run-42"})
-    payload = json.loads(h.result_path.read_text())
+    payload = json.loads((await store.get(result_key("run-42", "design", 2))).data)
     assert payload["status"] == "completed"
     assert r.calls == [("design", 2)]
     assert r.contexts == [("design", None)]
+    # The Handle is key-less (ADR-014) — channels are derived from its identity.
+    assert h.run_id == "run-42"
+    assert h.step_id == "design"
+    assert h.attempt_no == 2
 
 
 
-class _FakeContainers:
+class _RecordingContainers:
+    def __init__(self):
+        self.calls = []
+
     def run(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
         class _C:
             id = "f" * 12
         return _C()
@@ -273,27 +326,29 @@ class _FakeContainers:
 
 class _FakeDockerClient:
     def __init__(self):
-        self.containers = _FakeContainers()
+        self.containers = _RecordingContainers()
 
 
-async def test_launch_clears_stale_result(monkeypatch, tmp_path):
-    """A launch into a reused attempt dir must not inherit the previous attempt's
-    result file — the reconciler reads its presence as "published" (regression for
-    the implement re-loop, where poll #1 saw result_present=True from the stale file
-    and a crash-before-publish relaunch could be classified with the old payload)."""
+async def test_launch_passes_no_volumes_and_image_workdir(monkeypatch, tmp_path):
+    """Zero mounts (ADR-014): launch must not pass volumes, and must not even
+    take a workdir at construction — the container works in the image-owned
+    /workspace. A leftover host-path workdir would make docker silently create
+    a root-owned tree the non-root agent cannot write (Phase 1 gotcha)."""
     # DockerRuntime imports docker lazily inside __init__; CI installs only
     # shared/[dev] (no docker-py), so string-patching `docker.from_env` would make
     # monkeypatch's resolve() import the real module and fail. Seed a stub instead.
     docker_stub = types.ModuleType("docker")
-    docker_stub.from_env = lambda **kw: _FakeDockerClient()
+    client = _FakeDockerClient()
+    docker_stub.from_env = lambda **kw: client
     docker_stub.DockerClient = lambda **kw: _FakeDockerClient()
     docker_stub.errors = types.SimpleNamespace(NotFound=Exception)
     monkeypatch.setitem(sys.modules, "docker", docker_stub)
-    r = rt.DockerRuntime(image="test-image", workdir=str(tmp_path))
-    outdir = tmp_path / "results" / "r1" / "implement" / "1"
-    outdir.mkdir(parents=True)
-    stale = outdir / rt.RESULT_FILENAME
-    stale.write_text('{"status": "completed"}')  # previous attempt's payload
+    r = rt.DockerRuntime(image="test-image")
     h = await r.launch("r1", "implement", 1, {})
-    assert not stale.exists()
-    assert h.result_path == stale
+    assert h.container_id == "f" * 12
+    assert h.run_id == "r1"
+    assert h.step_id == "implement"
+    assert h.attempt_no == 1
+    (_args, kwargs) = client.containers.calls[0]
+    assert "volumes" not in kwargs
+    assert kwargs["working_dir"] == "/workspace"

@@ -19,6 +19,8 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,7 +59,12 @@ def _run_skill(tmp_path: Path, remote: Path, run_branch: str, workspace: Path | 
     out = tmp_path / "out"
     ws.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ,
+    base = dict(os.environ)
+    # The PUT-URL channels are per-test: never inherit host/ambient presigns.
+    for k in ("BB_RESULT_PUT_URL", "BB_PROGRESS_PUT_URL",
+              "BB_LOG_PUT_URL", "BB_DIAG_PUT_URL"):
+        base.pop(k, None)
+    env = {**base,
            "BB_GIT_MODE": "1",
            "GIT_REMOTE_URL": str(remote),
            "GIT_SOURCE_BRANCH": "main",
@@ -184,8 +191,8 @@ def test_download_sha_mismatch_fails_infra_without_extracting(tmp_path):
 
 def test_download_missing_url_fails_init(tmp_path):
     remote = _make_remote(tmp_path)
-    proc, ws, out = _run_skill(tmp_path, remote, "feat/download-nourl",
-                               env_overrides=_skills_stop_env(None))
+    proc, _ws, out = _run_skill(tmp_path, remote, "feat/download-nourl",
+                                env_overrides=_skills_stop_env(None))
     assert proc.returncode == 2, proc.stderr
     payload = _result(out)
     assert payload["status"] == "failed_init"
@@ -202,3 +209,110 @@ def test_download_unreachable_url_fails_infra(tmp_path):
     assert payload["status"] == "failed_infra"
     assert "download failed" in payload["reason"]
     assert not (ws / "repo" / ".claude" / "skills" / "test").exists()
+
+
+# ── ADR-014 upload channels: presigned PUTs ─────────────────────────────────
+
+
+class _PutHandler(BaseHTTPRequestHandler):
+    def do_PUT(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+        self.server.capture.append((self.path, body,
+                                    self.headers.get("Content-Type")))
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):   # silence per-request logging
+        pass
+
+
+class _PutCapture:
+    """In-process HTTP server capturing the agent's presigned-PUT uploads
+    (ADR-014). Binds 127.0.0.1:0 — no traffic leaves the test host."""
+
+    def __init__(self):
+        self.record: list[tuple[str, bytes, str | None]] = []
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _PutHandler)
+        self._server.capture = self.record
+        self._thread = threading.Thread(target=self._server.serve_forever,
+                                        daemon=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._server.shutdown()
+        self._server.server_close()
+
+    def urls(self) -> dict[str, str]:
+        base = f"http://127.0.0.1:{self._server.server_address[1]}"
+        return {"BB_RESULT_PUT_URL": f"{base}/result",
+                "BB_PROGRESS_PUT_URL": f"{base}/progress",
+                "BB_LOG_PUT_URL": f"{base}/log",
+                "BB_DIAG_PUT_URL": f"{base}/diag"}
+
+    def puts_for(self, path: str) -> list[tuple[str, bytes, str | None]]:
+        return [t for t in self.record if t[0] == path]
+
+
+def _mock_env(bundle: Path, sha: str, put_urls: dict[str, str] | None = None) -> dict[str, str]:
+    """Full-path mock run (no Claude Code): skills delivered, BB_MOCK emits the
+    completed verdict, the EXIT trap ships the channels."""
+    env = {"BB_STOP_AFTER_INIT": "0", "BB_STOP_AFTER_SKILLS": "0",
+           "BB_SKILL_URL": bundle.as_uri(), "BB_SKILL_SHA256": sha,
+           "BB_MOCK": "1", "BB_MOCK_SECONDS": "0"}
+    env.update(put_urls or {})
+    return env
+
+
+def test_stop_after_skills_uploads_heartbeat_channels_from_trap(tmp_path):
+    """BB_STOP_AFTER_SKILLS exits before the heartbeat loop ever starts — the
+    EXIT trap alone must ship the final progress + agent.log (best-effort) and
+    skip the result (no verdict was emitted yet)."""
+    remote = _make_remote(tmp_path)
+    bundle, sha = _bundle(tmp_path)
+    with _PutCapture() as cap:
+        proc, _ws, _out = _run_skill(
+            tmp_path, remote, "feat/put-stop",
+            env_overrides={**_skills_stop_env(bundle.as_uri(), sha),
+                           **cap.urls()})
+    assert proc.returncode == 0, proc.stderr
+    assert len(cap.puts_for("/progress")) >= 1
+    assert len(cap.puts_for("/log")) >= 1
+    assert cap.puts_for("/result") == []
+
+
+def test_mock_run_uploads_result_and_logs(tmp_path):
+    """Full mock path: the result PUT lands at exit with the completed verdict;
+    agent.log and diagnostics.txt ride along."""
+    remote = _make_remote(tmp_path)
+    bundle, sha = _bundle(tmp_path)
+    with _PutCapture() as cap:
+        proc, _ws, _out = _run_skill(
+            tmp_path, remote, "feat/put-mock",
+            env_overrides=_mock_env(bundle, sha, cap.urls()))
+    assert proc.returncode == 0, proc.stderr
+    results = cap.puts_for("/result")
+    assert len(results) == 1
+    _, body, ctype = results[0]
+    assert ctype == "application/json"
+    assert json.loads(body)["status"] == "completed"
+    assert len(cap.puts_for("/diag")) >= 1
+    assert len(cap.puts_for("/log")) >= 1
+
+
+def test_unreachable_result_url_exits_failed_infra(tmp_path):
+    """The result channel is CRITICAL: a dead PUT URL degrades the exit code to
+    4 and rewrites the local payload to failed_infra so the engine retries the
+    step (the push landed — the retry is idempotent)."""
+    remote = _make_remote(tmp_path)
+    bundle, sha = _bundle(tmp_path)
+    proc, _ws, out = _run_skill(
+        tmp_path, remote, "feat/put-dead",
+        env_overrides=_mock_env(bundle, sha,
+                                {"BB_RESULT_PUT_URL": "http://127.0.0.1:1/result"}))
+    assert proc.returncode == 4, proc.stderr
+    payload = _result(out)
+    assert payload["status"] == "failed_infra"
+    assert "result upload failed" in payload["reason"]

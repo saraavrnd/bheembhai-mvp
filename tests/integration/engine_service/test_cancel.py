@@ -33,6 +33,7 @@ from bheembhai.database import (
 from bheembhai.models.run import Transition
 from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.providers.env_secrets import EnvSecureStorage
+from bheembhai.providers.local_storage import LocalStorage
 from sqlalchemy import delete, select
 from test_state_machine import (
     POLICY_FAST,
@@ -111,6 +112,11 @@ def _collector(events):
     async def _append(event):
         events.append(event)
     return _append
+
+
+def _store(tmp_path):
+    """Per-test LocalStorage — the ADR-014 agent channels land here."""
+    return LocalStorage(str(tmp_path / "artifacts"))
 
 
 async def _claim(item, session, config):
@@ -200,16 +206,19 @@ async def test_cancel_mid_step_signals_dispatch_and_stops_container(
 
 
 async def test_cancel_at_open_gate_closes_gate_and_voids_decision(
-        session, secure_storage, config):
+        session, secure_storage, config, tmp_path):
     """No live dispatch (run paused at a gate): the cancel handler closes the
     open gate, voids the pending decision item, and records cancelled."""
     s, created = session
     world = await make_world(s, created, secure_storage)
-    rt = FakeRuntime({"story-design": ["ok"]})
-    worker_mod.configure_worker(runtime=rt, secure_storage=secure_storage)
+    store = _store(tmp_path)
+    rt = FakeRuntime({"story-design": ["ok"]}, store=store)
+    worker_mod.configure_worker(runtime=rt, secure_storage=secure_storage,
+                                store=store)
 
     # Drive to the gate the normal way (a plain dispatch, no _active entry).
-    await drive_run(s, start_item(world["run"]), config, rt, secure_storage)
+    await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
+                    store=store)
     run = await get_run(s, world["run"].id)
     assert run.state == "paused"
 
@@ -280,17 +289,18 @@ async def test_cancel_before_start_voids_start_item_and_records_cancelled(
 
 
 async def test_preset_cancel_event_cancels_before_any_step_runs(
-        session, secure_storage, config):
+        session, secure_storage, config, tmp_path):
     """Between-steps checkpoint: a dispatch whose cancel event is already set
     records cancelled at the loop top — no step, no container."""
     s, created = session
     world = await make_world(s, created, secure_storage, pol_yaml=POLICY_FAST)
-    rt = FakeRuntime({})
+    store = _store(tmp_path)
+    rt = FakeRuntime({}, store=store)
     events = []
     ev = asyncio.Event()
     ev.set()
     await drive_run(s, start_item(world["run"]), config, rt, secure_storage,
-                    cancel_event=ev, publish=_collector(events))
+                    cancel_event=ev, publish=_collector(events), store=store)
     run = await get_run(s, world["run"].id)
     assert run.state == "cancelled"
     assert rt.calls == []

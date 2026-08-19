@@ -1,15 +1,15 @@
 """Stage-accurate file content for the run-details viewer.
 
-The viewer's fallback chain is git → clone → stub → placeholder:
+The viewer's fallback chain is git → stub → placeholder:
 
 1. ``git`` — fetch the file from the GitHub remote at the step's recorded
    commit SHA (contents API, raw media type). Only entered when the run has a
    GitHub integration, a token resolves, and the step has a content-bearing
    transition payload with a ``commit``.
-2. ``clone`` — the existing local clone tree under ``BB_WORKDIR`` (copy/demo
-   mode, or any git failure — including 404, because curated pills list
-   generated artifacts like ``changes.diff`` that were never committed).
-3. ``stub`` / ``placeholder`` — legacy demo content.
+2. ``stub`` / ``placeholder`` — legacy demo content. (ADR-014 removed the
+   clone-tree stage: the engine's ``BB_WORKDIR`` clone no longer exists, so
+   anything git cannot serve — including 404s for never-committed generated
+   artifacts like ``changes.diff`` — falls straight to stubs.)
 
 Every stage of the chain is non-raising: the viewer always answers.
 """
@@ -70,7 +70,7 @@ async def git_fetch_content(db, run: Run, sha: str, path: str, secure_storage) -
 
     Returns the decoded text, or None on any miss — no integration, unresolvable
     token, malformed config, or a failed request (404/401/403/5xx/network/
-    oversized/binary). Never raises: the chain falls through to the clone.
+    oversized/binary). Never raises: the chain falls through to the stubs.
     """
     if not run.github_integration_id:
         return None
@@ -102,7 +102,6 @@ async def git_fetch_content(db, run: Run, sha: str, path: str, secure_storage) -
 
 def build_chain(
     git_content: str | None,
-    clone_content: str,
     path: str,
     stub_content: dict | None = None,
 ) -> tuple[str, str, str]:
@@ -115,8 +114,6 @@ def build_chain(
     """
     if git_content is not None:
         return git_content, "git", path
-    if clone_content:
-        return clone_content, "clone", path
     if stub_content:
         if path in stub_content:
             return stub_content[path], "stub", path

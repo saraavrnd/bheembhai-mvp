@@ -113,6 +113,17 @@ class S3Storage:
         )
         return PresignedUrl(url=url, expires_at=time.time() + expires_in)
 
+    async def presigned_put_url(
+        self, key: str, expires_in: int = 3600
+    ) -> PresignedUrl:
+        import time
+        url = self._client.generate_presigned_url(
+            "put_object",
+            Params={"Bucket": self.bucket, "Key": key},
+            ExpiresIn=expires_in,
+        )
+        return PresignedUrl(url=url, expires_at=time.time() + expires_in)
+
     async def list(self, prefix: str) -> AsyncIterator[str]:
         paginator = self._client.get_paginator("list_objects_v2")
         for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):

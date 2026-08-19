@@ -1,7 +1,34 @@
-"""Unit — the single log-key builder shared by engine uploads and platform reads."""
+"""Unit — the single key builder shared by engine uploads and platform reads."""
 
 import pytest
-from bheembhai.log_keys import KINDS, log_key
+from bheembhai.log_keys import (
+    KINDS,
+    PROGRESS_FILENAME,
+    RESULT_FILENAME,
+    log_key,
+    progress_key,
+    result_key,
+)
+
+
+def test_result_key_is_canonical():
+    assert result_key("r1", "story-design", 2) == \
+        "results/r1/story-design/2/bb_step_result.json"
+    assert RESULT_FILENAME == "bb_step_result.json"
+
+
+def test_progress_key_is_canonical():
+    assert progress_key("r1", "story-design", 2) == \
+        "results/r1/story-design/2/progress.json"
+    assert PROGRESS_FILENAME == "progress.json"
+
+
+def test_result_keys_share_the_slug_rules():
+    """The results/ namespace reuses the same slug sanitizer as logs/."""
+    assert result_key("r1", "Story Design!", 1) == \
+        "results/r1/story-design/1/bb_step_result.json"
+    assert progress_key("r1", "../../etc/passwd", 1) == \
+        "results/r1/etc-passwd/1/progress.json"
 
 
 def test_log_key_is_canonical():

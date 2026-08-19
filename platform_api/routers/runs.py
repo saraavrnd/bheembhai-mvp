@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import uuid as _uuid
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from bheembhai.database import get_session
@@ -1139,49 +1137,6 @@ async def get_run(
     return await _build_run_detail(db, run, started_by=starter)
 
 
-_ARTIFACT_TEXT_MAX = 2 * 1024 * 1024  # 2 MB cap on served artifact text
-
-
-def _read_artifact(run_id: str, path: str) -> str:
-    """Read a repo-relative artifact from the engine's clone tree, confined to
-    clones/<run_id> with a path-traversal guard, a 2 MB cap, and text-only
-    filtering (binary content is refused — the viewer renders text)."""
-    workdir = os.environ.get("BB_WORKDIR") or ""
-    if not workdir:
-        return ""
-    base = Path(workdir) / "clones" / str(run_id)
-    if not base.is_dir():
-        return ""
-    clean = os.path.normpath(path)
-    if clean.startswith("..") or os.path.isabs(clean):
-        return ""
-    # Steps run sequentially on one branch; the newest clone holds the latest
-    # branch state. Any clone of this run is fine for committed artifacts.
-    repos = sorted(
-        (p for p in base.rglob("repo") if p.is_dir()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    for repo in repos:
-        candidate = (repo / clean).resolve()
-        try:
-            candidate.relative_to(base.resolve())
-        except ValueError:
-            continue
-        if not candidate.is_file():
-            continue
-        try:
-            if candidate.stat().st_size > _ARTIFACT_TEXT_MAX:
-                return ""
-            data = candidate.read_bytes()
-        except OSError:
-            continue
-        if b"\x00" in data:
-            continue  # binary — refuse
-        return data.decode("utf-8", errors="replace")
-    return ""
-
-
 @router.get("/{run_id}/file")
 async def get_run_file(
     run_id: str,
@@ -1196,8 +1151,9 @@ async def get_run_file(
 
     Fallback chain (see platform_api/github_content.py): git at the step's
     recorded commit SHA (stage-accurate, when step_id/commit point at one) →
-    local clone tree (copy/demo mode, generated artifacts) → demo stubs →
-    placeholder.
+    demo stubs → placeholder. (ADR-014 removed the engine-side clone tree, so
+    never-committed generated artifacts like ``changes.diff`` fall through to
+    the stubs.)
     """
     if enabled is None:
         raise HTTPException(401, "Authentication required")
@@ -1222,7 +1178,7 @@ async def get_run_file(
                 used_commit = sha
 
     content, source, resolved_path = build_chain(
-        git_content, _read_artifact(run_id, path), path, _STUB_FILE_CONTENT)
+        git_content, path, _STUB_FILE_CONTENT)
 
     # Determine viewer type from extension (single source of truth)
     viewer = _viewer_for_path(resolved_path)

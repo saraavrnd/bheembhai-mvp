@@ -67,9 +67,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # ── Wire ObjectStorage provider (ADR-011) ──────────────────
     # Same backend selection as the engine: both services share the store
-    # (local path under BB_WORKDIR, or the same S3 bucket). Built BEFORE the
-    # optional seed — skill seeds publish S3 bundles (Phase 1), so the store
-    # must exist first.
+    # (LOCAL_STORAGE_PATH for host-run tests, or the same S3 bucket). Built
+    # BEFORE the optional seed — skill seeds publish S3 bundles (Phase 1), so
+    # the store must exist first.
     app.state.object_store = build_object_store(config.storage)
     logger.info("Object storage wired: backend=%s",
                 getattr(app.state.object_store, "backend_name", "?"))

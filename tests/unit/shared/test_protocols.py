@@ -2,7 +2,7 @@
 
 from bheembhai.protocols.auth import Identity
 from bheembhai.protocols.secrets import Credential
-from bheembhai.protocols.storage import PresignedUrl, StoredObject
+from bheembhai.protocols.storage import ObjectStorage, PresignedUrl, StoredObject
 
 
 def test_identity_creation():
@@ -35,3 +35,9 @@ def test_credential_creation():
     cred = Credential(ref="env:GH_TOKEN", value="ghp_test", provider="env")
     assert cred.ref == "env:GH_TOKEN"
     assert cred.provider == "env"
+
+
+def test_object_storage_protocol_exposes_presigned_put_url():
+    """ADR-014 requires the PUT side of presigning on the protocol surface —
+    the agent containers upload their channels through it."""
+    assert hasattr(ObjectStorage, "presigned_put_url")

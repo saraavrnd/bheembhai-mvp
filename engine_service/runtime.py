@@ -5,11 +5,13 @@ runs step containers. `DockerRuntime` serves local dev (docker-compose); a Farga
 behind the same protocol is the production variant (deferred).
 
 Design notes carried forward from the R&D engine (engine.py):
-  - Two independent signals: the result payload (written by the container to /out) and the
-    exit status (polled from the runtime). A crashed container cannot report its own death.
+  - Two independent signals: the result payload (agent-uploaded to object storage via a
+    presigned PUT) and the exit status (polled from the runtime). A crashed container
+    cannot report its own death.
   - The reconciler joins those signals against a deadline to classify each attempt.
-  - Host mounts must be 0o777: the agent container runs as a NON-ROOT user (Claude Code
-    requires it for --dangerously-skip-permissions) and must be able to publish results.
+  - Zero host mounts (ADR-014): /out and /workspace are image-owned container-local
+    dirs; the engine reads every channel back from object storage under deterministic
+    keys derived from (run_id, step_id, attempt_no).
 """
 
 import asyncio
@@ -20,17 +22,18 @@ import re
 import time
 import traceback
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
+
+from bheembhai.log_keys import RESULT_FILENAME, log_key, progress_key, result_key
 
 log = logging.getLogger(__name__)
 
-# The orchestrator's control-plane result file. Deliberately NOT "result.json":
-# the PDLC skills use result.json as their own in-repo handoff artifact, and an agent
-# will happily overwrite a file by that name. Keep the control plane in its own namespace.
-RESULT_FILENAME = "bb_step_result.json"
 GRACE_SECONDS = 3.0
 POLL_INTERVAL = 0.4
+# Cadence for the object-storage channel reads (result payload + progress),
+# in poll ticks: ~2s at POLL_INTERVAL=0.4. The docker status poll stays fast —
+# it is the channel that detects death; S3 reads only need liveness granularity.
+SLOW_POLL_TICKS = 5
 
 # Sentinel returned by reconcile() when the run's cancel event fires mid-step.
 # Deliberately NOT a Result/ExecState value: it means "the orchestrator aborted
@@ -65,10 +68,18 @@ class ExecState:
 
 @dataclass
 class Handle:
-    """A launched step container — everything needed to poll and clean it up."""
+    """A launched step container — everything needed to poll and clean it up.
+
+    Channels are object-store keys derived from (run_id, step_id, attempt_no)
+    — never disk paths: /out and /workspace are image-owned container-local
+    dirs, and the engine reads results/progress/logs back from storage
+    (ADR-014). A rebuilt Handle (crash re-attach) derives the same keys.
+    """
     container_id: str
-    result_path: Path
     started_at: float
+    run_id: str
+    step_id: str
+    attempt_no: int
 
 
 class Runtime(Protocol):
@@ -83,9 +94,10 @@ class Runtime(Protocol):
         *,
         context: dict | None = None,
     ) -> Handle:
-        """Launch one step container. `env` is the fully composed bundle (ADR-013 §5);
+        """Launch one step container. `env` is the fully composed bundle (ADR-013 §5)
+        including the presigned PUT URLs for this attempt's channels (ADR-014);
         `context` (the per-run context dict) rides in as BB_CONTEXT — the runner
-        writes CONTEXT_FILE inside the container (no /ctx mount in Phase 1)."""
+        writes CONTEXT_FILE inside the container (no /ctx mount)."""
         ...
 
     async def make_handle(
@@ -131,13 +143,12 @@ class DockerRuntime:
     runtime-agnostic. docker-py is synchronous; every call is wrapped in asyncio.to_thread
     (short socket I/O — fine off the event loop)."""
 
-    def __init__(self, image: str, *, endpoint: str | None = None, workdir: str,
+    def __init__(self, image: str, *, endpoint: str | None = None,
                  mem_limit: str = "4g", network: str = "bridge",
                  keep_containers: bool = False, env_forward: list[str] | None = None):
         import docker
         self.client = docker.DockerClient(base_url=endpoint) if endpoint else docker.from_env()
         self.image = image
-        self.workdir = Path(workdir)
         self.mem_limit = mem_limit
         self.network = network
         self.keep_containers = keep_containers
@@ -145,39 +156,11 @@ class DockerRuntime:
 
     async def launch(self, run_id, step_id, attempt_no, env, *, context=None) -> Handle:
         def _launch():
-            # The container runs as a NON-ROOT user (so Claude Code will accept
-            # --dangerously-skip-permissions). Host-created mounts must therefore be
-            # writable by that user, or the container can't publish its result.
-            outdir = self.workdir / "results" / run_id / step_id / str(attempt_no)
-            outdir.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(outdir, 0o777)
-            except OSError:
-                log.debug("chmod %s 0o777 failed", outdir, exc_info=True)
-
-            # Fresh launch: drop any result a previous attempt of this step left behind.
-            # The reconciler reads this file's presence as "the container published" — a
-            # stale one (re-loop into a reused attempt dir, or a relaunch whose container
-            # died before publishing) would make poll #1 report result_present=True and
-            # could classify this attempt with the previous attempt's payload.
-            stale = outdir / RESULT_FILENAME
-            if stale.exists():
-                stale.unlink()
-
-            # Git mode: the container clones the run branch (created by the ENGINE at
-            # init, ADR-013 §2) into a fresh empty host dir — so the host can still read
-            # artifacts back from it after the run.
-            workspace = self.workdir / "clones" / run_id / step_id / str(attempt_no)
-            workspace.mkdir(parents=True, exist_ok=True)
-            try:
-                os.chmod(workspace, 0o777)
-            except OSError:
-                log.debug("chmod %s 0o777 failed", workspace, exc_info=True)
-
-            # Per-run CONTEXT travels as the compact BB_CONTEXT env copy only
-            # (Phase 1 dropped the /ctx bind mount) — the runner writes
-            # CONTEXT_FILE itself inside the container. `context` stays on the
-            # protocol so scripted runtimes (FakeRuntime) can record it.
+            # Zero mounts (ADR-014): the container stages its result/progress/logs in
+            # the image-owned /out dir and uploads them via the presigned PUT URLs in
+            # `env`; the git clone lives in image-owned /workspace. The engine reads
+            # everything back from object storage — no host dirs, no 0o777 trees, no
+            # BB_WORKDIR path parity.
             container_env = dict(env)
 
             # Debugging knobs shared with the host — mock mode and CLAUDE_CODE tuning.
@@ -187,18 +170,12 @@ class DockerRuntime:
                 if os.environ.get(k):
                     container_env[k] = os.environ[k]
 
-            # Phase 1: only /out (result payload) and /workspace (git clone) are
-            # mounted. Skills arrive via BB_SKILL_URL download inside the
-            # container; context via BB_CONTEXT.
-            vols = {str(outdir): {"bind": "/out", "mode": "rw"},
-                    str(workspace): {"bind": "/workspace", "mode": "rw"}}
-
             log.info("launch step=%s attempt=%s image=%s", step_id, attempt_no, self.image)
-            log.info("  result path (host): %s", outdir / RESULT_FILENAME)
-            log.info("  mounts: %s", {k: v["bind"] for k, v in vols.items()})
+            log.info("  result key: %s (no mounts — channels via object storage)",
+                     result_key(run_id, step_id, attempt_no))
             try:
                 c = self.client.containers.run(
-                    self.image, detach=True, environment=container_env, volumes=vols,
+                    self.image, detach=True, environment=container_env,
                     working_dir="/workspace",
                     mem_limit=self.mem_limit,
                     network_mode=self.network)
@@ -206,17 +183,14 @@ class DockerRuntime:
                 log.error("launch FAILED for step=%s:\n%s", step_id, traceback.format_exc())
                 raise
             log.info("  container started id=%s", c.id[:12])
-            return Handle(c.id, outdir / RESULT_FILENAME, time.time())
+            return Handle(c.id, time.time(), run_id, step_id, attempt_no)
         return await asyncio.to_thread(_launch)
 
     async def make_handle(self, run_id, step_id, attempt_no, container_id, started_at):
-        # Reconstruct the result path from the SAME layout launch() writes into —
-        # the container's /out maps to workdir/results/<run>/<step>/<attempt>.
-        return Handle(
-            container_id,
-            self.workdir / "results" / str(run_id) / step_id / str(attempt_no) / RESULT_FILENAME,
-            started_at,
-        )
+        # Rebuild from persisted state. The channel keys derive from the same
+        # (run_id, step_id, attempt_no) triple launch() used, so re-attach reads
+        # the same objects — no disk state to reconstruct (ADR-014).
+        return Handle(container_id, started_at, run_id, step_id, attempt_no)
 
     async def status(self, h: Handle) -> dict:
         def _status():
@@ -272,81 +246,107 @@ class DockerRuntime:
         await asyncio.to_thread(_stop)
 
 
-async def read_result(path: Path) -> dict | None:
-    """Read a step's published result payload. None on absence or corruption."""
-    def _read():
-        if not path.exists():
-            return None
-        try:
-            return json.loads(path.read_text())
-        except (OSError, ValueError):  # missing/corrupt payload → treat as absent
-            return None
-    return await asyncio.to_thread(_read)
+async def _get_json(store, key: str) -> dict | None:
+    """Latest payload at an object-store key. None on absence or corruption.
+
+    Storage errors also read as absent: the exit-status channel still classifies
+    the attempt (a down store means the agent's critical PUT failed too, and its
+    non-zero exit routes the retry), so a transient read miss never lies about a
+    result — it just defers to the next slow tick or the grace window."""
+    if store is None:
+        return None
+    try:
+        obj = await store.get(key)
+    except Exception:
+        log.debug("store.get(%s) failed", key, exc_info=True)
+        return None
+    if obj is None:
+        return None
+    try:
+        return json.loads(obj.data)
+    except (OSError, ValueError):  # corrupt payload → treat as absent
+        return None
 
 
 _COST_EVENT_RE = re.compile(r'"total_cost_usd"\s*:\s*(-?[0-9.]+)')
 
 
-async def _scrape_partial_cost(log_path: Path) -> float | None:
-    """Best-effort recovery of session spend from ``agent.log`` when the
-    container dies without publishing a result (cancel / timeout / OOM /
-    failed_incomplete). The result event is the terminal stream-json line, so
-    only the tail of the file is scanned and the LAST cost figure wins. A
-    session killed mid-flight usually has no cost event at all -> None — the
-    caller records ``cost_reported: False`` rather than a confident zero.
+async def _scrape_partial_cost(store, agent_log_key: str) -> float | None:
+    """Best-effort recovery of session spend from the agent-uploaded agent.log
+    object when the container dies without publishing a result (cancel / timeout
+    / OOM / failed_incomplete). The result event is the terminal stream-json
+    line, so only the tail of the object is scanned and the LAST cost figure
+    wins. The object is at most one heartbeat interval (~5s) stale — acceptable
+    for a partial estimate. A session killed mid-flight usually has no cost
+    event at all -> None — the caller records ``cost_reported: False`` rather
+    than a confident zero.
     """
-    def _read() -> float | None:
-        try:
-            if not log_path.exists():
-                return None
-            with open(log_path, "rb") as f:
-                f.seek(0, os.SEEK_END)
-                size = f.tell()
-                f.seek(max(0, size - 8 * 1024 * 1024))
-                data = f.read().decode("utf-8", errors="replace")
-        except OSError:
-            return None
-        for raw in reversed(_COST_EVENT_RE.findall(data)):
-            try:
-                value = float(raw)
-                if value >= 0:
-                    return value
-            except ValueError:
-                continue
+    if store is None:
         return None
-    return await asyncio.to_thread(_read)
+    try:
+        obj = await store.get(agent_log_key)
+    except Exception:
+        log.debug("store.get(%s) failed during cost scrape", agent_log_key, exc_info=True)
+        return None
+    if obj is None:
+        return None
+    data = obj.data[-8 * 1024 * 1024:].decode("utf-8", errors="replace")
+    for raw in reversed(_COST_EVENT_RE.findall(data)):
+        try:
+            value = float(raw)
+            if value >= 0:
+                return value
+        except ValueError:
+            continue
+    return None
 
 
 CONTAINER_LOG_TAIL_LINES = 2000
 CONTAINER_LOG_MAX_BYTES = 512 * 1024  # 512 KB cap on the captured container.log
 
 
-async def _dump_container_log(runtime: Runtime, h: Handle) -> None:
-    """Capture bounded container output into the attempt dir as container.log
+async def _capture_container_log(store, runtime: Runtime, h: Handle) -> None:
+    """Capture bounded container output into object storage as container.log
     while the container still exists — docker logs die with the container, and
     every terminal path (incl. cancel, whose stop() comes after) must read
-    them before removal. Idempotent: an existing non-empty capture (written
-    by reconcile's own kill paths) wins."""
-    target = h.result_path.parent / "container.log"
-    if target.exists() and target.stat().st_size > 0:
+    them before removal. Idempotent: an existing non-empty object (written by
+    reconcile's own kill paths) wins. Best-effort — a capture failure never
+    fails the step."""
+    if store is None:
+        return
+    key = log_key(h.run_id, h.step_id, h.attempt_no, "container")
+    try:
+        head = await store.head(key)
+        if head is not None and head.size > 0:
+            return
+    except Exception:
+        log.debug("store.head(%s) failed — skipping container.log capture", key,
+                  exc_info=True)
         return
     logs = await runtime.logs(h, tail=CONTAINER_LOG_TAIL_LINES)
     if not logs:
         return
     data = logs.encode("utf-8", "replace")[-CONTAINER_LOG_MAX_BYTES:]
     try:
-        target.write_bytes(data)
-    except OSError:
-        log.warning("could not write container.log for container %s",
-                    h.container_id[:12])
+        await store.put(key, data, content_type="text/plain")
+    except Exception:
+        log.warning("could not upload container.log for container %s",
+                    h.container_id[:12], exc_info=True)
 
 
 async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
-                    on_progress=None, *, cancel_event: asyncio.Event | None = None) -> dict:
+                    on_progress=None, *, cancel_event: asyncio.Event | None = None,
+                    store=None) -> dict:
     """Poll until terminal, then classify by joining result + exit status.
 
-    on_progress(dict) is awaited when the container's progress.json changes, so a
+    on_progress(dict) is awaited when the container's progress changes, so a
     long-running stage reports liveness instead of going silent for minutes.
+
+    Two signals on two channels (ADR-014): the result payload / progress /
+    agent.log arrive via object storage (agent presigned PUTs), while the exit
+    status is polled from the runtime. The storage channels are read at the
+    SLOW_POLL_TICKS cadence — liveness needs seconds, not sub-second freshness —
+    and the status poll stays at POLL_INTERVAL.
 
     cancel_event: when set, abort immediately with the CANCELLED sentinel — the
     caller (RunDriver) owns killing the container via runtime.stop(). POLL_INTERVAL
@@ -355,18 +355,21 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
     exited_at = None
     polls = 0
     last_progress = None
-    progress_path = h.result_path.parent / "progress.json"
-    log.info("reconcile start: watching container=%s deadline=%ss result=%s",
-             h.container_id[:12], deadline_s, h.result_path)
+    res_key = result_key(h.run_id, h.step_id, h.attempt_no)
+    prog_key = progress_key(h.run_id, h.step_id, h.attempt_no)
+    agent_log_key = log_key(h.run_id, h.step_id, h.attempt_no, "agent")
+    payload = None
+    log.info("reconcile start: watching container=%s deadline=%ss result_key=%s",
+             h.container_id[:12], deadline_s, res_key)
     while True:
         if cancel_event is not None and cancel_event.is_set():
             log.warning("reconcile aborted — cancel event set (run cancelled)")
             # The kill lands mid-session: whatever the CLI reported before the
             # stop is recoverable from its log and must still count.
-            partial = await _scrape_partial_cost(h.result_path.parent / "agent.log")
+            partial = await _scrape_partial_cost(store, agent_log_key)
             # The caller's stop() removes the container right after this
             # returns — this is the last moment its output is readable.
-            await _dump_container_log(runtime, h)
+            await _capture_container_log(store, runtime, h)
             return {"status": CANCELLED,
                     "cost_usd": partial or 0,
                     "cost_reported": partial is not None,
@@ -378,20 +381,23 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
             log.error("status() raised — treating as infra failure:\n%s",
                       traceback.format_exc())
             return {"status": Result.FAILED_INFRA, "reason": "runtime status() error"}
-        payload = await read_result(h.result_path)
-        elapsed = time.time() - h.started_at
+        # Storage channels on the slow cadence (first poll always reads so a
+        # fast-completing step is seen).
+        if polls == 1 or polls % SLOW_POLL_TICKS == 0:
+            payload = await _get_json(store, res_key)
 
-        # container heartbeat — surfaces "still working" instead of dead air
-        prog = await read_result(progress_path)
-        if prog and prog != last_progress:
-            last_progress = prog
-            log.info("  progress: phase=%s %s (%ss)", prog.get("phase"),
-                     prog.get("note", ""), prog.get("elapsed_s"))
-            if on_progress:
-                try:
-                    await on_progress(prog)
-                except Exception:
-                    log.debug("progress publish failed", exc_info=True)
+            # container heartbeat — surfaces "still working" instead of dead air
+            prog = await _get_json(store, prog_key)
+            if prog and prog != last_progress:
+                last_progress = prog
+                log.info("  progress: phase=%s %s (%ss)", prog.get("phase"),
+                         prog.get("note", ""), prog.get("elapsed_s"))
+                if on_progress:
+                    try:
+                        await on_progress(prog)
+                    except Exception:
+                        log.debug("progress publish failed", exc_info=True)
+        elapsed = time.time() - h.started_at
 
         if polls == 1 or polls % 10 == 0 or st["state"] != "running":
             log.info("  poll #%d: state=%s exit=%s result_present=%s elapsed=%.1fs",
@@ -400,7 +406,7 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
 
         if st["state"] == "gone":
             log.warning("container gone without result -> failed_infra")
-            partial = await _scrape_partial_cost(h.result_path.parent / "agent.log")
+            partial = await _scrape_partial_cost(store, agent_log_key)
             return {"status": Result.FAILED_INFRA,
                     "reason": "container vanished (OOM / host lost)",
                     "cost_usd": partial or 0,
@@ -409,6 +415,12 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
 
         if st["state"] == "exited":
             exited_at = exited_at or time.time()
+            # The agent uploads its result in the EXIT trap before docker
+            # reports exited (S3 is read-after-write consistent), but re-read
+            # each exited tick during the grace window anyway — a stale slow-
+            # tick None must not wait out the grace on a misread.
+            if payload is None and store is not None:
+                payload = await _get_json(store, res_key)
             if payload:
                 status = payload.get("status", Result.COMPLETED)
                 if st["exit_code"] not in (0, None) and status == Result.COMPLETED:
@@ -437,8 +449,8 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
             log.warning("  exited (exit=%s) but NO %s at %s -> failed_incomplete",
-                        st.get("exit_code"), RESULT_FILENAME, h.result_path)
-            partial = await _scrape_partial_cost(h.result_path.parent / "agent.log")
+                        st.get("exit_code"), RESULT_FILENAME, res_key)
+            partial = await _scrape_partial_cost(store, agent_log_key)
             return {"status": Result.FAILED_INCOMPLETE,
                     "reason": f"exited ({st['exit_code']}) without publishing a result",
                     "cost_usd": partial or 0,
@@ -448,10 +460,10 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
         if elapsed > deadline_s:
             log.warning("  deadline exceeded (%.1fs > %ss) -> failed_timeout",
                         elapsed, deadline_s)
-            partial = await _scrape_partial_cost(h.result_path.parent / "agent.log")
+            partial = await _scrape_partial_cost(store, agent_log_key)
             # This branch is the only one where reconcile itself kills the
             # container — capture its output before cleanup() removes it.
-            await _dump_container_log(runtime, h)
+            await _capture_container_log(store, runtime, h)
             await runtime.cleanup(h)
             return {"status": Result.FAILED_TIMEOUT,
                     "reason": f"exceeded {deadline_s}s deadline",

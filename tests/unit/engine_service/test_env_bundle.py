@@ -84,6 +84,14 @@ def test_no_skills_dir_env():
     assert "BB_SKILLS_DIR" not in env
 
 
+def test_no_put_urls_in_bundle():
+    # The four PUT URLs (ADR-014) are launch-time presigns added in
+    # state_machine — same pattern as BB_SKILL_URL. The env bundle itself
+    # must never carry them: presigns expire and are per-attempt.
+    env = bundle()
+    assert not any("PUT_URL" in k for k in env)
+
+
 def test_git_group():
     env = bundle()
     assert env["BB_GIT_MODE"] == "1"

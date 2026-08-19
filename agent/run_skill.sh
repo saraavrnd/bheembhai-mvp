@@ -4,9 +4,14 @@ set -uo pipefail
 # NOTE: bb_step_result.json, not result.json — the PDLC skills use result.json as their own
 # in-repo handoff artifact, so the control plane keeps a separate, unambiguous name.
 RESULT="${RESULT_DIR:-/out}/bb_step_result.json"
-# Workspace mount point — overridable so the script can also run on the host
-# (tests/unit/agent/test_run_skill_reentry.py points it at a temp dir).
+# Workspace dir — image-owned and container-local (ADR-014: zero mounts), overridable
+# so the script can also run on the host (tests/unit/agent/test_run_skill_reentry.py
+# points it at a temp dir).
 WORKSPACE="${WORKSPACE_DIR:-/workspace}"
+# Per-attempt upload channels (ADR-014): the engine presigns one PUT URL per channel.
+# Missing vars = "host test mode" — the upload helpers skip silently, never fail.
+AGENT_LOG="${RESULT_DIR:-/out}/agent.log"
+DIAG="${RESULT_DIR:-/out}/diagnostics.txt"
 START=$(date +%s)
 emit () {  # status, reason, [next]
   # Build the JSON with ONE jq call from environment variables. The previous version
@@ -46,7 +51,7 @@ emit () {  # status, reason, [next]
     { echo "WARN: rich result emit failed — wrote minimal fallback"
       echo "  jq stderr: $(head -c 200 "$RESULT".err 2>/dev/null)"
       echo "  files_json: ${FILES_JSON:-}"
-      echo "  review_json: ${REVIEW_JSON:-}"; } >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+      echo "  review_json: ${REVIEW_JSON:-}"; } >> "$DIAG" 2>/dev/null || true
     printf '{"run_id":"%s","step_id":"%s","attempt_no":%s,"status":"%s","summary":"(summary unavailable)","files":[],"cost_usd":%s}\n' \
       "${RUN_ID:-}" "${STEP_ID:-}" "${ATTEMPT_NO:-1}" "$1" "${COST_USD:-0}" > "$RESULT"
     rm -f "$RESULT".tmp "$RESULT".err
@@ -56,7 +61,8 @@ emit () {  # status, reason, [next]
 fail () { emit "$1" "$2"; exit "${3:-1}"; }
 
 # --- progress heartbeat -------------------------------------------------------
-# The backend polls this file so a long-running stage shows liveness instead of silence.
+# The engine polls this file from Object Storage (ADR-014), so a long-running stage
+# shows liveness instead of silence. Uploads are presigned PUTs, best-effort.
 PROGRESS="${RESULT_DIR:-/out}/progress.json"
 progress () {  # phase, note
   printf '{"phase":"%s","note":"%s","elapsed_s":%d,"ts":%d}\n' \
@@ -66,20 +72,73 @@ heartbeat_loop () {   # keeps elapsed_s ticking while the agent works
   while true; do
     sleep 5
     progress "${CURRENT_PHASE:-working}" "${CURRENT_NOTE:-agent running}"
+    # Phase 2: re-upload the heartbeat channels every tick so the engine sees
+    # liveness and a fresh agent.log (≤5s staleness — fine for the cost scrape).
+    upload_try "${BB_PROGRESS_PUT_URL:-}" "$PROGRESS" application/json || true
+    upload_try "${BB_LOG_PUT_URL:-}" "$AGENT_LOG" text/plain || true
     # also print, so `docker logs` shows the container is alive even while the
     # agent itself is quiet (claude -p buffers until it finishes).
     echo "[$(( $(date +%s) - START ))s] ${CURRENT_PHASE:-working}: ${CURRENT_NOTE:-agent running}"
   done
 }
+
+# --- Object Storage upload helpers (ADR-014: presigned PUTs) -------------------
+# The engine presigns one PUT URL per channel; the container holds no cloud
+# credentials. upload_try is best-effort (auxiliary channels); upload_critical
+# carries the result payload, whose PUT failure degrades the exit code to 4
+# (failed_infra — the engine retries; the push already landed, so a retry is
+# idempotent). Both no-op on an unset URL or a missing/empty file, so host-run
+# tests and re-entry hooks behave exactly as before. `${VAR:-}` guards keep them
+# safe under `set -u` — including from the EXIT trap, where an unbound-variable
+# abort would silently kill the whole upload path. URLs are bearer credentials
+# and are never echoed.
+upload_try () {  # put_url, local_file, content_type
+  [ -n "${1:-}" ] && [ -s "${2:-}" ] || return 0
+  curl -fsS -X PUT --data-binary @"$2" -H "Content-Type: $3" "$1" >/dev/null 2>&1
+}
+upload_critical () {  # put_url, local_file, content_type
+  [ -n "${1:-}" ] && [ -s "${2:-}" ] || return 0
+  curl -fsS --retry 3 --retry-delay 2 --connect-timeout 15 \
+    -X PUT --data-binary @"$2" -H "Content-Type: $3" "$1" >/dev/null 2>&1
+}
+on_exit () {
+  _rc=$?
+  # The result payload is the ONE critical channel — no PUT, no verdict.
+  if ! upload_critical "${BB_RESULT_PUT_URL:-}" "$RESULT" application/json; then
+    _rc=4
+    # Leave a local verdict matching the exit code: engine-side this classifies
+    # as failed_infra even if a later retry's PUT succeeds.
+    if [ -s "$RESULT" ]; then
+      jq --arg reason "result upload failed (presigned PUT) — engine will retry the step" \
+         '.status = "failed_infra" | .reason = $reason' "$RESULT" > "$RESULT".tmp \
+        && mv "$RESULT".tmp "$RESULT" 2>/dev/null
+    else
+      printf '{"status":"failed_infra","reason":"result upload failed (presigned PUT) — engine will retry the step"}\n' > "$RESULT"
+    fi
+  fi
+  # Auxiliary channels — the final progress heartbeat and the logs ride along
+  # so the engine sees the last state even though the heartbeat loop is dead.
+  upload_try "${BB_PROGRESS_PUT_URL:-}" "$PROGRESS" application/json || true
+  upload_try "${BB_LOG_PUT_URL:-}" "$AGENT_LOG" text/plain || true
+  upload_try "${BB_DIAG_PUT_URL:-}" "$DIAG" text/plain || true
+  exit "$_rc"
+}
+trap on_exit EXIT
+if [ -z "${BB_RESULT_PUT_URL:-}" ] && [ -z "${BB_PROGRESS_PUT_URL:-}" ] \
+   && [ -z "${BB_LOG_PUT_URL:-}" ] && [ -z "${BB_DIAG_PUT_URL:-}" ]; then
+  echo "WARNING: no BB_*_PUT_URL provided — running WITHOUT S3 uploads (host test mode)" >&2
+fi
 progress init "starting up"
 [ -n "${SKILL:-}" ] || fail failed_init "no SKILL provided" 2
-[ -d "$WORKSPACE" ]   || fail failed_init "no workspace mounted" 2
-# Mount sanity: everything below writes to these dirs. If they are not writable
-# the git clone dies with a confusing "could not create work tree dir" and the
-# result file can't be published either — so fail loudly on stderr (survives in
-# docker logs + the engine's log capture) instead of exiting 3 with no trace.
+# Zero mounts (ADR-014): $WORKSPACE and the result dir are image-owned and
+# container-local — create them here (they must exist even in host-run tests).
+# Everything below writes to them; a non-writable dir makes the git clone die with
+# a confusing "could not create work tree dir" and the result file can't be
+# published either — so fail loudly on stderr (survives in docker logs + the
+# engine's log capture) instead of exiting 3 with no trace.
+mkdir -p "$WORKSPACE" "${RESULT_DIR:-/out}"
 [ -w "${RESULT_DIR:-/out}" ] || {
-  echo "FATAL: ${RESULT_DIR:-/out} is not writable by $(id -un) — mount perms or BB_WORKDIR path parity" >&2
+  echo "FATAL: ${RESULT_DIR:-/out} is not writable by $(id -un)" >&2
   fail failed_init "result dir ${RESULT_DIR:-/out} not writable" 2
 }
 [ -w "$WORKSPACE" ] || {
@@ -109,14 +168,14 @@ if [ "${BB_GIT_MODE:-0}" = "1" ]; then
   [ -d "$WORKSPACE/repo" ] && rm -rf "$WORKSPACE/repo"
   # Try the run branch first (steps 2+); if it doesn't exist yet, create it from source.
   if git clone --quiet --single-branch --branch "$RUN_BRANCH" "$AUTH_URL" repo 2>/dev/null; then
-    echo "cloned existing run branch $RUN_BRANCH" | tee -a "${RESULT_DIR:-/out}/agent.log"
+    echo "cloned existing run branch $RUN_BRANCH" | tee -a "$AGENT_LOG"
     NEW_BRANCH=0
   else
     SRC="${GIT_SOURCE_BRANCH:-main}"
     git clone --quiet --single-branch --branch "$SRC" "$AUTH_URL" repo \
       || fail failed_init "could not clone $GIT_REMOTE_URL @ $SRC" 3
     cd repo && git checkout -q -b "$RUN_BRANCH" && cd ..
-    echo "created run branch $RUN_BRANCH from $SRC" | tee -a "${RESULT_DIR:-/out}/agent.log"
+    echo "created run branch $RUN_BRANCH from $SRC" | tee -a "$AGENT_LOG"
     NEW_BRANCH=1
   fi
   # scrub credentials from the remote so the token never sits in .git/config
@@ -237,9 +296,9 @@ else
 fi
 
 # --- DIAGNOSTICS ---------------------------------------------------------------
-# The container is destroyed after the run, so anything worth inspecting must be written
-# to the mounted /out now. This block is what tells you WHY an MCP call was denied.
-DIAG="${RESULT_DIR:-/out}/diagnostics.txt"
+# The container is destroyed after the run, so anything worth inspecting must be
+# written to the container-local /out now; the EXIT trap uploads it via the
+# presigned BB_DIAG_PUT_URL. This block is what tells you WHY an MCP call was denied.
 {
   echo "=== identity ==="
   echo "uid=$(id -u) user=$(id -un) HOME=${HOME:-unset}"
@@ -404,8 +463,8 @@ $( [ "$GATE_FOLLOWS" = "true" ] && echo "A human reviewer will read your summary
 if [ "$(id -u)" -ne 0 ]; then
   PERM_FLAGS="--dangerously-skip-permissions"
 else
-  echo "WARNING: running as root — Claude Code blocks --dangerously-skip-permissions." | tee -a "${RESULT_DIR:-/out}/agent.log"
-  echo "         Bash/MCP tool calls will be denied. Rebuild the image so it runs as non-root." | tee -a "${RESULT_DIR:-/out}/agent.log"
+  echo "WARNING: running as root — Claude Code blocks --dangerously-skip-permissions." | tee -a "$AGENT_LOG"
+  echo "         Bash/MCP tool calls will be denied. Rebuild the image so it runs as non-root." | tee -a "$AGENT_LOG"
   PERM_FLAGS="--permission-mode acceptEdits"
 fi
 
@@ -421,12 +480,12 @@ MODEL_FLAG=""
 if [ -n "${BB_MODEL:-}" ]; then
   MODEL_FLAG="--model ${BB_MODEL}"
 fi
-echo "MODEL_FLAG=${MODEL_FLAG:-<none>}" >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+echo "MODEL_FLAG=${MODEL_FLAG:-<none>}" >> "$DIAG" 2>/dev/null || true
 echo "MODEL_PROFILE=${BB_ACTIVE_PROFILE:-anthropic} (resolved model: ${BB_MODEL:-default})" \
-  >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+  >> "$DIAG" 2>/dev/null || true
 if [ -n "${ANTHROPIC_BASE_URL:-}" ]; then
   echo "ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL} (vendor endpoint; needs ANTHROPIC_AUTH_TOKEN)" \
-    >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+    >> "$DIAG" 2>/dev/null || true
 fi
 
 MCP_FLAG=""
@@ -458,7 +517,7 @@ fi
       sed 's/^/    /' /tmp/mcp_probe | head -20
     fi
   fi
-} >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>&1 || true
+} >> "$DIAG" 2>&1 || true
 
 CURRENT_PHASE=agent
 CURRENT_NOTE="claude is working${STORY_ID:+ on $STORY_ID}"
@@ -467,7 +526,7 @@ heartbeat_loop & HB_PID=$!
 
 # Stream the agent's output to the container log AND capture it, so `docker logs -f` shows
 # progress live instead of the run being a black box. (Previously $(...) swallowed everything.)
-LOGFILE="${RESULT_DIR:-/out}/agent.log"
+LOGFILE="$AGENT_LOG"
 echo "=== running ${SKILL}${STORY_ID:+ for $STORY_ID} ===" | tee -a "$LOGFILE"
 set -o pipefail
 cd "${WORKDIR_REPO:-/workspace}"
@@ -505,7 +564,7 @@ fi
 MODELS_USED=$(tail -n 50 "$LOGFILE" 2>/dev/null | grep '^{' | \
               jq -r 'select(.modelUsage != null) | .modelUsage | keys | join(",")' 2>/dev/null | tail -1)
 [ -n "$MODELS_USED" ] && echo "MODELS_USED=$MODELS_USED (requested: ${BB_MODEL:-default})" \
-    >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+    >> "$DIAG" 2>/dev/null || true
 
 OUTPUT=$(tail -c 4000 "$LOGFILE" 2>/dev/null || echo "")
 
@@ -571,7 +630,7 @@ if [ -d "${REPO}/.git" ]; then
   # leave it alone; the filter targets only the plumbing our agent injects.
   if git ls-files --error-unmatch .claude >/dev/null 2>&1; then
     echo "repo tracks .claude — left intact (not platform plumbing)" \
-        >> "${RESULT_DIR:-/out}/diagnostics.txt" 2>/dev/null || true
+        >> "$DIAG" 2>/dev/null || true
   else
     git rm -r --cached --quiet .claude 2>/dev/null || true
     rm -f .mcp.json 2>/dev/null || true
@@ -603,8 +662,8 @@ if [ -d "${REPO}/.git" ]; then
       PUSH_URL=$(printf '%s' "$GIT_REMOTE_URL" | sed -E "s#https://#https://x-access-token:${GH_TOKEN}@#")
     fi
     progress publish "pushing ${RUN_BRANCH}"
-    if git push --quiet "$PUSH_URL" "HEAD:${RUN_BRANCH}" 2>>"${RESULT_DIR:-/out}/agent.log"; then
-      echo "pushed to ${RUN_BRANCH} (${COMMIT_SHA})" | tee -a "${RESULT_DIR:-/out}/agent.log"
+    if git push --quiet "$PUSH_URL" "HEAD:${RUN_BRANCH}" 2>>"$AGENT_LOG"; then
+      echo "pushed to ${RUN_BRANCH} (${COMMIT_SHA})" | tee -a "$AGENT_LOG"
     else
       fail failed_infra "git push to ${RUN_BRANCH} failed — will retry from last pushed state" 4
     fi
