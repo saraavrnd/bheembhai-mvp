@@ -1,0 +1,72 @@
+workflow: paid-acquisition
+version: 1
+category: Marketing
+description: >
+  Governed paid-media loop — research the audience, design the offer, build campaign
+  structure and creative, run an A/B test, then verify with attribution. Under-performing
+  creative or attribution loops back rather than burning spend.
+start: customer-research
+steps:
+  - id: customer-research
+    skill: customer-research
+    model: high
+    label: Define audience & angles
+    deadline: 1200
+    "on":
+      completed: offers
+      changes_requested: customer-research
+
+  - id: offers
+    skill: offers
+    model: high
+    label: Construct the offer
+    deadline: 1200
+    "on":
+      completed: ads
+      changes_requested: offers
+
+  - id: ads
+    skill: ads
+    model: medium
+    label: Build campaign structure
+    deadline: 1500
+    "on":
+      completed: ad-creative
+      changes_requested: ads
+
+  - id: ad-creative
+    skill: ad-creative
+    model: medium
+    label: Generate creative variations
+    deadline: 1200
+    "on":
+      completed: cro
+      changes_requested: ad-creative
+
+  - id: cro
+    skill: cro
+    model: medium
+    label: Optimize the landing page
+    deadline: 1200
+    "on":
+      completed: ab-testing
+      changes_requested: cro
+
+  - id: ab-testing
+    skill: ab-testing
+    model: medium
+    label: Design & run the experiment
+    deadline: 1500
+    "on":
+      completed: attribution
+      changes_requested: ab-testing
+
+  - id: attribution
+    skill: attribution
+    model: high
+    label: Confirm what drove conversions
+    deadline: 1200
+    "on":
+      completed: DONE
+      # ROAS doesn't hold up → new creative round before scaling spend.
+      BLOCK: ad-creative

@@ -1,0 +1,83 @@
+workflow: seo-growth
+version: 1
+category: Marketing
+description: >
+  Governed organic-search growth engine — audit the site, fix architecture and schema,
+  plan topics, produce content, then optimize for both classic and AI search. A BLOCK at
+  audit loops fixes before more content is produced.
+start: seo-audit
+steps:
+  - id: seo-audit
+    skill: seo-audit
+    model: high
+    label: Audit technical & on-page SEO
+    deadline: 1200
+    "on":
+      completed: site-architecture
+      changes_requested: seo-audit
+
+  - id: site-architecture
+    skill: site-architecture
+    model: medium
+    label: Fix hierarchy, URLs & internal linking
+    deadline: 1200
+    "on":
+      completed: schema
+      changes_requested: site-architecture
+      # Architecture reveals a deeper crawl/index problem → re-audit.
+      BLOCK: seo-audit
+
+  - id: schema
+    skill: schema
+    model: low
+    label: Add structured data
+    deadline: 900
+    "on":
+      completed: content-strategy
+      changes_requested: schema
+
+  - id: content-strategy
+    skill: content-strategy
+    model: high
+    label: Decide topics & content plan
+    deadline: 1500
+    "on":
+      completed: copywriting
+      changes_requested: content-strategy
+
+  - id: copywriting
+    skill: copywriting
+    model: medium
+    label: Produce the pages
+    deadline: 1800
+    "on":
+      completed: programmatic-seo
+      changes_requested: copywriting
+
+  - id: programmatic-seo
+    skill: programmatic-seo
+    model: medium
+    label: Scale template-driven pages
+    deadline: 1500
+    "on":
+      completed: ai-seo
+      changes_requested: programmatic-seo
+
+  - id: ai-seo
+    skill: ai-seo
+    model: medium
+    label: Optimize for AI-answer citation
+    deadline: 1200
+    "on":
+      completed: analytics
+      changes_requested: ai-seo
+
+  - id: analytics
+    skill: analytics
+    model: low
+    label: Verify tracking on new pages
+    deadline: 900
+    "on":
+      completed: DONE
+      # Tracking shows pages aren't converting/ranking → revisit strategy.
+      BLOCK: content-strategy

@@ -1,0 +1,74 @@
+workflow: lifecycle-retention
+version: 1
+category: Marketing
+description: >
+  Governed activation-to-retention loop — optimize signup and onboarding, build lifecycle
+  email and SMS, add a referral loop, and defend revenue with churn-prevention. Mirrors the
+  marketing-plan AARRR stage skills (onboarding, signup, emails, referrals).
+start: signup
+steps:
+  - id: signup
+    skill: signup
+    model: medium
+    label: Optimize the signup flow
+    deadline: 1200
+    "on":
+      completed: onboarding
+      changes_requested: signup
+
+  - id: onboarding
+    skill: onboarding
+    model: high
+    label: Drive activation & time-to-value
+    deadline: 1500
+    "on":
+      completed: emails
+      changes_requested: onboarding
+      # Activation gap traces back to who's signing up → revisit signup.
+      BLOCK: signup
+
+  - id: emails
+    skill: emails
+    model: medium
+    label: Build lifecycle email flows
+    deadline: 1500
+    "on":
+      completed: sms
+      changes_requested: emails
+
+  - id: sms
+    skill: sms
+    model: low
+    label: Add SMS lifecycle touches
+    deadline: 900
+    "on":
+      completed: referrals
+      changes_requested: sms
+
+  - id: referrals
+    skill: referrals
+    model: medium
+    label: Add a referral loop
+    deadline: 1200
+    "on":
+      completed: churn-prevention
+      changes_requested: referrals
+
+  - id: churn-prevention
+    skill: churn-prevention
+    model: high
+    label: Defend revenue & recover churn
+    deadline: 1500
+    "on":
+      completed: analytics
+      changes_requested: churn-prevention
+
+  - id: analytics
+    skill: analytics
+    model: low
+    label: Verify lifecycle tracking
+    deadline: 900
+    "on":
+      completed: DONE
+      # Retention still leaking upstream → back to onboarding.
+      BLOCK: onboarding

@@ -1,0 +1,65 @@
+workflow: outbound-pipeline
+version: 1
+category: Marketing
+description: >
+  Governed B2B outbound engine — profile the ICP, build a prospect list, write cold
+  sequences, prepare sales collateral, and hand marketing→sales via RevOps. Mirrors the
+  customer-research skill's own references to prospecting and cold-email.
+start: customer-research
+steps:
+  - id: customer-research
+    skill: customer-research
+    model: high
+    label: Sharpen the ICP
+    deadline: 1200
+    "on":
+      completed: prospecting
+      changes_requested: customer-research
+
+  - id: prospecting
+    skill: prospecting
+    model: medium
+    label: Build & qualify the list
+    deadline: 1500
+    "on":
+      completed: cold-email
+      changes_requested: prospecting
+      # List quality is poor → ICP needs rework.
+      BLOCK: customer-research
+
+  - id: cold-email
+    skill: cold-email
+    model: medium
+    label: Write the cold sequence
+    deadline: 1200
+    "on":
+      completed: sales-enablement
+      changes_requested: cold-email
+
+  - id: sales-enablement
+    skill: sales-enablement
+    model: medium
+    label: Build collateral & objection handling
+    deadline: 1200
+    "on":
+      completed: revops
+      changes_requested: sales-enablement
+
+  - id: revops
+    skill: revops
+    model: medium
+    label: Wire the marketing→sales handoff
+    deadline: 1200
+    "on":
+      completed: attribution
+      changes_requested: revops
+
+  - id: attribution
+    skill: attribution
+    model: low
+    label: Measure reply-to-pipeline
+    deadline: 900
+    "on":
+      completed: DONE
+      # Sequences convert poorly → rewrite the cold-email step.
+      BLOCK: cold-email
