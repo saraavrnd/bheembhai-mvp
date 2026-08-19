@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "epic-sequence",
+  "description": "Machine-readable build order for an epic's stories. Consumed by story-implement to pick the next eligible story (one whose dependencies are all merged).",
+  "type": "object",
+  "required": ["epic_key", "stories"],
+  "properties": {
+    "epic_key": { "type": "string", "description": "e.g. LEARN-11" },
+    "approved": { "type": "boolean", "description": "true once the user approved the order and links were set" },
+    "stories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["story_key", "wave", "depends_on"],
+        "properties": {
+          "story_key": { "type": "string" },
+          "title": { "type": "string" },
+          "wave": { "type": "integer", "description": "1 = no dependencies; N = depends only on waves < N" },
+          "depends_on": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "story keys this story is blocked by (must be merged first)"
+          },
+          "edge_sources": {
+            "type": "object",
+            "description": "per-dependency provenance: { '<dep_key>': {'source': 'link'|'artifact'|'requirement'|'acceptance-text', 'confidence': 'firm'|'provisional'} }",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "source": { "type": "string", "enum": ["link", "artifact", "requirement", "acceptance-text"] },
+                "confidence": { "type": "string", "enum": ["firm", "provisional"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "cycles": {
+      "type": "array",
+      "description": "any circular dependencies flagged for human resolution (empty if clean)",
+      "items": { "type": "array", "items": { "type": "string" } }
+    }
+  }
+}

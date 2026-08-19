@@ -1,0 +1,59 @@
+# UI Conventions — {{product_name}}
+
+> The UI source of truth. `implement`'s frontend lens reads this for every frontend/full-stack
+> story so UI comes out consistent. Starts THIN (a sensible baseline) and GROWS — `design-sync`
+> promotes patterns that stories establish into this file. Proposed by `tech-design`, approved by
+> you.
+
+## Framework & component structure
+<!-- The frontend stack (e.g. React + Vite + Alpine) and how components are organized. Mirror the
+     source-tree convention: components grouped by module/feature. -->
+- Stack:
+- Component location:
+- Naming:
+
+## Design tokens (minimal starter)
+<!-- Start small; expand as needed. The point is that stories use THESE, not one-off values. -->
+### Spacing scale
+<!-- e.g. 4 / 8 / 12 / 16 / 24 / 32 px -->
+### Color roles
+| Role | Value | Use |
+|------|-------|-----|
+| primary | | actions, links |
+| surface | | backgrounds |
+| text | | body text |
+| muted | | secondary text |
+| error | | error states |
+| success | | success states |
+### Typography
+<!-- font family, base size, heading scale -->
+
+## State & data-loading pattern
+<!-- Where state lives (component-local vs a shared store) and how API data is fetched/loaded.
+     One approach for the whole app so every UI story follows it. -->
+- State:
+- Data loading:
+- API client:
+
+## Required UI states (every screen/component)
+- **Loading** — show a loading indicator while data is in flight.
+- **Error** — usable error state, not blank/crash.
+- **Empty** — distinct from loading ("no items yet").
+- **Success** — the normal render.
+
+## Accessibility (non-negotiable)
+- Semantic HTML (`<button>`, `<nav>`, headings in order).
+- Labels for inputs; alt text for meaningful images.
+- Keyboard operable; visible focus.
+- Color contrast meets WCAG AA.
+
+## Responsive
+<!-- Breakpoints to support and the layout approach (mobile-first, grid, etc.). -->
+- Breakpoints:
+- Approach:
+
+## Patterns (grows over time)
+<!-- design-sync promotes reusable patterns here as UI stories establish them: common components
+     (cards, modals, forms), form-validation display, toast/notification, table conventions, etc.
+     Starts mostly empty; fills in as the product is built. -->
+- (none yet — will grow as UI stories land)
