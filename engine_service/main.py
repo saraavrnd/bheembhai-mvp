@@ -18,6 +18,7 @@ from bheembhai.database import (
     close_database,
     init_database,
     run_migrations,
+    seed_default_categories,
     seed_default_roles,
     seed_default_skills,
     seed_default_workflows,
@@ -54,6 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_database(config.database)
     await run_migrations()
     await seed_default_roles()
+    await seed_default_categories()
 
     # Optional self-seeding (dev): the platform seeds its own DB, but the engine
     # can run standalone. Idempotent — seed_* are upserts.

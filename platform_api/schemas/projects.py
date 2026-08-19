@@ -10,6 +10,7 @@ class ProjectCreate(BaseModel):
 class ProjectResponse(BaseModel):
     id: str
     name: str
+    description: str
     owner_id: str
     created_at: str  # ISO-8601
 

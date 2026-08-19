@@ -13,6 +13,7 @@ project_roles 1───* memberships (role key)
 projects 1───* project_integrations
 project_integrations 1───* runs (github/jira/ai_vendor selections, ADR-013 §1)
 projects 1───* workflows
+workflow_categories 1───* workflows  (workflow_category_id, nullable)
 workflows 1───* policies        ← policy tied to one workflow (ADR-006)
 projects 1───* runs
 workflows 1───* runs
@@ -105,6 +106,23 @@ the DB stores only the opaque `credential_ref`.
 UNIQUE: `(project_id, type, label)` — a project can have multiple integrations of the same type
 as long as each has a distinct label. No arbitrary cap on integrations per project.
 
+### workflow_categories
+
+Platform-wide reference data grouping workflows (e.g. Software Delivery, Operations,
+Marketing). Seeded on startup with six defaults (get-or-create, never overwrites) and
+managed via the admin Categories page.
+
+| Column | Type | Constraints | Notes |
+|--------|------|-------------|-------|
+| `id` | UUID | PK, DEFAULT gen_random_uuid() | |
+| `name` | TEXT | NOT NULL, UNIQUE | Human-readable category name (e.g. "Software Delivery") |
+| `description` | TEXT | NOT NULL, DEFAULT '' | One-line description of the category |
+| `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
+
+Categories are global, not project-scoped: copying a workflow into a project copies the
+`workflow_category_id` as-is (clone fidelity). Deleting a category that any workflow
+references is rejected (409) — the FK is RESTRICT as a DB safety net.
+
 ### workflows
 
 | Column | Type | Constraints | Notes |
@@ -114,6 +132,7 @@ as long as each has a distinct label. No arbitrary cap on integrations per proje
 | `version` | INTEGER | NOT NULL, DEFAULT 1 | Incremented on each edit |
 | `name` | TEXT | NOT NULL | Human-readable label |
 | `yaml_content` | TEXT | NOT NULL | The workflow YAML as stored text |
+| `workflow_category_id` | UUID | FK → workflow_categories.id ON DELETE RESTRICT | Category grouping — **required on creation** (API 422 without it; PATCH clearing rejected with 400). Nullable only for rows predating the requirement; preserved when the workflow is copied into a project. |
 | `is_active` | BOOLEAN | NOT NULL, DEFAULT false | Only one active version per workflow name per project |
 | `created_at` | TIMESTAMPTZ | NOT NULL, DEFAULT NOW() | |
 

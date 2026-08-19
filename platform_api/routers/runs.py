@@ -905,14 +905,16 @@ async def list_runs(
     )
 
     if project_id:
-        member_check = await db.execute(
-            select(Membership).where(
-                Membership.user_id == current_user.id,
-                Membership.project_id == project_id,
+        if current_user.platform_role != "ADMIN":
+            # Verify membership (platform ADMINs bypass)
+            member_check = await db.execute(
+                select(Membership).where(
+                    Membership.user_id == current_user.id,
+                    Membership.project_id == project_id,
+                )
             )
-        )
-        if member_check.scalar_one_or_none() is None:
-            raise HTTPException(403, "You are not a member of this project")
+            if member_check.scalar_one_or_none() is None:
+                raise HTTPException(403, "You are not a member of this project")
         stmt = stmt.where(Run.project_id == project_id)
 
     runs_result = await db.execute(stmt)
@@ -1013,14 +1015,16 @@ async def create_run(
         raise HTTPException(401, "Authentication required")
     current_user, _ = enabled
 
-    member_check = await db.execute(
-        select(Membership).where(
-            Membership.user_id == current_user.id,
-            Membership.project_id == body.project_id,
+    if current_user.platform_role != "ADMIN":
+        # Verify membership (platform ADMINs bypass)
+        member_check = await db.execute(
+            select(Membership).where(
+                Membership.user_id == current_user.id,
+                Membership.project_id == body.project_id,
+            )
         )
-    )
-    if member_check.scalar_one_or_none() is None:
-        raise HTTPException(403, "You are not a member of this project")
+        if member_check.scalar_one_or_none() is None:
+            raise HTTPException(403, "You are not a member of this project")
 
     workflow = await db.get(Workflow, body.workflow_id)
     if workflow is None:

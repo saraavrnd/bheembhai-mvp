@@ -5,11 +5,15 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bheembhai.config import DatabaseConfig
 from bheembhai.models.base import Base
+
+if TYPE_CHECKING:
+    from bheembhai.models.workflow_category import WorkflowCategory
 
 _logger = logging.getLogger(__name__)
 
@@ -119,6 +123,73 @@ async def seed_default_roles() -> None:
             if existing is None:
                 session.add(role)
         await session.commit()
+
+
+async def seed_default_categories() -> None:
+    """Insert the default workflow categories if they don't already exist.
+
+    Called at startup (like ``seed_default_roles``) because categories are
+    global reference data shared by platform workflows and their project
+    copies. Idempotent get-or-create by case-insensitive name; existing rows
+    (admin edits/renames) are never overwritten.
+    """
+
+    from sqlalchemy import func, select
+
+    from bheembhai.models.workflow_category import WorkflowCategory
+
+    defaults = [
+        ("Software Delivery", "Feature, review, and release workflows for shipping code"),
+        ("Operations", "Infrastructure, deployment, and incident-runbook workflows"),
+        ("Marketing", "Campaign, content, and launch workflows"),
+        ("Sales", "Deal, demo, and follow-up workflows"),
+        ("Finance", "Reporting, reconciliation, and approval workflows"),
+        ("Support", "Ticket triage, escalation, and SLA workflows"),
+    ]
+
+    async with _sessionmaker() as session:
+        for name, description in defaults:
+            existing = (
+                await session.execute(
+                    select(WorkflowCategory).where(
+                        func.lower(WorkflowCategory.name) == name.lower()
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(WorkflowCategory(name=name, description=description))
+        await session.commit()
+
+
+async def _get_or_create_category(session: AsyncSession, name: str) -> WorkflowCategory | None:
+    """Resolve a category by case-insensitive name, creating it on miss.
+
+    Used by ``seed_default_workflows`` for the ``category:`` key in workflow
+    YAML files. Returns ``None`` when the name is empty/unset.
+    """
+
+    from sqlalchemy import func, select
+
+    from bheembhai.models.workflow_category import WorkflowCategory
+
+    name = name.strip()
+    if not name:
+        return None
+
+    existing = (
+        await session.execute(
+            select(WorkflowCategory).where(
+                func.lower(WorkflowCategory.name) == name.lower()
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    category = WorkflowCategory(name=name, description="")
+    session.add(category)
+    await session.flush()
+    return category
 
 
 async def seed_default_skills(skills_dir: str | Path | None = None) -> None:
@@ -299,6 +370,17 @@ async def seed_default_workflows() -> None:
                 version = int(raw.get("version", 1))
                 yaml_content = yaml_file.read_text()
 
+                # Top-level `category:` is required for workflows — resolved
+                # get-or-create so unknown YAML categories auto-create instead
+                # of failing. A workflow without a category is rejected loudly.
+                category_name = str(raw.get("category") or "").strip()
+                wf_category = (
+                    await _get_or_create_category(session, category_name)
+                    if category_name
+                    else None
+                )
+                description = str(raw.get("description") or "").strip()
+
                 # Upsert — look up the *platform* template (project_id IS NULL) only.
                 # Project clones share the same (name, version) via partial unique indexes,
                 # so we must filter to the platform row to avoid MultipleResultsFound.
@@ -311,17 +393,31 @@ async def seed_default_workflows() -> None:
                 )
                 wf = existing_result.scalar_one_or_none()
                 if wf is None:
+                    if wf_category is None:
+                        raise ValueError(
+                            f"Workflow '{name}' in {yaml_file.name} has no "
+                            "category — every workflow must belong to a category"
+                        )
                     wf = Workflow(
                         name=name,
+                        description=description,
                         version=version,
                         yaml_content=yaml_content,
                         is_active=True,
+                        workflow_category_id=wf_category.id,
                     )
                     session.add(wf)
                     await session.flush()
                     _logger.info("  Created workflow: %s v%d", name, version)
                 else:
                     wf.yaml_content = yaml_content
+                    if category_name:
+                        # Re-assign when the YAML gains a category; leave the
+                        # row untouched when the key is absent (admin edits win).
+                        wf.workflow_category_id = wf_category.id if wf_category else None
+                    if "description" in raw:
+                        # Same rule: an absent key never clobbers admin edits.
+                        wf.description = description
                     _logger.info("  Updated workflow: %s v%d", name, version)
 
                 workflows_seen[name] = wf

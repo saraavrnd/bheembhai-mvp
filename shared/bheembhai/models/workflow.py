@@ -21,6 +21,7 @@ from bheembhai.models.base import Base
 if TYPE_CHECKING:
     from bheembhai.models.project import Project
     from bheembhai.models.run import Run
+    from bheembhai.models.workflow_category import WorkflowCategory
 
 
 class Workflow(Base):
@@ -34,6 +35,9 @@ class Workflow(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
     yaml_content: Mapped[str] = mapped_column(Text, nullable=False)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
@@ -42,10 +46,16 @@ class Workflow(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
         server_default=func.now()
     )
+    workflow_category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_categories.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
 
     project: Mapped["Project"] = relationship(back_populates="workflows")
     policies: Mapped[list["Policy"]] = relationship(back_populates="workflow")
     runs: Mapped[list["Run"]] = relationship(back_populates="workflow")
+    workflow_category: Mapped["WorkflowCategory"] = relationship(back_populates="workflows")
 
     __table_args__ = (
         # Platform workflows (project_id IS NULL): unique on (name, version)

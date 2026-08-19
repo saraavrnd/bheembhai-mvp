@@ -116,6 +116,9 @@
                             <a href="#" class="nav-pill active" id="nav-dashboard" data-tab="dashboard">
                                 <i class="fa fa-tachometer-alt"></i> Dashboard
                             </a>
+                            <a href="#" class="nav-pill" id="nav-workflows" data-tab="workflows">
+                                <i class="fa fa-sitemap"></i> Workflows
+                            </a>
                             <a href="#" class="nav-pill" id="nav-runs" data-tab="runs">
                                 <i class="fa fa-play-circle"></i> Runs
                             </a>
@@ -207,7 +210,7 @@
 
     function esc(s) {
         if (!s) return '';
-        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+        return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
     // ── Auth guard + init ──
@@ -334,19 +337,27 @@
         // Show nav links
         document.getElementById('navbar-links').style.display = '';
 
-        // Show/hide Configuration tab for project_manager
-        const isPM = window.BB.currentProjectRole === 'project_manager';
+        // Show/hide Configuration tab for project_manager (and platform ADMIN,
+        // who get full project access even without a membership row)
+        const isPM = window.BB.currentProjectRole === 'project_manager'
+            || (window.BB.user && window.BB.user.platform_role === 'ADMIN');
         document.getElementById('nav-config').style.display = isPM ? '' : 'none';
 
         // Update nav pill hrefs
         document.getElementById('nav-dashboard').href = '/projects/' + projectId + '?tab=dashboard';
         document.getElementById('nav-runs').href = '/projects/' + projectId + '?tab=runs';
+        document.getElementById('nav-workflows').href = '/projects/' + projectId + '?tab=workflows';
         document.getElementById('nav-config').href = '/projects/' + projectId + '?tab=config';
 
-        // Highlight active tab from URL (default dashboard; run-detail pages
-        // have no ?tab= param, so infer "runs" from the path)
+        // Highlight active tab from URL (default dashboard; detail pages have
+        // no ?tab= param, so infer from the path). /config/ must be checked
+        // BEFORE /workflows/ — the PM editor route contains both segments.
         const params = new URLSearchParams(window.location.search);
-        const activeTab = params.get('tab') || (window.location.pathname.indexOf('/runs/') !== -1 ? 'runs' : 'dashboard');
+        const activeTab = params.get('tab') || (
+            window.location.pathname.indexOf('/config/') !== -1 ? 'config'
+            : window.location.pathname.indexOf('/workflows/') !== -1 ? 'workflows'
+            : window.location.pathname.indexOf('/runs/') !== -1 ? 'runs'
+            : 'dashboard');
         document.querySelectorAll('#navbar-links .nav-pill').forEach(p => p.classList.remove('active'));
         const activePill = document.querySelector('#navbar-links [data-tab="' + activeTab + '"]');
         if (activePill) activePill.classList.add('active');

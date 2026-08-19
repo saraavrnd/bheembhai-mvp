@@ -23,6 +23,7 @@ from bheembhai.database import (
     close_database,
     init_database,
     run_migrations,
+    seed_default_categories,
     seed_default_roles,
     seed_default_skills,
     seed_default_workflows,
@@ -62,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     init_database(config.database)
     await run_migrations()
     await seed_default_roles()
+    await seed_default_categories()
     if config.engine.seed_on_startup:
         # OPT-IN (BB_SEED_ON_STARTUP): both seeds are upserts that OVERWRITE DB
         # rows — never seed by default, a running instance must not clobber
@@ -172,6 +174,19 @@ async def run_detail_page(project_id: str, run_id: str, request: Request):
     )
 
 
+@app.get("/projects/{project_id}/workflows/{workflow_id}", include_in_schema=False)
+async def workflow_home_page(project_id: str, workflow_id: str, request: Request):
+    """Workflow home — definition strip, 30-day stats, scoped run list.
+
+    No server-side membership gate on the page itself (consistent with
+    run_detail_page) — the /api/workflows/{id}/home endpoint enforces it.
+    """
+    return templates.TemplateResponse(
+        request, "workflow_home.html",
+        {"request": request, "project_id": project_id, "workflow_id": workflow_id},
+    )
+
+
 @app.get("/projects/{project_id}/config/workflows/{workflow_id}", include_in_schema=False)
 async def project_workflow_edit_page(project_id: str, workflow_id: str, request: Request):
     """Project-manager workflow editor — same editor as admin, project-scoped API."""
@@ -244,6 +259,12 @@ async def admin_skill_edit(skill_id: str, request: Request):
 async def admin_workflows(request: Request):
     """Admin workflow management — list page."""
     return templates.TemplateResponse(request, "admin/workflows.html", {"request": request})
+
+
+@app.get("/admin/categories", include_in_schema=False)
+async def admin_categories(request: Request):
+    """Admin workflow categories — list page."""
+    return templates.TemplateResponse(request, "admin/categories.html", {"request": request})
 
 
 @app.get("/admin/workflows/{workflow_id}", include_in_schema=False)

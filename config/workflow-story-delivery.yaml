@@ -1,5 +1,7 @@
 workflow: story-delivery
 version: 1
+category: Software Delivery
+description: End-to-end governed story delivery — design, tests, implementation, verification, review, and PR.
 start: story-design
 steps:
   - id: story-design

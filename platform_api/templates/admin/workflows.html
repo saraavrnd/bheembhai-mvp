@@ -24,6 +24,7 @@
                     <tr>
                         <th>Name</th>
                         <th>Project</th>
+                        <th>Category</th>
                         <th>Steps</th>
                         <th>Start Step</th>
                         <th>Policies</th>
@@ -34,7 +35,7 @@
                     </tr>
                 </thead>
                 <tbody id="workflows-tbody">
-                    <tr><td colspan="9" class="text-center text-muted">Loading...</td></tr>
+                    <tr><td colspan="10" class="text-center text-muted">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -55,6 +56,14 @@
                     <div class="col-md-12">
                         <label class="form-label">Name <span class="text-danger">*</span></label>
                         <input type="text" class="form-control form-control-sm" id="wf-name" placeholder="e.g. story-delivery">
+                    </div>
+                </div>
+                <div class="row g-3 mt-1">
+                    <div class="col-md-6">
+                        <label class="form-label">Category <span class="text-danger">*</span></label>
+                        <select class="form-select form-select-sm" id="wf-category">
+                            <option value="" disabled selected>— Select category —</option>
+                        </select>
                     </div>
                 </div>
                 <div class="row g-3 mt-1">
@@ -101,6 +110,7 @@
 <script>
 let workflowsData = [];
 let projectsList = [];
+let categoriesList = [];
 
 function loadWorkflows() {
     fetch('/api/admin/workflows')
@@ -111,7 +121,7 @@ function loadWorkflows() {
         })
         .catch(err => {
             document.getElementById('workflows-tbody').innerHTML =
-                `<tr><td colspan="9" class="text-center text-danger">Failed to load workflows: ${err.message}</td></tr>`;
+                `<tr><td colspan="10" class="text-center text-danger">Failed to load workflows: ${err.message}</td></tr>`;
         });
 }
 
@@ -121,10 +131,21 @@ function loadProjects() {
         .then(data => { projectsList = data; });
 }
 
+function loadCategories() {
+    return fetch('/api/admin/workflow-categories')
+        .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
+        .then(data => {
+            categoriesList = data;
+            const sel = document.getElementById('wf-category');
+            sel.innerHTML = '<option value="" disabled selected>— Select category —</option>' +
+                categoriesList.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
+        });
+}
+
 function renderTable() {
     const tbody = document.getElementById('workflows-tbody');
     if (!workflowsData.length) {
-        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No workflows yet. Create one!</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No workflows yet. Create one!</td></tr>';
         return;
     }
     tbody.innerHTML = workflowsData.map(w => {
@@ -144,6 +165,10 @@ function renderTable() {
             ? '<span class="badge rounded-pill bg-primary">Platform</span>'
             : `<a href="#" class="text-decoration-none small">${esc(w.project_name || w.project_id)}</a>`;
 
+        const categoryCell = w.category_name
+            ? `<span class="badge rounded-pill bg-info">${esc(w.category_name)}</span>`
+            : '<span class="badge rounded-pill bg-secondary">uncategorized</span>';
+
         // Actions: always edit + delete; Copy to Project only for platform workflows
         let copyBtn = '';
         if (isPlatform) {
@@ -156,6 +181,7 @@ function renderTable() {
                     <a href="/admin/workflows/${w.id}" class="text-decoration-none fw-bold">${esc(w.name)}</a>
                 </td>
                 <td>${projectCell}</td>
+                <td>${categoryCell}</td>
                 <td>${stepCount}</td>
                 <td><code>${esc(String(startStep))}</code></td>
                 <td>${policyBadge}</td>
@@ -178,6 +204,7 @@ function showCreateModal() {
     document.getElementById('wf-id').value = '';
     document.getElementById('wf-name').value = '';
     document.getElementById('wf-desc').value = '';
+    document.getElementById('wf-category').value = '';
     new bootstrap.Modal(document.getElementById('workflowModal')).show();
 }
 
@@ -185,13 +212,18 @@ function saveWorkflow() {
     const id = document.getElementById('wf-id').value;
     const name = document.getElementById('wf-name').value.trim();
     const description = document.getElementById('wf-desc').value.trim();
+    const categoryId = document.getElementById('wf-category').value || null;
 
     if (!name) { alert('Name is required.'); return; }
 
     const isCreate = !id;
+    if (isCreate && !categoryId) { alert('Category is required.'); return; }
+
     const url = isCreate ? '/api/admin/workflows' : `/api/admin/workflows/${id}`;
     const method = isCreate ? 'POST' : 'PATCH';
-    const body = isCreate ? { name, description } : { name };
+    // Edit branch is currently unused (rows deep-link to the editor) but kept
+    // correct: category is create-only, description stays editable.
+    const body = isCreate ? { name, description, category_id: categoryId } : { name, description };
 
     fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.detail || r.statusText); }); return r.json(); })
@@ -248,7 +280,7 @@ function deleteWorkflow(id, name) {
 
 function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
 
-// Load projects for the copy modal, then workflows
-loadProjects().then(() => loadWorkflows());
+// Load projects (copy modal) + categories (create modal), then workflows
+Promise.all([loadProjects(), loadCategories()]).then(() => loadWorkflows());
 </script>
 {% endblock %}

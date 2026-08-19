@@ -1,0 +1,249 @@
+<!-- Start-run modal + its controller — shared by the project workspace
+     (project.html) and the workflow home page (workflow_home.html).
+
+     Moved verbatim out of project.html: ids and behavior are unchanged there,
+     including the `?tab=runs&new=1` auto-open. Pages that include this partial
+     hook the "run created" callback via `window.BBOnRunCreated = fn(run)` —
+     submitNewRun calls it instead of a page-local refresh. -->
+
+<!-- Modal styles colocated with the partial so any page that includes it
+     (project workspace + workflow home) renders correctly without relying on
+     the workspace's head block. Duplicated rules are identical, so pages that
+     also define them are unaffected. -->
+<style>
+    .modal-backdrop {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 9999;
+    }
+    .modal-dialog {
+        background: #fff; border-radius: 10px; padding: 24px;
+        width: 400px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+    }
+    .modal-backdrop .modal-dialog { pointer-events: auto; }
+    .modal-dialog h5 { margin: 0 0 6px; font-size: 16px; color: #2a2a3a; }
+    .modal-dialog p { font-size: 13px; color: #6e7681; margin: 0 0 16px; }
+    .modal-dialog .form-group { margin-bottom: 14px; }
+    .modal-actions {
+        display: flex; gap: 8px; margin-top: 18px; justify-content: flex-end;
+    }
+    .modal-actions .btn-cancel {
+        background: #eaeaef; border: none; padding: 8px 16px;
+        border-radius: 6px; font-size: 13px; cursor: pointer;
+    }
+    .modal-actions .btn-send {
+        background: #2a62d5; color: #fff; border: none;
+        padding: 8px 16px; border-radius: 6px; font-size: 13px;
+        font-weight: 600; cursor: pointer;
+    }
+    .modal-actions .btn-send:disabled {
+        background: #b5b5c3; cursor: not-allowed;
+    }
+</style>
+
+<!-- New Run modal (opened from the Runs tab header / empty state / workflow cards) -->
+<div class="modal-backdrop" id="new-run-modal" style="display:none;">
+    <div class="modal-dialog" style="width:520px;" role="dialog" aria-modal="true" aria-labelledby="new-run-title">
+        <h5 id="new-run-title"><i class="fa fa-play-circle text-info me-5"></i>Start a New Run</h5>
+        <p>Pick the story, workflow, policy, and the project's verified integrations. The engine cuts a fresh git branch off the source branch you pick (default: the GitHub integration's base branch) and pauses at the gates your policy defines.</p>
+        <div class="form-group">
+            <label class="form-label">Story / Ticket ID</label>
+            <input type="text" class="form-control" id="run-story-id" placeholder="e.g. PROJ-123">
+        </div>
+        <div class="form-group">
+            <label class="form-label">Workflow</label>
+            <select class="form-select" id="run-workflow"></select>
+        </div>
+        <div class="form-group">
+            <label class="form-label">Policy</label>
+            <select class="form-select" id="run-policy"></select>
+        </div>
+        <div class="form-group">
+            <label class="form-label">GitHub Integration <span class="text-danger">*</span></label>
+            <select class="form-select" id="run-github"></select>
+        </div>
+        <div class="form-group">
+            <label class="form-label">Source Branch</label>
+            <input type="text" class="form-control" id="run-source-branch" placeholder="main">
+            <small class="text-muted">The branch the run branch is cut off. Pre-filled from the GitHub integration's base branch — edit to override.</small>
+        </div>
+        <div class="form-group">
+            <label class="form-label">AI Vendor <span class="text-danger">*</span></label>
+            <select class="form-select" id="run-ai"></select>
+        </div>
+        <div class="form-group">
+            <label class="form-label">Jira Integration <span class="text-muted">(optional)</span></label>
+            <select class="form-select" id="run-jira"></select>
+            <small class="text-muted">Only integrations that passed "Test connection" are listed.</small>
+        </div>
+        <div id="run-create-error" class="text-danger mt-2" style="display:none;"></div>
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="cancelNewRun()">Cancel</button>
+            <button class="btn-send" id="btn-start-run" onclick="submitNewRun()"><i class="fa fa-check"></i> Start Run</button>
+        </div>
+    </div>
+</div>
+
+<script>
+function createNewRun(preselectWfId) {
+    const modal = document.getElementById('new-run-modal');
+    modal.style.display = '';
+    document.getElementById('run-create-error').style.display = 'none';
+    document.getElementById('run-story-id').focus();
+    document.getElementById('run-source-branch').value = '';
+    const pid = window.BB_PROJECT_ID;
+    fetch('/api/workflows?project_id=' + pid, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            // Runs are project-scoped: list only this project's own workflows,
+            // never platform templates (those are copied via Configuration).
+            const projectWorkflows = (data || []).filter(w => w.project_id === pid);
+            const sel = document.getElementById('run-workflow');
+            sel.innerHTML = projectWorkflows.map(w =>
+                `<option value="${w.id}">${esc(w.name)} (v${w.version})</option>`
+            ).join('');
+            const btn = document.getElementById('btn-start-run');
+            if (projectWorkflows.length > 0) {
+                btn.disabled = false;
+                if (preselectWfId) {
+                    const opt = sel.querySelector('option[value="' + preselectWfId + '"]');
+                    if (opt) {
+                        sel.value = preselectWfId;
+                        loadPoliciesForWorkflow(preselectWfId);
+                        return;
+                    }
+                }
+                loadPoliciesForWorkflow(projectWorkflows[0].id);
+            } else {
+                btn.disabled = true;
+                const errEl = document.getElementById('run-create-error');
+                errEl.textContent = 'No workflow in this project yet — a project manager must copy one from platform templates in the Configuration tab.';
+                errEl.style.display = '';
+            }
+            sel.onchange = function() { loadPoliciesForWorkflow(this.value); };
+        })
+        .catch(() => {});
+    loadRunIntegrations(pid);
+}
+
+function loadRunIntegrations(pid) {
+    // Verified-only: the modal lists integrations that passed "Test connection".
+    fetch('/api/projects/' + pid + '/integrations', { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            const verified = (data || []).filter(i => i.verified_at);
+            const byType = {};
+            verified.forEach(i => { (byType[i.type] = byType[i.type] || []).push(i); });
+            const aiVendors = ['openai', 'claude', 'deepseek', 'kimi'].flatMap(t => byType[t] || []);
+            const opts = (items, fmt) => items.map(i => `<option value="${i.id}">${fmt(i)}</option>`).join('');
+            const cfg = i => i.config || {};
+
+            document.getElementById('run-github').innerHTML = opts(byType.github || [], i =>
+                `${esc(i.label || 'GitHub')} — ${esc(cfg(i).base_branch || 'main')}`);
+            // Pre-fill the editable source branch from the selected integration,
+            // then keep it in sync as the selection changes (user edits win).
+            const ghSel = document.getElementById('run-github');
+            const srcInput = document.getElementById('run-source-branch');
+            const baseOf = () => {
+                const sel = ghSel.options[ghSel.selectedIndex];
+                const id = sel ? sel.value : null;
+                const int = (byType.github || []).find(i => i.id === id);
+                return int ? (cfg(int).base_branch || 'main') : 'main';
+            };
+            if (!srcInput.value) srcInput.value = baseOf();
+            ghSel.onchange = function() { srcInput.value = baseOf(); };
+            document.getElementById('run-ai').innerHTML = opts(aiVendors, i =>
+                `${esc(i.label || i.type)} — H:${esc(cfg(i).model_high || '?')} M:${esc(cfg(i).model_medium || '?')} L:${esc(cfg(i).model_low || '?')}`);
+            document.getElementById('run-jira').innerHTML = '<option value="">— none —</option>'
+                + opts(byType.jira || [], i => `${esc(i.label || 'Jira')} — ${esc(cfg(i).url || '')}`);
+
+            if (!(byType.github || []).length || !aiVendors.length) {
+                const errEl = document.getElementById('run-create-error');
+                errEl.textContent = 'No verified GitHub or AI-vendor integration — verify them in the Configuration tab first.';
+                errEl.style.display = '';
+            }
+        })
+        .catch(() => {});
+}
+
+function loadPoliciesForWorkflow(workflowId) {
+    fetch('/api/workflows/' + workflowId + '/policies', { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            const sel = document.getElementById('run-policy');
+            sel.innerHTML = (data || []).map(p =>
+                `<option value="${p.id}">${esc(p.name)} (v${p.version})</option>`
+            ).join('');
+        })
+        .catch(() => {});
+}
+
+function cancelNewRun() {
+    document.getElementById('new-run-modal').style.display = 'none';
+}
+
+// Click on the backdrop (outside the dialog) closes the modal; Esc too
+document.getElementById('new-run-modal').addEventListener('click', function(e) {
+    if (!e.target.closest('.modal-dialog')) cancelNewRun();
+});
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') cancelNewRun();
+});
+
+function submitNewRun() {
+    const storyId = document.getElementById('run-story-id').value.trim();
+    const workflowId = document.getElementById('run-workflow').value;
+    const policyId = document.getElementById('run-policy').value;
+    const githubId = document.getElementById('run-github').value;
+    const sourceBranch = document.getElementById('run-source-branch').value.trim();
+    const aiId = document.getElementById('run-ai').value;
+    const jiraId = document.getElementById('run-jira').value;
+    const errEl = document.getElementById('run-create-error');
+
+    if (!storyId) {
+        errEl.textContent = 'Please enter a Story / Ticket ID.';
+        errEl.style.display = ''; return;
+    }
+    if (!workflowId) {
+        errEl.textContent = 'Please select a workflow.';
+        errEl.style.display = ''; return;
+    }
+    if (!githubId) {
+        errEl.textContent = 'Please select a verified GitHub integration.';
+        errEl.style.display = ''; return;
+    }
+    if (!aiId) {
+        errEl.textContent = 'Please select a verified AI vendor.';
+        errEl.style.display = ''; return;
+    }
+
+    errEl.style.display = 'none';
+    fetch('/api/runs', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({
+            project_id: window.BB_PROJECT_ID,
+            workflow_id: workflowId,
+            policy_id: policyId || null,
+            story_id: storyId,
+            github_integration_id: githubId,
+            jira_integration_id: jiraId || null,
+            ai_vendor_integration_id: aiId,
+            source_branch: sourceBranch || null,
+        })
+    })
+    .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.message || d.detail || 'Failed'); });
+        return r.json();
+    })
+    .then(run => {
+        document.getElementById('new-run-modal').style.display = 'none';
+        document.getElementById('run-story-id').value = '';
+        if (typeof window.BBOnRunCreated === 'function') window.BBOnRunCreated(run);
+    })
+    .catch(err => {
+        errEl.textContent = err.message;
+        errEl.style.display = '';
+    });
+}
+</script>

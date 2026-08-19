@@ -239,49 +239,6 @@
         </div>
     </div>
 
-    <!-- New Run modal (opened from the Runs tab header / empty state) -->
-    <div class="modal-backdrop" id="new-run-modal" style="display:none;">
-        <div class="modal-dialog" style="width:520px;" role="dialog" aria-modal="true" aria-labelledby="new-run-title">
-            <h5 id="new-run-title"><i class="fa fa-play-circle text-info me-5"></i>Start a New Run</h5>
-            <p>Pick the story, workflow, policy, and the project's verified integrations. The engine cuts a fresh git branch off the source branch you pick (default: the GitHub integration's base branch) and pauses at the gates your policy defines.</p>
-            <div class="form-group">
-                <label class="form-label">Story / Ticket ID</label>
-                <input type="text" class="form-control" id="run-story-id" placeholder="e.g. PROJ-123">
-            </div>
-            <div class="form-group">
-                <label class="form-label">Workflow</label>
-                <select class="form-select" id="run-workflow"></select>
-            </div>
-            <div class="form-group">
-                <label class="form-label">Policy</label>
-                <select class="form-select" id="run-policy"></select>
-            </div>
-            <div class="form-group">
-                <label class="form-label">GitHub Integration <span class="text-danger">*</span></label>
-                <select class="form-select" id="run-github"></select>
-            </div>
-            <div class="form-group">
-                <label class="form-label">Source Branch</label>
-                <input type="text" class="form-control" id="run-source-branch" placeholder="main">
-                <small class="text-muted">The branch the run branch is cut off. Pre-filled from the GitHub integration's base branch — edit to override.</small>
-            </div>
-            <div class="form-group">
-                <label class="form-label">AI Vendor <span class="text-danger">*</span></label>
-                <select class="form-select" id="run-ai"></select>
-            </div>
-            <div class="form-group">
-                <label class="form-label">Jira Integration <span class="text-muted">(optional)</span></label>
-                <select class="form-select" id="run-jira"></select>
-                <small class="text-muted">Only integrations that passed "Test connection" are listed.</small>
-            </div>
-            <div id="run-create-error" class="text-danger mt-2" style="display:none;"></div>
-            <div class="modal-actions">
-                <button class="btn-cancel" onclick="cancelNewRun()">Cancel</button>
-                <button class="btn-send" id="btn-start-run" onclick="submitNewRun()"><i class="fa fa-check"></i> Start Run</button>
-            </div>
-        </div>
-    </div>
-
     <!-- Filter pills -->
     <div class="filter-pills" id="filter-pills" style="display:none;">
         <button class="filter-pill active" data-filter="all">All <span class="count" id="count-all">0</span></button>
@@ -304,29 +261,25 @@
     </div>
 </div>
 
-<!-- ── Configuration Tab (PM only) ── -->
-<div id="tab-config" style="display:none;">
-    <div class="row mb-15">
-        <div class="col-lg-6">
-            <div class="box">
-                <div class="box-header with-border">
-                    <h4 class="box-title"><i class="fa fa-info-circle me-2"></i>Project Info</h4>
-                </div>
-                <div class="box-body" id="project-info">
-                    <p class="text-muted">Loading...</p>
-                </div>
-            </div>
-        </div>
-    </div>
+<!-- ── Workflows Tab (catalog: category rail → workflow cards → recent runs) ── -->
+<div id="tab-workflows" style="display:none;">
+    {% include "_workflow_catalog.html" %}
+</div>
 
-    <!-- Sub-tabs: Members / Integrations / Workflows / Skills -->
+<!-- ── Configuration Tab (PM / platform ADMIN) ── -->
+<div id="tab-config" style="display:none;">
+    <!-- Sub-tabs: Details / Members / Integrations / Workflows / Skills -->
     <div class="config-subnav mb-15" id="config-subnav">
+        <button class="config-subtab" data-subtab="details"><i class="fa fa-info-circle"></i> Details</button>
         <button class="config-subtab active" data-subtab="members"><i class="fa fa-users"></i> Members</button>
         <button class="config-subtab" data-subtab="integrations"><i class="fa fa-plug"></i> Integrations</button>
         <button class="config-subtab" data-subtab="workflows"><i class="fa fa-sitemap"></i> Workflows</button>
         <button class="config-subtab" data-subtab="skills"><i class="fa fa-tasks"></i> Skills</button>
     </div>
 
+    <div id="config-panel-details" style="display:none;">
+        {% include "_config_details.html" %}
+    </div>
     <div id="config-panel-members">
         {% include "_config_members.html" %}
     </div>
@@ -340,6 +293,10 @@
         {% include "_config_skills.html" %}
     </div>
 </div>
+
+<!-- Start-run modal — shared partial, lives outside the tab divs so it can be
+     opened from any tab (also included by the workflow home page). -->
+{% include "_start_run_modal.html" %}
 {% endblock %}
 
 {% block scripts %}
@@ -350,16 +307,14 @@ let currentTab = 'dashboard';
 let allRuns = [];
 let currentFilter = 'all';
 const activatedSubTabs = {};
-let configProjectLoaded = false;
 
 function showTab(tab) {
     document.getElementById('tab-dashboard').style.display = (tab === 'dashboard') ? '' : 'none';
     document.getElementById('tab-runs').style.display = (tab === 'runs') ? '' : 'none';
+    document.getElementById('tab-workflows').style.display = (tab === 'workflows') ? '' : 'none';
     document.getElementById('tab-config').style.display = (tab === 'config') ? '' : 'none';
-    if (tab === 'config' && !configProjectLoaded) {
-        configProjectLoaded = true;
-        loadConfigProject();
-    }
+    // The catalog re-fetches on every activation — in-flight counts move.
+    if (tab === 'workflows' && window.BBCatalog) window.BBCatalog.activate();
 }
 
 function activateSubTab(name) {
@@ -371,6 +326,7 @@ function activateSubTab(name) {
 }
 
 function showSubTab(name) {
+    document.getElementById('config-panel-details').style.display = (name === 'details') ? '' : 'none';
     document.getElementById('config-panel-members').style.display = (name === 'members') ? '' : 'none';
     document.getElementById('config-panel-integrations').style.display = (name === 'integrations') ? '' : 'none';
     document.getElementById('config-panel-workflows').style.display = (name === 'workflows') ? '' : 'none';
@@ -395,15 +351,25 @@ window.addEventListener('bb:userReady', function(e) {
 
     const membership = (data.memberships || []).find(m => m.project_id === window.BB_PROJECT_ID);
     if (!membership) {
-        // The dashboard tab (BBDash) shows the not-a-member alert.
-        return;
+        // Platform ADMINs have full project access without a membership row
+        // (title/breadcrumb come from the auth-only project endpoint). Other
+        // non-members get the dashboard tab's not-a-member alert.
+        if (!data.platform_role || data.platform_role !== 'ADMIN') return;
+        fetch('/api/projects/' + window.BB_PROJECT_ID, { headers: authHeaders() })
+            .then(r => r.json())
+            .then(project => {
+                document.getElementById('project-title').textContent = project.name;
+                document.getElementById('breadcrumb-project').textContent = project.name;
+                document.title = project.name + ' — BheemBhai';
+            })
+            .catch(() => {});
+    } else {
+        document.getElementById('project-title').textContent = membership.project_name;
+        document.getElementById('breadcrumb-project').textContent = membership.project_name;
+        document.title = membership.project_name + ' — BheemBhai';
     }
 
-    const isPM = membership.role === 'project_manager';
-
-    document.getElementById('project-title').textContent = membership.project_name;
-    document.getElementById('breadcrumb-project').textContent = membership.project_name;
-    document.title = membership.project_name + ' — BheemBhai';
+    const isPM = (membership && membership.role === 'project_manager') || data.platform_role === 'ADMIN';
 
     const params = new URLSearchParams(window.location.search);
     let tab = params.get('tab') || 'dashboard';
@@ -416,7 +382,7 @@ window.addEventListener('bb:userReady', function(e) {
     if (currentTab === 'runs') loadRuns();
     if (currentTab === 'config') {
         // ?sub= deep link from editor breadcrumbs (default: members)
-        const sub = ['members', 'integrations', 'workflows', 'skills']
+        const sub = ['details', 'members', 'integrations', 'workflows', 'skills']
             .includes(params.get('sub')) ? params.get('sub') : 'members';
         setActiveSubTab(sub);
         showSubTab(sub);
@@ -444,6 +410,7 @@ window.addEventListener('bb:userReady', function(e) {
             window.history.replaceState({}, '', url);
             highlightNavPill(tab);
             if (tab === 'runs') loadRuns();
+            if (tab === 'workflows' && window.BBCatalog) window.BBCatalog.activate();
             if (tab === 'config') showSubTab('members');
         });
     });
@@ -645,177 +612,11 @@ function renderRunRow(run) {
 }
 
 // ── Create run ──────────────────────────────────────────────────
+// The modal + createNewRun/loadRunIntegrations/loadPoliciesForWorkflow/
+// cancelNewRun/submitNewRun live in the shared _start_run_modal.html partial
+// (also included by the workflow home page). submitNewRun calls
+// window.BBOnRunCreated on success — here that refreshes the runs list.
 
-function createNewRun() {
-    const modal = document.getElementById('new-run-modal');
-    modal.style.display = '';
-    document.getElementById('run-create-error').style.display = 'none';
-    document.getElementById('run-story-id').focus();
-    document.getElementById('run-source-branch').value = '';
-    const pid = window.BB_PROJECT_ID;
-    fetch('/api/workflows?project_id=' + pid, { headers: authHeaders() })
-        .then(r => r.json())
-        .then(data => {
-            // Runs are project-scoped: list only this project's own workflows,
-            // never platform templates (those are copied via Configuration).
-            const projectWorkflows = (data || []).filter(w => w.project_id === pid);
-            const sel = document.getElementById('run-workflow');
-            sel.innerHTML = projectWorkflows.map(w =>
-                `<option value="${w.id}">${esc(w.name)} (v${w.version})</option>`
-            ).join('');
-            const btn = document.getElementById('btn-start-run');
-            if (projectWorkflows.length > 0) {
-                btn.disabled = false;
-                loadPoliciesForWorkflow(projectWorkflows[0].id);
-            } else {
-                btn.disabled = true;
-                const errEl = document.getElementById('run-create-error');
-                errEl.textContent = 'No workflow in this project yet — a project manager must copy one from platform templates in the Configuration tab.';
-                errEl.style.display = '';
-            }
-            sel.onchange = function() { loadPoliciesForWorkflow(this.value); };
-        })
-        .catch(() => {});
-    loadRunIntegrations(pid);
-}
-
-function loadRunIntegrations(pid) {
-    // Verified-only: the modal lists integrations that passed "Test connection".
-    fetch('/api/projects/' + pid + '/integrations', { headers: authHeaders() })
-        .then(r => r.json())
-        .then(data => {
-            const verified = (data || []).filter(i => i.verified_at);
-            const byType = {};
-            verified.forEach(i => { (byType[i.type] = byType[i.type] || []).push(i); });
-            const aiVendors = ['openai', 'claude', 'deepseek', 'kimi'].flatMap(t => byType[t] || []);
-            const opts = (items, fmt) => items.map(i => `<option value="${i.id}">${fmt(i)}</option>`).join('');
-            const cfg = i => i.config || {};
-
-            document.getElementById('run-github').innerHTML = opts(byType.github || [], i =>
-                `${esc(i.label || 'GitHub')} — ${esc(cfg(i).base_branch || 'main')}`);
-            // Pre-fill the editable source branch from the selected integration,
-            // then keep it in sync as the selection changes (user edits win).
-            const ghSel = document.getElementById('run-github');
-            const srcInput = document.getElementById('run-source-branch');
-            const baseOf = () => {
-                const sel = ghSel.options[ghSel.selectedIndex];
-                const id = sel ? sel.value : null;
-                const int = (byType.github || []).find(i => i.id === id);
-                return int ? (cfg(int).base_branch || 'main') : 'main';
-            };
-            if (!srcInput.value) srcInput.value = baseOf();
-            ghSel.onchange = function() { srcInput.value = baseOf(); };
-            document.getElementById('run-ai').innerHTML = opts(aiVendors, i =>
-                `${esc(i.label || i.type)} — H:${esc(cfg(i).model_high || '?')} M:${esc(cfg(i).model_medium || '?')} L:${esc(cfg(i).model_low || '?')}`);
-            document.getElementById('run-jira').innerHTML = '<option value="">— none —</option>'
-                + opts(byType.jira || [], i => `${esc(i.label || 'Jira')} — ${esc(cfg(i).url || '')}`);
-
-            if (!(byType.github || []).length || !aiVendors.length) {
-                const errEl = document.getElementById('run-create-error');
-                errEl.textContent = 'No verified GitHub or AI-vendor integration — verify them in the Configuration tab first.';
-                errEl.style.display = '';
-            }
-        })
-        .catch(() => {});
-}
-
-function loadPoliciesForWorkflow(workflowId) {
-    fetch('/api/workflows/' + workflowId + '/policies', { headers: authHeaders() })
-        .then(r => r.json())
-        .then(data => {
-            const sel = document.getElementById('run-policy');
-            sel.innerHTML = (data || []).map(p =>
-                `<option value="${p.id}">${esc(p.name)} (v${p.version})</option>`
-            ).join('');
-        })
-        .catch(() => {});
-}
-
-function cancelNewRun() {
-    document.getElementById('new-run-modal').style.display = 'none';
-}
-
-// Click on the backdrop (outside the dialog) closes the modal; Esc too
-document.getElementById('new-run-modal').addEventListener('click', function(e) {
-    if (!e.target.closest('.modal-dialog')) cancelNewRun();
-});
-document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') cancelNewRun();
-});
-
-function submitNewRun() {
-    const storyId = document.getElementById('run-story-id').value.trim();
-    const workflowId = document.getElementById('run-workflow').value;
-    const policyId = document.getElementById('run-policy').value;
-    const githubId = document.getElementById('run-github').value;
-    const sourceBranch = document.getElementById('run-source-branch').value.trim();
-    const aiId = document.getElementById('run-ai').value;
-    const jiraId = document.getElementById('run-jira').value;
-    const errEl = document.getElementById('run-create-error');
-
-    if (!storyId) {
-        errEl.textContent = 'Please enter a Story / Ticket ID.';
-        errEl.style.display = ''; return;
-    }
-    if (!workflowId) {
-        errEl.textContent = 'Please select a workflow.';
-        errEl.style.display = ''; return;
-    }
-    if (!githubId) {
-        errEl.textContent = 'Please select a verified GitHub integration.';
-        errEl.style.display = ''; return;
-    }
-    if (!aiId) {
-        errEl.textContent = 'Please select a verified AI vendor.';
-        errEl.style.display = ''; return;
-    }
-
-    errEl.style.display = 'none';
-    fetch('/api/runs', {
-        method: 'POST',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
-        body: JSON.stringify({
-            project_id: window.BB_PROJECT_ID,
-            workflow_id: workflowId,
-            policy_id: policyId || null,
-            story_id: storyId,
-            github_integration_id: githubId,
-            jira_integration_id: jiraId || null,
-            ai_vendor_integration_id: aiId,
-            source_branch: sourceBranch || null,
-        })
-    })
-    .then(r => {
-        if (!r.ok) return r.json().then(d => { throw new Error(d.message || d.detail || 'Failed'); });
-        return r.json();
-    })
-    .then(run => {
-        document.getElementById('new-run-modal').style.display = 'none';
-        document.getElementById('run-story-id').value = '';
-        loadRuns();
-    })
-    .catch(err => {
-        errEl.textContent = err.message;
-        errEl.style.display = '';
-    });
-}
-
-// ── Configuration: project info (read-only for PMs — renaming is ADMIN-only) ────────────────────
-
-function loadConfigProject() {
-    const pid = window.BB_PROJECT_ID;
-    fetch('/api/projects/' + pid, { headers: authHeaders() })
-        .then(r => r.json())
-        .then(project => {
-            document.getElementById('project-info').innerHTML = `
-                <p><strong>Project ID:</strong> <code>${esc(project.id)}</code></p>
-                <p><strong>Name:</strong> ${esc(project.name)}</p>
-                <p><strong>Created:</strong> ${esc((project.created_at || '').substring(0, 10))}</p>
-            `;
-        })
-        .catch(() => {
-            document.getElementById('project-info').innerHTML = '<p class="text-danger">Failed to load project info.</p>';
-        });
-}
+window.BBOnRunCreated = function () { loadRuns(); };
 </script>
 {% endblock %}

@@ -7,6 +7,7 @@ from bheembhai.models.skill import Skill, SkillFile
 from bheembhai.models.user import Membership, ProjectRole, User
 from bheembhai.models.work_queue import WorkQueueItem
 from bheembhai.models.workflow import Policy, Workflow
+from bheembhai.models.workflow_category import WorkflowCategory
 
 __all__ = [
     "Base",
@@ -24,4 +25,5 @@ __all__ = [
     "User",
     "WorkQueueItem",
     "Workflow",
+    "WorkflowCategory",
 ]

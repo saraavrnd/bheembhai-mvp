@@ -1,0 +1,82 @@
+<!-- ══════════ Configuration sub-tab: Details (PM / platform ADMIN) ══════════
+     Included by project.html inside #config-panel-details. Lazy-activated via
+     BBConfig.details.activate(); shows project metadata and lets the project
+     manager edit the description (renaming stays ADMIN-only server-side). -->
+
+<div class="row">
+    <div class="col-md-8">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title"><i class="fa fa-info-circle me-2"></i>Project Details</h4>
+            </div>
+            <div class="box-body">
+                <div id="project-details-meta" class="mb-15">
+                    <p class="text-muted mb-0">Loading...</p>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="project-description-input">Description</label>
+                    <textarea class="form-control" id="project-description-input" rows="4" maxlength="500"></textarea>
+                </div>
+                <button type="button" class="btn btn-primary" id="project-details-save">
+                    <i class="fa fa-save"></i> Save Description
+                </button>
+                <span id="project-details-saved" class="text-success ms-10" style="display:none;">✓ Saved</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+    const projectId = window.BB_PROJECT_ID;
+
+    function throwIfError(r) {
+        if (r.ok) return r;
+        return r.text().then(t => {
+            let msg = r.statusText;
+            try { const d = JSON.parse(t); msg = d.detail || msg; } catch (e) { /* not JSON */ }
+            throw new Error(msg);
+        });
+    }
+
+    function render(project) {
+        document.getElementById('project-details-meta').innerHTML = `
+            <p class="mb-5"><strong>Project ID:</strong> <code>${esc(project.id)}</code></p>
+            <p class="mb-5"><strong>Name:</strong> ${esc(project.name)}</p>
+            <p class="mb-0"><strong>Created:</strong> ${esc((project.created_at || '').substring(0, 10))}</p>
+        `;
+        document.getElementById('project-description-input').value = project.description || '';
+    }
+
+    function activate() {
+        fetch('/api/projects/' + projectId, { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(render)
+            .catch(err => {
+                document.getElementById('project-details-meta').innerHTML =
+                    '<p class="text-danger">Failed to load project details: ' + esc(err.message) + '</p>';
+            });
+    }
+
+    function save() {
+        const input = document.getElementById('project-description-input');
+        const flash = document.getElementById('project-details-saved');
+        flash.style.display = 'none';
+        fetch('/api/projects/' + projectId, {
+            method: 'PATCH',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ description: input.value.trim() }),
+        })
+        .then(throwIfError)
+        .then(() => { flash.style.display = ''; })
+        .catch(err => alert('Error: ' + err.message));
+    }
+
+    document.getElementById('project-details-save').addEventListener('click', save);
+
+    window.BBConfig = window.BBConfig || {};
+    window.BBConfig.details = { activate: activate, save: save };
+})();
+</script>

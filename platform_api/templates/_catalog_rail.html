@@ -1,0 +1,78 @@
+<!-- Workflow-category rail — shared by the catalog tab (#tab-workflows in
+     project.html) and the workflow home page (workflow_home.html).
+
+     Rendered by window.BBCatalogRail.render(items, selectedId, onClick):
+       items      [{id, name, workflow_count, in_flight}] — id "" = "All workflows"
+       selectedId the highlighted item's id
+       onClick    called with the clicked category id ("" = All)
+     onClick is page-specific: the catalog filters client-side, the home page
+     navigates back to ?tab=workflows&cat=<id>. Tints are a deterministic hash
+     of the name, so a category keeps its color across pages and reloads. -->
+<style>
+    /* ── Category rail ── */
+    .bb-cat-dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        display: inline-block; flex-shrink: 0;
+    }
+    .bb-cat-dot-0 { background: #e07b5a; }
+    .bb-cat-dot-1 { background: #2a62d5; }
+    .bb-cat-dot-2 { background: #5a9e6f; }
+    .bb-cat-dot-3 { background: #8b5abf; }
+    .bb-cat-dot-4 { background: #c98f2b; }
+    .bb-cat-dot-5 { background: #3f9bb4; }
+    .bb-cat-dot-6 { background: #b34d8c; }
+    .bb-cat-dot-7 { background: #6e7681; }
+    .bb-rail-row {
+        display: flex; align-items: center; gap: 8px;
+        padding: 8px 12px; border-radius: 6px; cursor: pointer;
+        font-size: 13px; color: #3a3a4a; transition: background 0.12s;
+    }
+    .bb-rail-row:hover { background: #f4f1ea; }
+    .bb-rail-row.active { background: #e8eef9; font-weight: 600; }
+    /* Category rows sit indented under the "All workflows" top-level row */
+    .bb-rail-row.child { padding-left: 28px; }
+    .bb-rail-count {
+        margin-left: auto; font-size: 11px; color: #8a7a6a; white-space: nowrap;
+    }
+    .bb-rail-flight {
+        margin-left: auto; font-size: 11px; color: #b34d2c;
+        font-weight: 600; white-space: nowrap;
+    }
+</style>
+<div class="bb-rail" id="bb-catalog-rail">
+    <h5 style="font-size:12px;text-transform:uppercase;letter-spacing:0.05em;color:#8a7a6a;margin-bottom:10px;">
+        Workflow Categories
+    </h5>
+    <div id="bb-rail-items"></div>
+</div>
+<script>
+(function () {
+    // Deterministic tint per category name — stable across reloads and pages.
+    function tint(name) {
+        let h = 0;
+        for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+        return h % 8;
+    }
+
+    window.BBCatalogRail = {
+        // Exposed so card/home headers tint the same way the rail does.
+        tint: tint,
+        render: function (items, selectedId, onClick) {
+            const el = document.getElementById('bb-rail-items');
+            if (!el) return;
+            el.innerHTML = (items || []).map(function (c) {
+                const sel = c.id === selectedId;
+                return '<div class="bb-rail-row' + (c.id ? ' child' : '') + (sel ? ' active' : '') + '" data-cat-id="' + esc(c.id) + '">'
+                    + '<span class="bb-cat-dot bb-cat-dot-' + tint(c.name || '') + '"></span>'
+                    + '<span>' + esc(c.name) + '</span>'
+                    + (c.in_flight ? '<span class="bb-rail-flight">' + c.in_flight + ' in flight</span>' : '')
+                    + '<span class="bb-rail-count">' + c.workflow_count + '</span>'
+                    + '</div>';
+            }).join('');
+            el.querySelectorAll('.bb-rail-row').forEach(function (row) {
+                row.addEventListener('click', function () { onClick(row.dataset.catId); });
+            });
+        }
+    };
+})();
+</script>

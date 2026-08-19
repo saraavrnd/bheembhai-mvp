@@ -16,6 +16,7 @@
                             <tr>
                                 <th>Name</th>
                                 <th>Version</th>
+                                <th>Category</th>
                                 <th>Steps</th>
                                 <th>Policies</th>
                                 <th>Active</th>
@@ -23,7 +24,7 @@
                             </tr>
                         </thead>
                         <tbody id="wf-mapped-tbody">
-                            <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
+                            <tr><td colspan="7" class="text-center text-muted">Loading...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -110,7 +111,7 @@
             })
             .catch(err => {
                 document.getElementById('wf-mapped-tbody').innerHTML =
-                    '<tr><td colspan="6" class="text-center text-danger">' + esc(err.message) + '</td></tr>';
+                    '<tr><td colspan="7" class="text-center text-danger">' + esc(err.message) + '</td></tr>';
             });
 
         // Fetch available platform workflows, waiting for the mapped list so
@@ -134,12 +135,15 @@
     function renderMapped() {
         const tbody = document.getElementById('wf-mapped-tbody');
         if (!mappedWorkflows.length) {
-            tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No workflows mapped yet. Map one from the right panel.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No workflows mapped yet. Map one from the right panel.</td></tr>';
             return;
         }
         tbody.innerHTML = mappedWorkflows.map(w => {
             const parsed = w.parsed;
             const stepCount = parsed ? parsed.steps.length : '—';
+            const categoryBadge = w.category_name
+                ? `<span class="badge rounded-pill bg-info">${esc(w.category_name)}</span>`
+                : '<span class="badge rounded-pill bg-secondary">uncategorized</span>';
             const policyBadge = w.policy_count > 0
                 ? `<button class="btn btn-sm p-0 border-0 align-baseline" title="View policies"
                            onclick="BBConfig.workflows.openPolicies('${w.id}', '${escJs(w.name)}')">
@@ -156,6 +160,7 @@
                         <a href="${editUrl}" class="text-decoration-none fw-bold">${esc(w.name)}</a>
                     </td>
                     <td>v${w.version}</td>
+                    <td>${categoryBadge}</td>
                     <td>${stepCount}</td>
                     <td>${policyBadge}</td>
                     <td>${activeBadge}</td>
@@ -181,6 +186,7 @@
                     <div>
                         <strong>${esc(w.name)}</strong>
                         <span class="badge rounded-pill bg-primary ms-1">v${w.version}</span>
+                        ${w.category_name ? `<span class="badge rounded-pill bg-secondary ms-1">${esc(w.category_name)}</span>` : ''}
                         <span class="badge rounded-pill bg-dark ms-1">${stepCount} steps</span>
                         ${w.policy_count > 0 ? `<span class="badge rounded-pill bg-info ms-1">${w.policy_count} policies</span>` : ''}
                     </div>

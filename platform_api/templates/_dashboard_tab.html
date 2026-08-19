@@ -497,8 +497,9 @@
         const data = ev.detail;
         state.user = data;
         const membership = (data.memberships || []).find(m => m.project_id === state.projectId);
-        if (!membership) { denied(); return; }
-        state.realRole = membership.role;
+        // Platform ADMINs have full project access without a membership row
+        if (!membership && data.platform_role !== 'ADMIN') { denied(); return; }
+        state.realRole = membership ? membership.role : 'project_manager';
         state.previewRole = null;
         load();
     });

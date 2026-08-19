@@ -8,25 +8,30 @@ templates, edit, deactivate, delete.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from bheembhai.database import get_session
 from bheembhai.models.project import Project
-from bheembhai.models.run import Run
+from bheembhai.models.run import Run, Transition
 from bheembhai.models.user import Membership, User
 from bheembhai.models.workflow import Policy, Workflow
+from bheembhai.models.workflow_category import WorkflowCategory
 from bheembhai.protocols.auth import Identity
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import or_, select
 
 from platform_api.dependencies import get_current_enabled_user
+from platform_api.routers._run_stats import _median, _relative_time, _run_stats
 from platform_api.routers._workflow_shared import (
+    _parse_policy_yaml,
     _parse_workflow_yaml,
     _policy_to_response,
     _require_pm_of_workflow,
     _workflow_to_response,
     clone_referenced_skills,
 )
+from platform_api.routers.runs import TERMINAL_RUN_STATES
 from platform_api.schemas.admin import (
     CopyToProjectRequest,
     PolicyResponse,
@@ -65,8 +70,8 @@ async def list_workflows(
 
     is_real_project = bool(project_id and project_id != "__platform__")
 
-    if is_real_project:
-        # Verify membership
+    if is_real_project and current_user.platform_role != "ADMIN":
+        # Verify membership (platform ADMINs bypass)
         membership = (
             await db.execute(
                 select(Membership).where(
@@ -118,6 +123,194 @@ async def get_workflow(
         raise HTTPException(404, f"Workflow {workflow_id} not found")
 
     return await _workflow_to_response(workflow, db)
+
+
+@router.get("/{workflow_id}/home")
+async def workflow_home(
+    workflow_id: str,
+    db: AsyncSession = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+) -> dict:
+    """Workflow home: definition strip, 30-day stats, and scoped run list.
+
+    Project workflows only — platform templates have no runs and are 404'd
+    here (which also avoids leaking their ids to non-members).
+    """
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+    current_user, _ = enabled
+
+    workflow = await db.get(Workflow, workflow_id)
+    if workflow is None:
+        raise HTTPException(404, f"Workflow {workflow_id} not found")
+    if workflow.project_id is None:
+        raise HTTPException(404, "Platform templates have no run history")
+
+    membership = (
+        await db.execute(
+            select(Membership).where(
+                Membership.user_id == current_user.id,
+                Membership.project_id == workflow.project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if membership is None and current_user.platform_role != "ADMIN":
+        raise HTTPException(403, "You are not a member of this project")
+
+    # Newest active policy (same rule as create_run's default policy pick).
+    pol_result = await db.execute(
+        select(Policy)
+        .where(Policy.workflow_id == workflow_id, Policy.is_active == True)
+        .order_by(Policy.created_at.desc())
+        .limit(1)
+    )
+    active_policy = pol_result.scalar_one_or_none()
+    parsed_policy = _parse_policy_yaml(active_policy.yaml_content) if active_policy else None
+    gates: dict[str, dict] = {}
+    if parsed_policy:
+        for step_id, g in parsed_policy.gates.items():
+            gates[str(step_id)] = {
+                "review": g.review,
+                "role": g.role,
+                "on_status": g.on_status,
+            }
+
+    # 30-day window for stats + run list.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    wr_result = await db.execute(
+        select(Run)
+        .where(Run.workflow_id == workflow_id, Run.created_at >= cutoff)
+        .order_by(Run.created_at.desc())
+    )
+    window_runs = wr_result.scalars().all()
+
+    # Paused runs (current awaiting review — NOT windowed: an old run can
+    # still be sitting at a gate).
+    paused_result = await db.execute(
+        select(Run).where(Run.workflow_id == workflow_id, Run.state == "paused")
+    )
+    paused_runs = paused_result.scalars().all()
+
+    # One transitions query for both sets, grouped per run in memory.
+    run_ids = [r.id for r in window_runs] + [r.id for r in paused_runs]
+    rows_by_run: dict = {}
+    if run_ids:
+        tr_result = await db.execute(
+            select(Transition)
+            .where(Transition.run_id.in_(run_ids))
+            .order_by(Transition.id)
+        )
+        for tr in tr_result.scalars().all():
+            rows_by_run.setdefault(tr.run_id, []).append(tr)
+
+    # Per-run counters over the window.
+    per_run: dict = {}
+    for run in window_runs:
+        per_run[run.id] = _run_stats(
+            rows_by_run.get(run.id, []), run.created_at.timestamp()
+        )
+
+    # Awaiting review: real gate role from the latest awaiting_approval
+    # payload, falling back to the active policy's gate role for the step.
+    awaiting_items: list[dict] = []
+    for run in paused_runs:
+        gate_role = None
+        for tr in rows_by_run.get(run.id, []):
+            # The engine records the gate row as completed→awaiting_approval
+            # (state_machine.py) — match on to_state alone, the same rule as
+            # the engine's own _last_gate_transition.
+            if tr.to_state == "awaiting_approval":
+                payload = tr.payload or {}
+                gate_role = payload.get("role") or None
+        if not gate_role and run.current_step:
+            gate_role = gates.get(run.current_step, {}).get("role")
+        awaiting_items.append({
+            "run_id": str(run.id),
+            "story_id": run.story_id,
+            "gate_step": run.current_step,
+            "gate_role": gate_role,
+        })
+
+    # Stats over the window.
+    durations = [
+        per_run[r.id]["duration_s"]
+        for r in window_runs
+        if per_run[r.id]["duration_s"] is not None
+    ]
+    gate_waits = [
+        w for r in window_runs for w in per_run[r.id]["gate_waits"]
+    ]
+    by_state = {s: 0 for s in TERMINAL_RUN_STATES}
+    for run in window_runs:
+        if run.state in TERMINAL_RUN_STATES:
+            by_state[run.state] += 1
+    live = sum(1 for r in window_runs if r.state not in TERMINAL_RUN_STATES)
+    loop_runs = sum(1 for r in window_runs if per_run[r.id]["loop_backs"] > 0)
+
+    edge_counts: dict = {}
+    for r in window_runs:
+        for (src, dst), n in per_run[r.id]["loop_edges"].items():
+            edge_counts[(src, dst)] = edge_counts.get((src, dst), 0) + n
+    most_common = max(edge_counts, key=edge_counts.get) if edge_counts else None
+
+    # Category name for the header.
+    category_name = None
+    if workflow.workflow_category_id:
+        category = await db.get(WorkflowCategory, workflow.workflow_category_id)
+        category_name = category.name if category else None
+
+    runs_list = []
+    for run in window_runs[:20]:
+        rows = rows_by_run.get(run.id, [])
+        updated_ts = max((float(tr.ts) for tr in rows), default=None)
+        runs_list.append({
+            "run_id": str(run.id),
+            "story_id": run.story_id,
+            "state": run.state,
+            "needs_review": run.state == "paused",
+            "updated": _relative_time(updated_ts) if updated_ts is not None
+            else None,
+            "executions": per_run[run.id]["executions"],
+            "loop_backs": per_run[run.id]["loop_backs"],
+        })
+
+    parsed = _parse_workflow_yaml(workflow.yaml_content)
+    return {
+        "workflow": {
+            "id": str(workflow.id),
+            "project_id": str(workflow.project_id),
+            "name": workflow.name,
+            "version": workflow.version,
+            "description": workflow.description or "",
+            "is_active": workflow.is_active,
+            "category_id": str(workflow.workflow_category_id)
+            if workflow.workflow_category_id else "",
+            "category_name": category_name,
+            "parsed": parsed,
+        },
+        "active_policy": {
+            "id": str(active_policy.id),
+            "name": active_policy.name,
+            "version": active_policy.version,
+            "gates": gates,
+        } if active_policy else None,
+        "stats": {
+            "runs_total": len(window_runs),
+            "by_state": by_state,
+            "live": live,
+            "median_duration_s": _median(durations),
+            "median_gate_wait_s": _median(gate_waits),
+            "loop_back_rate_pct": round(100 * loop_runs / len(window_runs), 1)
+            if window_runs else 0,
+            "most_common_loop_edge": {
+                "from_step": most_common[0],
+                "to_step": most_common[1],
+                "count": edge_counts[most_common],
+            } if most_common else None,
+            "awaiting_review": {"total": len(awaiting_items), "items": awaiting_items},
+        },
+        "runs": runs_list,
+    }
 
 
 @router.get("/{workflow_id}/policies")
@@ -179,17 +372,18 @@ async def copy_workflow_to_project(
     if source.project_id is not None:
         raise HTTPException(403, "Only platform templates can be copied to a project")
 
-    # PM check on the target project
-    membership = (
-        await db.execute(
-            select(Membership).where(
-                Membership.user_id == current_user.id,
-                Membership.project_id == body.project_id,
+    # PM check on the target project (platform ADMINs bypass)
+    if current_user.platform_role != "ADMIN":
+        membership = (
+            await db.execute(
+                select(Membership).where(
+                    Membership.user_id == current_user.id,
+                    Membership.project_id == body.project_id,
+                )
             )
-        )
-    ).scalar_one_or_none()
-    if membership is None or membership.role != "project_manager":
-        raise HTTPException(403, "Only a project manager can do this")
+        ).scalar_one_or_none()
+        if membership is None or membership.role != "project_manager":
+            raise HTTPException(403, "Only a project manager can do this")
 
     project = await db.get(Project, body.project_id)
     if project is None:
@@ -215,9 +409,11 @@ async def copy_workflow_to_project(
     clone = Workflow(
         project_id=body.project_id,
         name=source.name,
+        description=source.description,
         version=source.version,
         yaml_content=source.yaml_content,
         is_active=True,
+        workflow_category_id=source.workflow_category_id,
     )
     db.add(clone)
     await db.flush()
@@ -297,6 +493,19 @@ async def update_workflow(
             workflow.version = parsed.version
     if body.is_active is not None:
         workflow.is_active = body.is_active
+    if body.description is not None:
+        workflow.description = body.description.strip()
+    # Key present → set the category (clearing is rejected — workflows must
+    # always belong to a category); absent → unchanged.
+    if "category_id" in body.model_fields_set:
+        if not body.category_id:
+            raise HTTPException(
+                400, "Category is required — workflows must belong to a category"
+            )
+        category = await db.get(WorkflowCategory, body.category_id)
+        if category is None:
+            raise HTTPException(400, f"Category {body.category_id} not found")
+        workflow.workflow_category_id = category.id
 
     await db.commit()
 
