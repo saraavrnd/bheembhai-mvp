@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from platform_api.agent_log import LogBlock, parse_agent_log
 from platform_api.dependencies import get_current_enabled_user
 from platform_api.github_content import build_chain, git_fetch_content, resolve_step_sha
 from platform_api.routers._integration_shared import AI_VENDOR_TYPES
@@ -1208,12 +1209,31 @@ async def get_run_file(
 _LOG_FULL_MAX = 20 * 1024 * 1024    # cap on a full log served in one response
 _LOG_TAIL_BYTES = 256 * 1024        # tail mode reads the last 256 KB, then keeps N lines
 _LOG_TAIL_LINES_MAX = 2000
+_LOG_RENDER_FULL_MAX = 2 * 1024 * 1024   # rendered full mode parses at most the last 2 MB
+
+_RENDER_NOTICE = ("… earlier portion of the log omitted — the transcript "
+                  "shows only the most recent portion")
 
 
 def _decode_log(data: bytes) -> str:
     """Logs are UTF-8 text by convention — decode defensively (control
     characters from progress spinners must not kill the response)."""
     return data.decode("utf-8", "replace")
+
+
+def _rendered_log_response(kind: str, mode: str, size: int,
+                           window_cut: bool, parsed) -> dict:
+    """Rendered agent-log response: typed blocks the UI renders as a
+    transcript. A notice block leads when the view shows only a recent
+    portion — the byte window / line limit cut the beginning, or the parser's
+    block cap dropped it."""
+    blocks = parsed.blocks
+    truncated_render = window_cut or parsed.truncated
+    if truncated_render:
+        blocks = [LogBlock(kind="truncated_notice", text=_RENDER_NOTICE)] + blocks
+    return {"kind": kind, "mode": mode, "size": size, "render": "agent",
+            "truncated_render": truncated_render,
+            "blocks": [b.to_dict() for b in blocks]}
 
 
 @router.get("/{run_id}/logs")
@@ -1224,6 +1244,7 @@ async def get_run_logs(
     kind: str = Query(..., description="agent | container | diagnostics"),
     mode: str = Query("tail", pattern="^(tail|full)$"),
     lines: int = Query(200, ge=1, le=_LOG_TAIL_LINES_MAX),
+    render: str | None = Query(None, pattern="^(agent)$"),
     db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
     request: Request = None,
@@ -1235,11 +1256,18 @@ async def get_run_logs(
     returns the whole content up to a 20 MB cap (newest end kept when
     truncated). The object key ALWAYS comes from the run_logs reference — the
     store is never scanned and callers can never address arbitrary keys.
+
+    ``render=agent`` (agent kind only) parses the served window into typed
+    transcript blocks instead of raw text — assistant replies, tool calls,
+    and the terminal result — capped at the last 2 MB so a 20 MB full log
+    never turns one click into a megabyte parse.
     """
     if enabled is None:
         raise HTTPException(401, "Authentication required")
     if kind not in KINDS:
         raise HTTPException(400, f"unknown log kind {kind!r} (valid: {', '.join(KINDS)})")
+    if render is not None and kind != "agent":
+        raise HTTPException(400, "render=agent applies only to the agent log")
     run = await db.get(Run, run_id)
     if run is None:
         raise HTTPException(404, f"Run {run_id} not found")
@@ -1264,6 +1292,13 @@ async def get_run_logs(
         truncated = len(data) > _LOG_FULL_MAX
         if truncated:
             data = data[len(data) - _LOG_FULL_MAX:]    # keep the END — newest events
+        if render is not None:
+            text = _decode_log(data)
+            window_cut = truncated or len(text) > _LOG_RENDER_FULL_MAX
+            if len(text) > _LOG_RENDER_FULL_MAX:
+                text = text[len(text) - _LOG_RENDER_FULL_MAX:]
+            return _rendered_log_response(kind, "full", len(data),
+                                          window_cut, parse_agent_log(text))
         return {"kind": kind, "mode": "full", "size": len(data),
                 "truncated": truncated, "content": _decode_log(data)}
 
@@ -1272,7 +1307,14 @@ async def get_run_logs(
         raise HTTPException(404, "log artifact missing from storage (stale reference)")
     start = max(0, head.size - _LOG_TAIL_BYTES)
     data = await store.get_range(row.object_key, start, head.size - 1)
-    content = "\n".join(_decode_log(data).splitlines()[-lines:])
+    text = _decode_log(data)
+    content = "\n".join(text.splitlines()[-lines:])
+    if render is not None:
+        # The byte window or the line limit may have cut the beginning —
+        # either way the transcript starts partway in and says so.
+        window_cut = head.size > _LOG_TAIL_BYTES or len(text.splitlines()) > lines
+        return _rendered_log_response(kind, "tail", head.size,
+                                      window_cut, parse_agent_log(content))
     return {"kind": kind, "mode": "tail", "size": head.size, "lines": lines,
             "content": content}
 

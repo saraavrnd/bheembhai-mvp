@@ -492,6 +492,43 @@
     }
     .log-note { margin: 8px 24px 14px; font-size: 12px; color: #a06a3a; }
 
+    /* ── Rendered agent transcript (JSONL stream events → blocks) ──
+       Light markdown theme: the raw view stays dark mono, but assistant
+       markdown uses the same light palette as the rest of the viewers. */
+    .log-rendered {
+        flex: 1; min-height: 0; overflow-y: auto;
+        margin: 0 24px; padding: 12px 14px; background: #fff;
+        border-radius: 8px; font-size: 13.5px;
+    }
+    .log-tools .log-refresh.active { background: #2f579a; color: #fff; }
+    .log-tools .log-refresh:disabled { opacity: 0.45; cursor: not-allowed; }
+    .agent-msg { margin: 0 0 10px; }
+    .agent-msg > :last-child { margin-bottom: 0; }
+    .log-tool-row { margin: 4px 0; }
+    .log-tool-row summary {
+        cursor: pointer; list-style: none;
+        font-family: 'JetBrains Mono', 'Courier New', monospace;
+        font-size: 12px; color: #6e7681;
+    }
+    .log-tool-row summary::before { content: '▸ '; }
+    .log-tool-row[open] summary::before { content: '▾ '; }
+    .log-tool-row pre {
+        background: #f4f2ee; border: 1px solid #e8e0d6; border-radius: 6px;
+        padding: 8px 10px; font-size: 12px;
+        white-space: pre-wrap; word-break: break-word; margin: 6px 0 0;
+    }
+    .tool-ok { color: #2f7d4f; }
+    .tool-err { color: #b3341f; }
+    .tool-unk { color: #a06a3a; }
+    .log-plain {
+        font-family: 'JetBrains Mono', 'Courier New', monospace;
+        font-size: 12px; color: #8a8a96;
+        margin: 4px 0; white-space: pre-wrap; word-break: break-word;
+    }
+    .log-truncated {
+        font-size: 12px; color: #a06a3a; font-style: italic; margin: 0 0 8px;
+    }
+
     /* Responsive — small screens fall back to normal document flow
        (fitRunLayout releases the pinned height below 768px too). */
     @media (max-width: 768px) {
@@ -555,9 +592,17 @@
                  while the Logs button is active. -->
             <div id="log-view" style="display:none;">
                 <div class="log-tools">
-                    <select id="log-kind" onchange="loadStageLog('tail')" title="Which log to view"></select>
+                    <select id="log-kind" onchange="logKindChanged()" title="Which log to view"></select>
                     <span class="log-size" id="log-size"></span>
                     <span style="flex:1;"></span>
+                    <button class="log-refresh" id="btn-log-rendered" onclick="setLogRenderMode('rendered')"
+                            title="Transcript view — assistant replies as formatted text">
+                        Rendered
+                    </button>
+                    <button class="log-refresh" id="btn-log-raw" onclick="setLogRenderMode('raw')"
+                            title="Raw output as captured">
+                        Raw
+                    </button>
                     <button class="log-refresh" onclick="loadStageLog('tail')" title="Re-read the tail">
                         <i class="fa fa-refresh"></i> Tail
                     </button>
@@ -566,6 +611,7 @@
                     </button>
                 </div>
                 <pre class="log-body" id="log-content">Loading…</pre>
+                <div class="viewer-body markdown log-rendered" id="log-rendered" style="display:none;"></div>
                 <div class="log-note" id="log-note" style="display:none;"></div>
             </div>
         </div>
@@ -624,6 +670,11 @@ let lastRenderOk = false;
 // visit's logs instead of the file/summary viewer. The 3s poll must not
 // yank it — logs at an attempt are immutable.
 let logsViewActive = false;
+// The agent log is Claude Code's stream-json (JSONL) output — the readable
+// default has the server parse it into transcript blocks; Raw shows the
+// captured bytes as-is. The other kinds have no structure to parse.
+let logRenderMode = 'rendered';
+let lastLogMode = 'tail';
 let decisionSubmitted = false;
 let userPickedStage = false;   // set once the user clicks a stage themselves
 
@@ -1543,28 +1594,113 @@ function openStageLog() {
     }
     document.getElementById('log-kind').innerHTML =
         node.log_kinds.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+    // Re-entry defaults to the transcript for agent logs, raw for the rest.
+    logRenderMode = node.log_kinds.includes('agent') ? 'rendered' : 'raw';
     logsViewActive = true;
     setLogsButton(true);
     document.getElementById('viewer-content').style.display = 'none';
     document.getElementById('viewer-source').style.display = 'none';
     document.getElementById('log-view').style.display = 'flex';
+    updateLogRenderButtons();
     loadStageLog('tail');
+}
+
+function updateLogRenderButtons() {
+    const kind = document.getElementById('log-kind').value;
+    const renderedAvailable = kind === 'agent';
+    const renderedBtn = document.getElementById('btn-log-rendered');
+    const rawBtn = document.getElementById('btn-log-raw');
+    renderedBtn.disabled = !renderedAvailable;
+    renderedBtn.classList.toggle('active', renderedAvailable && logRenderMode === 'rendered');
+    rawBtn.classList.toggle('active', !renderedAvailable || logRenderMode === 'raw');
+}
+
+function setLogRenderMode(m) {
+    if (logRenderMode === m) return;
+    logRenderMode = m;
+    updateLogRenderButtons();
+    loadStageLog(lastLogMode);
+}
+
+function logKindChanged() {
+    logRenderMode = document.getElementById('log-kind').value === 'agent'
+        ? 'rendered' : 'raw';
+    updateLogRenderButtons();
+    loadStageLog('tail');
+}
+
+function renderAgentBlocks(blocks) {
+    // Stream-json guarantees a tool_result immediately follows the assistant
+    // message that carried its tool_use — fold adjacent matches into one
+    // collapsed row (call + outcome). An orphan from a mid-window start
+    // renders as a standalone muted row.
+    const rows = [];
+    for (const b of (blocks || [])) {
+        if (b.kind === 'tool_result' && rows.length &&
+            rows[rows.length - 1].kind === 'tool_call' &&
+            rows[rows.length - 1].tool_id === b.tool_id) {
+            const call = rows[rows.length - 1];
+            call.tool_status = b.tool_status;
+            call.tool_output_raw = b.raw;
+            continue;
+        }
+        rows.push(b);
+    }
+    let html = '';
+    for (const b of rows) {
+        if (b.kind === 'assistant_text' || b.kind === 'result_text') {
+            html += '<div class="agent-msg">' + renderMarkdown(b.text || '') + '</div>';
+        } else if (b.kind === 'tool_call') {
+            const glyph = b.tool_status === 'ok'
+                ? '<span class="tool-ok" title="ok">✓</span>'
+                : b.tool_status === 'error'
+                    ? '<span class="tool-err" title="error">✗</span>'
+                    : '<span class="tool-unk" title="outcome unknown">?</span>';
+            let body = '<pre>' + esc(b.raw || '(no input)') + '</pre>';
+            if (b.tool_output_raw) {
+                body += '<pre>' + esc(b.tool_output_raw) + '</pre>';
+            }
+            html += '<details class="log-tool-row"><summary>' + glyph + ' ' +
+                esc(b.tool_name || 'tool') +
+                (b.tool_summary ? ' — ' + esc(b.tool_summary) : '') +
+                '</summary>' + body + '</details>';
+        } else if (b.kind === 'tool_result') {
+            const glyph = b.tool_status === 'error'
+                ? '<span class="tool-err" title="error">✗</span>'
+                : '<span class="tool-ok" title="ok">✓</span>';
+            html += '<div class="log-plain">' + glyph + ' ' +
+                (b.tool_id ? esc(b.tool_id) + ' — ' : '') +
+                esc(b.tool_summary || '(result)') + '</div>';
+        } else if (b.kind === 'plain') {
+            html += '<div class="log-plain">' + esc(b.text || '') + '</div>';
+        } else if (b.kind === 'truncated_notice') {
+            html += '<div class="log-truncated">' + esc(b.text || '') + '</div>';
+        }
+    }
+    return html || '<div class="log-plain">(empty log)</div>';
 }
 
 function loadStageLog(mode) {
     const node = logNode();
     if (!node) return;
+    lastLogMode = mode;
     const kind = document.getElementById('log-kind').value;
+    const useRendered = logRenderMode === 'rendered' && kind === 'agent';
     const params = new URLSearchParams({
         step_id: node.step_id,
         attempt_no: node.attempt_no,
         kind: kind,
         mode: mode,
     });
+    if (useRendered) params.set('render', 'agent');
     const box = document.getElementById('log-content');
+    const renderedBox = document.getElementById('log-rendered');
     const sizeEl = document.getElementById('log-size');
     const noteEl = document.getElementById('log-note');
     box.textContent = 'Loading…';
+    renderedBox.innerHTML = '';
+    box.style.display = useRendered ? 'none' : '';
+    renderedBox.style.display = useRendered ? '' : 'none';
     sizeEl.textContent = '';
     noteEl.style.display = 'none';
     fetch('/api/runs/' + window.BB_RUN_ID + '/logs?' + params.toString(),
@@ -1583,15 +1719,29 @@ function loadStageLog(mode) {
             sizeEl.textContent = (d.size || 0) > 0
                 ? formatLogSize(d.size) + (d.mode === 'full' ? ' (full)' : ' (tail)')
                 : 'empty';
-            box.textContent = d.content || '(empty log)';
-            if (d.truncated) {
-                noteEl.style.display = '';
-                noteEl.textContent =
-                    'Log exceeds the 20 MB serving cap — showing the most recent portion.';
+            if (useRendered) {
+                renderedBox.innerHTML = renderAgentBlocks(d.blocks);
+                if (d.truncated_render) {
+                    noteEl.style.display = '';
+                    noteEl.textContent =
+                        'Showing only the most recent portion of the transcript (rendered view).';
+                }
+            } else {
+                box.textContent = d.content || '(empty log)';
+                if (d.truncated) {
+                    noteEl.style.display = '';
+                    noteEl.textContent =
+                        'Log exceeds the 20 MB serving cap — showing the most recent portion.';
+                }
             }
         })
         .catch(err => {
-            box.textContent = 'Failed to load log: ' + err.message;
+            if (useRendered) {
+                renderedBox.innerHTML =
+                    '<div class="log-plain">Failed to load log: ' + esc(err.message) + '</div>';
+            } else {
+                box.textContent = 'Failed to load log: ' + err.message;
+            }
         });
 }
 
