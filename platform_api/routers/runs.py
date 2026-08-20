@@ -215,12 +215,17 @@ async def _latest_step_payload(db, run_id, step_id: str) -> dict:
     Gate approval is recorded as an ``awaiting_approval→completed`` transition
     with an *empty* payload — skip content-less rows so an approved step still
     renders its gate card / completion result instead of falling back to the
-    demo stubs."""
+    demo stubs.
+
+    Deliberately NOT filtered by to_state: the engine records verdict rows for
+    non-happy results (BLOCK / changes_requested / escalation_required) with
+    to_state="failed" (state_machine convention) and those rows carry the
+    display payload — same trap family as _summary_payloads and
+    resolve_step_sha (the content-key check below is the discriminator)."""
     stmt = (
         select(Transition)
         .where(Transition.run_id == run_id,
-               Transition.step_id == step_id,
-               Transition.to_state.in_(["completed", "awaiting_approval"]))
+               Transition.step_id == step_id)
         .order_by(Transition.id.desc())
     )
     rows = (await db.execute(stmt)).scalars().all()
@@ -237,12 +242,18 @@ async def _latest_step_payload(db, run_id, step_id: str) -> dict:
 async def _summary_payloads(db, run_id, step_id: str) -> list[dict]:
     """Newest-first payloads of a finished step that carry a summary —
     completion rows carry ``summary_full``, gate-card rows only the truncated
-    ``summary`` (the full text lives on the slightly older completion row)."""
+    ``summary`` (the full text lives on the slightly older completion row).
+
+    Deliberately NOT filtered by to_state: the engine records verdict rows for
+    non-happy results (BLOCK / changes_requested / escalation_required) with
+    to_state="failed" (state_machine convention), and those rows carry the
+    summary too — the same content-bearing rows the poll builder displays. A
+    to_state filter here once 404'd the full-summary endpoint for an
+    escalation row (run 07c4b440)."""
     stmt = (
         select(Transition)
         .where(Transition.run_id == run_id,
-               Transition.step_id == step_id,
-               Transition.to_state.in_(["completed", "awaiting_approval"]))
+               Transition.step_id == step_id)
         .order_by(Transition.id.desc())
     )
     rows = (await db.execute(stmt)).scalars().all()
@@ -263,12 +274,19 @@ def _pick_full_summary(payloads: list[dict], commit: str | None):
     head (pre-feature runs) with ``truncated=True``.
     """
     if commit:
+        fallback = None
         for p in payloads:
             if p.get("commit") == commit:
                 full = p.get("summary_full")
                 if full:
                     return str(full), commit, False
-                return str(p.get("summary") or ""), commit, True
+                # Keep scanning: the newest matching row may be a gate card
+                # (truncated head, no full) while the completion row just
+                # behind it carries the full text for the same commit.
+                if fallback is None and p.get("summary"):
+                    fallback = str(p["summary"])
+        if fallback is not None:
+            return fallback, commit, True
     for p in payloads:
         if p.get("summary_full"):
             return str(p["summary_full"]), p.get("commit"), False

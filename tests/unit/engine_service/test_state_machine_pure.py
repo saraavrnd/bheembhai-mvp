@@ -1,6 +1,14 @@
 """Unit tests — the state machine's pure routing helpers (no DB, no runtime)."""
 
-from engine_service.state_machine import _gate_card, route_next, steps_after
+from bheembhai.log_keys import log_key, progress_key, result_key
+from bheembhai.providers.local_storage import LocalStorage
+
+from engine_service.state_machine import (
+    _clear_attempt_channels,
+    _gate_card,
+    route_next,
+    steps_after,
+)
 from engine_service.workflow import WorkflowSpec
 
 WF_YAML = """
@@ -74,3 +82,37 @@ def test_gate_card_cost_defaults_when_outcome_has_no_cost():
     assert card["cost_usd"] is None
     assert card["cost_reported"] is False
     assert card["cost_partial"] is False
+
+
+# ── Launch hygiene: clearing stale attempt channels (ADR-014) ──────────
+
+async def test_clear_attempt_channels_deletes_all_five_keys(tmp_path):
+    store = LocalStorage(base_path=str(tmp_path / "store"))
+    keys = (
+        result_key("r1", "story-design", 1),
+        progress_key("r1", "story-design", 1),
+        log_key("r1", "story-design", 1, "agent"),
+        log_key("r1", "story-design", 1, "diagnostics"),
+        log_key("r1", "story-design", 1, "container"),
+    )
+    for key in keys:
+        await store.put(key, b"stale visit-1 artifact")
+    await _clear_attempt_channels(store, "r1", "story-design", 1)
+    for key in keys:
+        assert await store.get(key) is None
+
+
+async def test_clear_attempt_channels_without_store_is_noop():
+    await _clear_attempt_channels(None, "r1", "story-design", 1)   # must not raise
+
+
+async def test_clear_attempt_channels_survives_delete_failure(tmp_path):
+    """Best-effort hygiene — a failing backend logs and continues, it must
+    never turn a launch into a crash."""
+    class FlakyStore:
+        backend_name = "flaky"
+
+        async def delete(self, key):
+            raise OSError("boom")
+
+    await _clear_attempt_channels(FlakyStore(), "r1", "story-design", 1)  # no raise

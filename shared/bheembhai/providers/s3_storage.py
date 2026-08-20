@@ -74,6 +74,10 @@ class S3Storage:
                 return None
             raise
 
+    async def delete(self, key: str) -> None:
+        # S3 delete_object succeeds even when the key is absent — idempotent.
+        self._client.delete_object(Bucket=self.bucket, Key=key)
+
     async def head(self, key: str) -> StoredHead | None:
         import botocore.exceptions
         try:

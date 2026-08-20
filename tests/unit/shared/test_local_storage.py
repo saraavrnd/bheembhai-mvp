@@ -66,6 +66,16 @@ async def test_put_overwrites_same_key(tmp_path):
     assert await store.get_range(key) == b"v2-longer"
 
 
+async def test_delete_removes_object_and_is_idempotent(tmp_path):
+    store = LocalStorage(base_path=str(tmp_path / "store"))
+    key = "results/r1/design/1/bb_step_result.json"
+    await store.put(key, b"stale")
+    assert await store.get(key) is not None
+    await store.delete(key)
+    assert await store.get(key) is None
+    await store.delete(key)   # absent key is not an error
+
+
 async def test_presigned_put_url_is_none(tmp_path):
     """LocalStorage cannot offer PUT-able file:// URLs to curl — the engine
     omits the ADR-014 upload contract and run_skill.sh skips those channels."""

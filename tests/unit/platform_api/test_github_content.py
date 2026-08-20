@@ -61,6 +61,34 @@ async def test_resolve_step_sha_no_content_bearing_rows():
     assert await resolve_step_sha(db, "run-1", "implement", None) is None
 
 
+async def test_resolve_step_sha_non_happy_verdict_row_is_usable():
+    # The engine records changes_requested / BLOCK / escalation rows with
+    # to_state="failed" — their commit is a legitimate pin (run cafbe28c's
+    # code-review visit pushed 105c655 and the viewer must be able to read it).
+    db = _fake_db([
+        SimpleNamespace(payload={"commit": "105c655", "summary": "review done",
+                                 "result_status": "changes_requested"}),
+    ])
+    assert await resolve_step_sha(db, "run-1", "code-review", None) == "105c655"
+    assert await resolve_step_sha(db, "run-1", "code-review", "105c655") == "105c655"
+
+
+async def test_resolve_step_sha_query_has_no_to_state_filter():
+    # Regression (run cafbe28c): a to_state filter in the query excluded the
+    # changes_requested verdict row (to_state="failed") → no SHA → the viewer
+    # served the "File content not available" placeholder.
+    captured = {}
+
+    async def execute(stmt):
+        captured["stmt"] = stmt
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+
+    db = SimpleNamespace(execute=execute)
+    assert await resolve_step_sha(db, "run-1", "code-review", None) is None
+    where_clause = str(captured["stmt"].compile()).split("WHERE")[-1]
+    assert "to_state" not in where_clause
+
+
 # ── git_fetch_content ───────────────────────────────────────────────────
 
 async def test_git_fetch_no_integration_id_returns_none():

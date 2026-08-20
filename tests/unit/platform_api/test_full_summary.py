@@ -8,7 +8,11 @@ payload list so it unit-tests without a database.
 
 from types import SimpleNamespace
 
-from platform_api.routers.runs import _pick_full_summary, _summary_payloads
+from platform_api.routers.runs import (
+    _latest_step_payload,
+    _pick_full_summary,
+    _summary_payloads,
+)
 
 
 def test_pick_commit_pinned_visit_returns_its_full_text():
@@ -61,6 +65,18 @@ def test_pick_no_payloads_returns_none():
     assert _pick_full_summary([], None) == (None, None, True)
 
 
+def test_pick_commit_pinned_prefers_full_on_older_row_over_gate_head():
+    # The gate card (newest) can carry the same commit as the completion row
+    # behind it — the pin must keep scanning for the full text instead of
+    # answering with the gate card's truncated head.
+    payloads = [
+        {"summary": "head", "result_status": "escalation_required",
+         "commit": "abc"},                              # gate card
+        {"summary": "head", "summary_full": "full", "commit": "abc"},
+    ]
+    assert _pick_full_summary(payloads, "abc") == ("full", "abc", False)
+
+
 def test_pick_gate_card_first_full_on_older_completion_row():
     # While paused, the newest content row is the gate card (truncated head,
     # no summary_full — it stays poll-light); the completion row just behind
@@ -88,3 +104,49 @@ async def test_summary_payloads_skips_contentless_rows():
     ]
     out = await _summary_payloads(_fake_db(rows), "run-1", "implement")
     assert out == [{"summary": "head", "summary_full": "full", "commit": "abc"}]
+
+
+async def test_summary_payloads_query_has_no_to_state_filter():
+    # Regression (run 07c4b440): the engine records non-happy verdict rows
+    # (escalation_required / BLOCK / changes_requested) with to_state="failed"
+    # — a to_state filter here would 404 their full summaries.
+    captured = {}
+
+    async def execute(stmt):
+        captured["stmt"] = stmt
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+
+    db = SimpleNamespace(execute=execute)
+    assert await _summary_payloads(db, "run-1", "story-design") == []
+    # to_state legitimately appears as a SELECTED column — assert only on the
+    # WHERE portion of the compiled query.
+    where_clause = str(captured["stmt"].compile()).split("WHERE")[-1]
+    assert "to_state" not in where_clause
+
+
+async def test_latest_step_payload_non_happy_verdict_row_is_served():
+    # The engine records changes_requested / BLOCK / escalation rows with
+    # to_state="failed" — their payload IS the display payload for the visit.
+    rows = [
+        SimpleNamespace(payload={"commit": "105c655",
+                                 "review_files": [{"path": "code-review.md"}],
+                                 "summary": "review done"}),
+    ]
+    out = await _latest_step_payload(_fake_db(rows), "run-1", "code-review")
+    assert out["commit"] == "105c655"
+
+
+async def test_latest_step_payload_query_has_no_to_state_filter():
+    # Same trap family as _summary_payloads / resolve_step_sha (run cafbe28c):
+    # a to_state filter would drop non-happy verdict rows and fall back to
+    # the demo stubs on the run-detail page.
+    captured = {}
+
+    async def execute(stmt):
+        captured["stmt"] = stmt
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=list))
+
+    db = SimpleNamespace(execute=execute)
+    assert await _latest_step_payload(db, "run-1", "code-review") == {}
+    where_clause = str(captured["stmt"].compile()).split("WHERE")[-1]
+    assert "to_state" not in where_clause
