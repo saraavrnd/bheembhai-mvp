@@ -1,10 +1,13 @@
 """Unit tests — the state machine's pure routing helpers (no DB, no runtime)."""
 
+from types import SimpleNamespace
+
 from bheembhai.log_keys import log_key, progress_key, result_key
 from bheembhai.providers.local_storage import LocalStorage
 
 from engine_service.state_machine import (
     _clear_attempt_channels,
+    _env_int,
     _gate_card,
     route_next,
     steps_after,
@@ -116,3 +119,28 @@ async def test_clear_attempt_channels_survives_delete_failure(tmp_path):
             raise OSError("boom")
 
     await _clear_attempt_channels(FlakyStore(), "r1", "story-design", 1)  # no raise
+
+
+# ── _env_int: guardrail knob reads from the run's resolved env vars ─────────
+
+def _ctx(env_vars=None):
+    return SimpleNamespace(env_vars=env_vars or {})
+
+
+def test_env_int_uses_resolved_value():
+    assert _env_int(_ctx({"BB_MAX_STEP_VISITS": "1"}), "BB_MAX_STEP_VISITS", 3) == 1
+    assert _env_int(_ctx({"BB_MAX_ATTEMPTS": "7"}), "BB_MAX_ATTEMPTS", 2) == 7
+
+
+def test_env_int_defaults_when_absent():
+    assert _env_int(_ctx(), "BB_MAX_STEP_VISITS", 3) == 3
+
+
+def test_env_int_clamps_to_positive():
+    assert _env_int(_ctx({"BB_MAX_STEP_VISITS": "0"}), "BB_MAX_STEP_VISITS", 3) == 1
+    assert _env_int(_ctx({"BB_MAX_STEP_VISITS": "-4"}), "BB_MAX_STEP_VISITS", 3) == 1
+
+
+def test_env_int_falls_back_on_garbage():
+    assert _env_int(_ctx({"BB_MAX_STEP_VISITS": "lots"}), "BB_MAX_STEP_VISITS", 3) == 3
+    assert _env_int(_ctx({"BB_MAX_STEP_VISITS": ""}), "BB_MAX_STEP_VISITS", 3) == 3

@@ -70,6 +70,14 @@
                 <i class="fa fa-plus"></i> New workflow
             </button>
         </div>
+        <div class="bb-table-search mb-15">
+            <div class="input-group">
+                <input type="text" class="form-control" id="bb-catalog-search" placeholder="Search workflows..." autocomplete="off">
+                <span class="input-group-text bg-primary border-primary">
+                    <i class="ti-search text-white"></i>
+                </span>
+            </div>
+        </div>
         <div id="bb-wf-grid"></div>
 
         <div class="box mt-20">
@@ -88,6 +96,7 @@
 (function () {
     let data = null;
     let selectedCat = '';   // "" = All workflows
+    let catQuery = '';      // search box query (lowercased)
     let fetching = false;   // concurrent double-activation guard
 
     window.BBCatalog = { activate: activate };
@@ -145,7 +154,8 @@
     function renderMain() {
         const wfs = data.workflows || [];
         const cat = (data.categories || []).find(c => c.id === selectedCat) || null;
-        const visible = selectedCat ? wfs.filter(w => w.category_id === selectedCat) : wfs;
+        const visible = (selectedCat ? wfs.filter(w => w.category_id === selectedCat) : wfs)
+            .filter(w => !catQuery || cardMatches(w, catQuery));
 
         document.getElementById('bb-catalog-title').innerHTML =
             '<i class="fa fa-sitemap me-2"></i>' + esc(cat ? cat.name : 'All workflows');
@@ -167,9 +177,11 @@
             el.innerHTML = `
                 <div class="runs-empty">
                     <p class="mb-10"><i class="fa fa-sitemap" style="font-size:32px;color:#c5c5d0;"></i></p>
-                    <p>${selectedCat
-                        ? 'No workflows in this category yet.'
-                        : 'No workflows in this project yet — a project manager can copy platform templates from the Configuration tab.'}</p>
+                    <p>${catQuery
+                        ? 'No workflows match your search.'
+                        : (selectedCat
+                            ? 'No workflows in this category yet.'
+                            : 'No workflows in this project yet — a project manager can copy platform templates from the Configuration tab.')}</p>
                 </div>`;
             return;
         }
@@ -226,10 +238,14 @@
 
         const el = document.getElementById('bb-recent-runs');
         const visibleIds = new Set(visibleWfs.map(w => w.id));
-        const runs = (data.recent_runs || []).filter(r => !selectedCat || visibleIds.has(r.workflow_id));
+        const runs = (data.recent_runs || [])
+            .filter(r => !selectedCat || visibleIds.has(r.workflow_id))
+            .filter(r => !catQuery || recentRunMatches(r, catQuery));
 
         if (!runs.length) {
-            el.innerHTML = '<p class="text-muted mb-0">No runs yet for this project.</p>';
+            el.innerHTML = '<p class="text-muted mb-0">'
+                + (catQuery ? 'No runs match your search.' : 'No runs yet for this project.')
+                + '</p>';
             return;
         }
 
@@ -284,6 +300,22 @@
                 <td class="text-end">${action}</td>
             </tr>`;
     }
+
+    function cardMatches(w, q) {
+        const hay = [w.name, w.description, w.category_name].filter(Boolean).join(' ').toLowerCase();
+        return hay.indexOf(q) !== -1;
+    }
+
+    function recentRunMatches(r, q) {
+        const hay = [r.story_id, r.workflow_name, r.state].filter(Boolean).join(' ').toLowerCase();
+        return hay.indexOf(q) !== -1;
+    }
+
+    // Search filters cards AND recent runs at the data level.
+    BBTableSearch.attachQuery('bb-catalog-search', function (q) {
+        catQuery = q;
+        if (data) renderMain();
+    });
 
     function cap(s) {
         if (!s) return '';

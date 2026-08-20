@@ -16,8 +16,16 @@
             only</strong>; the next run of a mapped workflow uses the edited version. Deleting a
             project skill falls back to the platform template.
         </p>
+        <div class="bb-table-search mb-3">
+            <div class="input-group">
+                <input type="text" class="form-control" id="sk-search" placeholder="Search project skills..." autocomplete="off">
+                <span class="input-group-text bg-primary border-primary">
+                    <i class="ti-search text-white"></i>
+                </span>
+            </div>
+        </div>
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0" id="sk-table">
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -31,6 +39,10 @@
                     <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
                 </tbody>
             </table>
+        </div>
+        <div id="sk-no-match" class="text-center text-muted py-3" style="display:none;">
+            <i class="ti-search fs-24 d-block mb-2"></i>
+            No matches.
         </div>
     </div>
 </div>
@@ -65,6 +77,7 @@
         const tbody = document.getElementById('sk-tbody');
         if (!skills.length) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No project skills yet — map a platform workflow to clone its skills here.</td></tr>';
+            BBTableSearch.apply('sk-table');
             return;
         }
         const tierBadge = {
@@ -76,7 +89,7 @@
             const editUrl = '/projects/' + projectId + '/config/skills/' + s.id;
             const updated = s.updated_at ? new Date(s.updated_at).toLocaleString() : '—';
             return `
-                <tr>
+                <tr data-search="${esc(s.name)}">
                     <td>
                         <a href="${editUrl}" class="text-decoration-none fw-bold">${esc(s.name)}</a>
                     </td>
@@ -89,6 +102,7 @@
                     </td>
                 </tr>`;
         }).join('');
+        BBTableSearch.apply('sk-table');
     }
 
     function deleteSkill(skillId, skillName) {
@@ -102,6 +116,8 @@
     function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
     // Escape for use inside an inline onclick="..." string literal
     function escJs(s) { return s ? String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;') : ''; }
+
+    BBTableSearch.attachDom('sk-search', 'sk-table', 'sk-no-match');
 
     function activate() {
         loadSkills();

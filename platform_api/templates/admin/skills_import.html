@@ -106,8 +106,16 @@
                 <h4 class="box-title">2 · Review — choose what to import</h4>
             </div>
             <div class="box-body">
+                <div class="bb-table-search mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="analysis-search" placeholder="Search skills in the zip..." autocomplete="off">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
                 <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                    <table class="table table-hover mb-0" id="analysis-table">
                         <thead>
                             <tr>
                                 <th style="width: 36px;"><input type="checkbox" id="check-all" title="Select all"></th>
@@ -122,6 +130,10 @@
                             <tr><td colspan="6" class="text-center text-muted">Analyzing…</td></tr>
                         </tbody>
                     </table>
+                </div>
+                <div id="analysis-no-match" class="text-center text-muted py-3" style="display:none;">
+                    <i class="ti-search fs-24 d-block mb-2"></i>
+                    No matches.
                 </div>
                 <div id="analysis-extras" class="import-muted-note mt-2"></div>
                 <div class="d-flex align-items-center mt-3 gap-2">
@@ -189,6 +201,8 @@ function showUploadError(msg) {
     el.textContent = msg;
     el.style.display = msg ? '' : 'none';
 }
+
+BBTableSearch.attachDom('analysis-search', 'analysis-table', 'analysis-no-match');
 
 document.getElementById('zip-file').addEventListener('change', function() {
     zipFile = this.files[0] || null;
@@ -262,7 +276,7 @@ function renderAnalysis(a) {
                 ? '<option value="skip" selected>Skip</option><option value="overwrite">Overwrite</option>'
                 : '<option value="import" selected>Import new</option><option value="skip">Skip</option>';
             return `
-                <tr data-idx="${idx}">
+                <tr data-idx="${idx}" data-search="${esc(s.name)}">
                     <td><input type="checkbox" class="row-check" ${existing ? '' : 'checked'}></td>
                     <td>
                         <strong>${esc(s.name)}</strong> ${modelBadge(s.model)}
@@ -275,6 +289,7 @@ function renderAnalysis(a) {
                 </tr>`;
         }).join('');
     }
+    BBTableSearch.apply('analysis-table');
     // Attach listeners by index — skill names are user-controlled, so they
     // must never appear inside inline JS handlers.
     tbody.querySelectorAll('.row-check, .row-action').forEach(el => {
@@ -289,7 +304,10 @@ function renderAnalysis(a) {
     document.getElementById('check-all').checked = false;
     document.getElementById('check-all').onclick = function() {
         const on = this.checked;
-        tbody.querySelectorAll('.row-check').forEach(cb => { cb.checked = on; });
+        tbody.querySelectorAll('.row-check').forEach(cb => {
+            if (cb.closest('tr').style.display === 'none') return;
+            cb.checked = on;
+        });
         updateSelectedCount();
     };
     updateSelectedCount();

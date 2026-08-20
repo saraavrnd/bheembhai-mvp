@@ -38,6 +38,7 @@ from bheembhai.providers.env_secrets import EnvSecureStorage
 from platform_api.routers import (
     admin,
     auth,
+    environment_variables,
     health,
     integrations,
     policies,
@@ -281,6 +282,14 @@ async def admin_categories(request: Request):
     return templates.TemplateResponse(request, "admin/categories.html", {"request": request})
 
 
+@app.get("/admin/environment-variables", include_in_schema=False)
+async def admin_environment_variables(request: Request):
+    """Admin environment variables — platform-scoped variables page."""
+    return templates.TemplateResponse(
+        request, "admin/environment_variables.html", {"request": request}
+    )
+
+
 @app.get("/admin/workflows/{workflow_id}", include_in_schema=False)
 async def admin_workflow_edit(workflow_id: str, request: Request):
     """Admin workflow management — detail/edit page."""
@@ -294,6 +303,8 @@ app.include_router(auth.router)
 app.include_router(health.router)
 app.include_router(admin.router)
 app.include_router(integrations.router)
+app.include_router(environment_variables.router)
+app.include_router(environment_variables.admin_router)
 app.include_router(projects.router)
 app.include_router(workflows.router)
 app.include_router(policies.router)

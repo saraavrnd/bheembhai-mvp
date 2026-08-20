@@ -35,7 +35,6 @@
             <div class="box-header with-border">
                 <h4 class="box-title">Agent Skills Library</h4>
                 <div class="box-controls pull-right">
-                    <input type="text" class="form-control form-control-sm d-inline-block w-auto me-2" id="search-input" placeholder="Search skills..." oninput="filterSkills()" style="width: 200px;">
                     <button class="btn btn-info btn-sm me-1" id="btn-export" onclick="exportSelected()" disabled>
                         <i class="ti-download"></i> Export ZIP (<span id="export-count">0</span>)
                     </button>
@@ -48,6 +47,14 @@
                 </div>
             </div>
             <div class="box-body">
+                <div class="bb-table-search mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="search-input" placeholder="Search skills..." autocomplete="off">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
                 <div class="table-responsive">
                     <table class="table table-hover mb-0" id="skills-table">
                         <thead>
@@ -140,9 +147,10 @@ function loadSkills() {
 
 function renderTable(skills) {
     const tbody = document.getElementById('skills-tbody');
-    document.getElementById('no-results').style.display = skills.length ? 'none' : '';
+    document.getElementById('no-results').style.display = 'none';
     if (!skills.length) {
         tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No skills found. Create one!</td></tr>';
+        BBTableSearch.apply('skills-table');
         updateExportCount();
         return;
     }
@@ -153,7 +161,7 @@ function renderTable(skills) {
                 ? '<span class="badge rounded-pill bg-success">Low</span>'
                 : '<span class="badge rounded-pill bg-warning">Medium</span>';
         return `
-            <tr>
+            <tr data-search="${esc(s.name)}">
                 <td><input type="checkbox" class="row-check" data-name="${esc(s.name)}" ${selectedNames.has(s.name) ? 'checked' : ''}></td>
                 <td><strong>${esc(s.name)}</strong></td>
                 <td>${modelBadge}</td>
@@ -178,6 +186,7 @@ function renderTable(skills) {
     checkAll.onclick = function () {
         const on = this.checked;
         tbody.querySelectorAll('.row-check').forEach(cb => {
+            if (cb.closest('tr').style.display === 'none') return;
             if (cb.checked !== on) {
                 cb.checked = on;
                 if (on) selectedNames.add(cb.dataset.name);
@@ -195,15 +204,17 @@ function renderTable(skills) {
         });
     });
     updateExportCount();
+    BBTableSearch.apply('skills-table');
 }
 
 function updateExportCount() {
     const n = selectedNames.size;
     document.getElementById('export-count').textContent = n;
     document.getElementById('btn-export').disabled = n === 0;
-    const visible = document.querySelectorAll('.row-check');
+    const visible = Array.from(document.querySelectorAll('.row-check'))
+        .filter(cb => cb.closest('tr').style.display !== 'none');
     document.getElementById('check-all').checked =
-        visible.length > 0 && Array.from(visible).every(cb => cb.checked);
+        visible.length > 0 && visible.every(cb => cb.checked);
 }
 
 async function exportSelected() {
@@ -257,12 +268,6 @@ function toast(msg) {
     el.textContent = msg;
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 3200);
-}
-
-function filterSkills() {
-    const q = document.getElementById('search-input').value.toLowerCase();
-    const filtered = allSkills.filter(s => s.name.toLowerCase().includes(q));
-    renderTable(filtered);
 }
 
 function showCreateModal() {
@@ -326,6 +331,7 @@ function deleteSkill(id, name) {
 
 function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
 
+BBTableSearch.attachDom('search-input', 'skills-table', 'no-results');
 loadSkills();
 </script>
 {% endblock %}

@@ -18,8 +18,16 @@
         </div>
     </div>
     <div class="box-body">
+        <div class="bb-table-search mb-3">
+            <div class="input-group">
+                <input type="text" class="form-control" id="workflows-search" placeholder="Search workflows..." autocomplete="off">
+                <span class="input-group-text bg-primary border-primary">
+                    <i class="ti-search text-white"></i>
+                </span>
+            </div>
+        </div>
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0" id="workflows-table">
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -38,6 +46,10 @@
                     <tr><td colspan="10" class="text-center text-muted">Loading...</td></tr>
                 </tbody>
             </table>
+        </div>
+        <div id="workflows-no-match" class="text-center text-muted py-3" style="display:none;">
+            <i class="ti-search fs-24 d-block mb-2"></i>
+            No matches.
         </div>
     </div>
 </div>
@@ -146,6 +158,7 @@ function renderTable() {
     const tbody = document.getElementById('workflows-tbody');
     if (!workflowsData.length) {
         tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No workflows yet. Create one!</td></tr>';
+        BBTableSearch.apply('workflows-table');
         return;
     }
     tbody.innerHTML = workflowsData.map(w => {
@@ -176,7 +189,7 @@ function renderTable() {
         }
 
         return `
-            <tr>
+            <tr data-search="${esc(w.name)} ${isPlatform ? 'platform' : esc(w.project_name || '')} ${esc(w.category_name || '')}">
                 <td>
                     <a href="/admin/workflows/${w.id}" class="text-decoration-none fw-bold">${esc(w.name)}</a>
                 </td>
@@ -195,6 +208,7 @@ function renderTable() {
                 </td>
             </tr>`;
     }).join('');
+    BBTableSearch.apply('workflows-table');
 }
 
 // ── Create ──
@@ -279,6 +293,8 @@ function deleteWorkflow(id, name) {
 }
 
 function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+BBTableSearch.attachDom('workflows-search', 'workflows-table', 'workflows-no-match');
 
 // Load projects (copy modal) + categories (create modal), then workflows
 Promise.all([loadProjects(), loadCategories()]).then(() => loadWorkflows());

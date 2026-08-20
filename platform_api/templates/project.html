@@ -252,6 +252,14 @@
         <div class="col-12">
             <div class="box">
                 <div class="box-body">
+                    <div class="bb-table-search mb-3">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="runs-search" placeholder="Search runs..." autocomplete="off">
+                            <span class="input-group-text bg-primary border-primary">
+                                <i class="ti-search text-white"></i>
+                            </span>
+                        </div>
+                    </div>
                     <div id="runs-list">
                         <p class="text-muted">Loading runs...</p>
                     </div>
@@ -275,6 +283,7 @@
         <button class="config-subtab" data-subtab="integrations"><i class="fa fa-plug"></i> Integrations</button>
         <button class="config-subtab" data-subtab="workflows"><i class="fa fa-sitemap"></i> Workflows</button>
         <button class="config-subtab" data-subtab="skills"><i class="fa fa-tasks"></i> Skills</button>
+        <button class="config-subtab" data-subtab="envvars"><i class="fa fa-sliders-h"></i> Env Vars</button>
     </div>
 
     <div id="config-panel-details" style="display:none;">
@@ -292,6 +301,9 @@
     <div id="config-panel-skills" style="display:none;">
         {% include "_config_skills.html" %}
     </div>
+    <div id="config-panel-envvars" style="display:none;">
+        {% include "_config_envvars.html" %}
+    </div>
 </div>
 
 <!-- Start-run modal — shared partial, lives outside the tab divs so it can be
@@ -306,6 +318,7 @@ window.BB_PROJECT_ID = '{{ project_id }}';
 let currentTab = 'dashboard';
 let allRuns = [];
 let currentFilter = 'all';
+let currentQuery = '';
 const activatedSubTabs = {};
 
 function showTab(tab) {
@@ -331,6 +344,7 @@ function showSubTab(name) {
     document.getElementById('config-panel-integrations').style.display = (name === 'integrations') ? '' : 'none';
     document.getElementById('config-panel-workflows').style.display = (name === 'workflows') ? '' : 'none';
     document.getElementById('config-panel-skills').style.display = (name === 'skills') ? '' : 'none';
+    document.getElementById('config-panel-envvars').style.display = (name === 'envvars') ? '' : 'none';
     activateSubTab(name);
 }
 
@@ -382,7 +396,7 @@ window.addEventListener('bb:userReady', function(e) {
     if (currentTab === 'runs') loadRuns();
     if (currentTab === 'config') {
         // ?sub= deep link from editor breadcrumbs (default: members)
-        const sub = ['details', 'members', 'integrations', 'workflows', 'skills']
+        const sub = ['details', 'members', 'integrations', 'workflows', 'skills', 'envvars']
             .includes(params.get('sub')) ? params.get('sub') : 'members';
         setActiveSubTab(sub);
         showSubTab(sub);
@@ -439,6 +453,12 @@ window.addEventListener('bb:userReady', function(e) {
 
 // ── Runs list ────────────────────────────────────────────────────
 
+// Search box filters at the data level (whole table is re-rendered).
+BBTableSearch.attachQuery('runs-search', function (q) {
+    currentQuery = q;
+    renderRunsTable(allRuns);
+});
+
 function loadRuns() {
     const pid = window.BB_PROJECT_ID;
     fetch('/api/runs?project_id=' + pid, { headers: authHeaders() })
@@ -489,7 +509,16 @@ function renderRunsTable(runs) {
         filtered = runs.filter(r => r.state === 'failed');
     }
 
+    // Search query (text match on story / workflow / state / initiator)
+    if (currentQuery) {
+        filtered = filtered.filter(r => runMatchesQuery(r, currentQuery));
+    }
+
     if (!filtered || filtered.length === 0) {
+        if (currentQuery) {
+            el.innerHTML = '<p class="text-muted mb-0">No runs match your search.</p>';
+            return;
+        }
         const filterLabels = {
             'all': 'No runs yet for this project.',
             'needs-review': 'No runs awaiting review.',
@@ -529,6 +558,15 @@ function renderRunsTable(runs) {
             window.location.href = '/projects/' + window.BB_PROJECT_ID + '/runs/' + this.dataset.runId;
         });
     });
+}
+
+function runMatchesQuery(run, q) {
+    const starter = run.started_by
+        ? (run.started_by.display_name || run.started_by.email || '')
+        : '';
+    const hay = [run.story_id, run.workflow_name, run.state, starter]
+        .filter(Boolean).join(' ').toLowerCase();
+    return hay.indexOf(q) !== -1;
 }
 
 function renderRunRow(run) {

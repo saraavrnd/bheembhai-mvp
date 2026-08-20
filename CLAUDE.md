@@ -28,6 +28,8 @@ The platform turns a fixed sequence of skills (story-design → test-creator →
 | `platform_api/` | Platform API (FastAPI + Jinja2): auth, project/integration/workflow/policy CRUD, run submission (`routers/runs.py` — validates + enqueues only), engine webhook receiver (`routers/webhooks.py`), `submit_decision` → continue item |
 | `engine_service/` | Engine Service: `worker.py` (claim loop + per-run-lock dispatch), `run_init.py` (ADR-013 §2 `_init_run`), `state_machine.py` (`RunDriver`), `runtime.py` (Runtime protocol + `DockerRuntime` + reconcile), `workflow.py` (YAML parse/validate/tier resolve), `contexts.py` (step context + env bundle), `notifier.py` (engine→platform webhooks), `recovery.py` (2-step crash recovery) |
 | `shared/bheembhai/` | SQLAlchemy models (`Run`, `Step`, `Transition` with JSONB `payload`, `WorkQueueItem`, integrations), `AppConfig`/`EngineConfig`, DB init — shared by both services |
+| `shared/bheembhai/env_vars.py` | Env-var domain rules: name regex, reserved/tunable names, SecureStorage ref paths, platform-first merge — shared by the platform (save-time validation) and the engine (init resolution) |
+| `platform_api/routers/environment_variables.py` | Env-var CRUD: project-scoped router (member GET, manager writes, merged view with override flags) + admin router (platform scope); secrets via SecureStorage, never returned |
 | `agent/run_skill.sh` | Skill runner (~527 lines): git clone/branch management, skill-bundle delivery (`BB_SKILL_URL` curl + sha256 verify + path-safety check + extract into `.claude/skills/<skill>`), MCP config injection (Jira + GitHub tokens), context materialization (`BB_CONTEXT` → `CONTEXT_FILE`), diagnostics, Claude Code invocation with model enforcement, commit/push, ADR-014 upload channels (heartbeat + EXIT trap PUTs under `BB_RESULT_PUT_URL` / `BB_PROGRESS_PUT_URL` / `BB_LOG_PUT_URL` / `BB_DIAG_PUT_URL`), result extraction from `BB_OUTCOME:` / `BB_REVIEW:` lines |
 | `agent/Dockerfile` | Agent image (pure runtime): node:20-slim, installs git/python3/jq/curl/uv, Claude Code CLI, MCP template only — no skills baked in, runs as non-root `node` user; image-owned `/workspace` + `/out` (no host mounts) |
 | `agent/mcp.json` | MCP config template with `${JIRA_URL}`, `${JIRA_USERNAME}`, `${JIRA_API_TOKEN}`, `${GH_TOKEN}` placeholders — substituted at runtime by `run_skill.sh` |
@@ -163,9 +165,18 @@ branch — no concurrent writers, no merge handling needed. The agent clones the
 
 Copy mode (`BB_GIT_MODE=0`): uses `BB_SEED_REPO` as a local dir copy, never pushes. For demos without a remote.
 
+## Environment variables
+
+**Per-run, user-configured env vars exported into every step container** (ADR-015) — managed on the project config **Env Vars** tab and the Admin-area page:
+
+- **Table `environment_variables`** — every row is `plain` (value stored in the DB) or `secret` (raw value written to SecureStorage under `/bheembhai/env/{project_id|platform}/{name}`; the DB holds only the opaque ref). `value_type` is immutable on PATCH (convert = delete + re-create).
+- **Scopes + override** — `platform` rows (project_id NULL, admin-managed) apply to every run; `project` rows apply to one project. A project row sharing a platform row's name **overrides** it (platform-first merge in `shared/bheembhai/env_vars.py`).
+- **Resolution** — the engine queries platform + project rows at `_init_run`, resolves secret refs (missing secret → `InitFailure("failed_execution")`, zero containers), and the merged dict rides `InitContext.env_vars`. Injection uses `env.setdefault` — engine-owned keys always win. Values are never logged (names only).
+- **Reserved names** — engine/agent-owned keys (`GH_TOKEN`, `RUN_ID`/`STEP_ID`/`ATTEMPT_NO`/`SKILL`/`RESULT_DIR`/`STORY_ID`, `GIT_*`/`RUN_BRANCH`/`BB_GIT_MODE`, `BB_MODEL`/`BB_ALLOWED_MODELS`, `ANTHROPIC_*`/`JIRA_*`, `BB_CONTEXT`/`CONTEXT_FILE`, launch-channel `BB_*_URL` presigns, `env_forward` knobs `BB_MOCK*`/`CLAUDE_CODE_*`) are rejected at save time (400). **Exception (tunables):** `BB_MAX_STEP_VISITS` / `BB_MAX_ATTEMPTS` — user-settable, validated int ≥ 1, exported to the container AND consumed engine-side per run (garbage falls back to the engine default). Step `deadline` stays workflow-owned — not tunable.
+
 ## Guardrails
 
-- **Per-step visit cap** (`BB_MAX_STEP_VISITS`, default 3): breaks runaway loops. A step returning the same non-happy verdict repeatedly is halted and escalated.
+- **Per-step visit cap** (`BB_MAX_STEP_VISITS`, default 3): breaks runaway loops. A step returning the same non-happy verdict repeatedly is halted and escalated. **Per-run tunable** — the same names (`BB_MAX_STEP_VISITS`, `BB_MAX_ATTEMPTS`) are user-settable environment variables (see above) that override the engine defaults for that run only.
 - **Fresh-launch channel hygiene**: a step launch clears its attempt's S3 channel keys (result/progress/logs) first — attempt numbers are reused across visits and retries, and a stale result object at the key would otherwise replay the previous visit's verdict (run 07c4b440 recorded visit 1's payload byte-for-byte as visit 2's result).
 - **Per-step model enforcement**: ensures the intended (often cheaper) model actually runs.
 - **Push-lands-or-retry**: failures retry from last good state.
@@ -184,6 +195,8 @@ Production surface (platform API on host :9000, engine on host :9001, Postgres o
 | POST | `/api/runs/{id}/cancel` | Stop a run (404 unknown, 409 already terminal): enqueues a `cancel` work_queue token, **no state mutation**. The engine claims it outside the per-run lock, signals the in-flight dispatch (in-memory event → reconciler aborts within one poll tick, container force-removed), voids queued siblings, closes any open gate, and records `runs.state = "cancelled"` |
 | GET | `/api/runs/{id}` | Run state |
 | GET | `/api/runs/{id}/file?path=` | Read an artifact from git at the step's recorded commit SHA, falling back to demo stubs (2 MB cap, text-only) |
+| GET/POST/PATCH/DELETE | `/api/projects/{id}/environment-variables` | Env-var CRUD (member GET, manager writes): merged platform+project view with override flags; secret values via SecureStorage, never returned |
+| GET/POST/PATCH/DELETE | `/api/admin/environment-variables` | Platform-scoped env-var CRUD (ADMIN) |
 | GET | `/api/poll?since=<cursor>` | Poll event stream (primary transport, cursor-based) |
 | POST | `/webhooks/engine` | Engine→platform event receiver (validates `X-BB-Secret`, 202, no state written) |
 | GET | `/health` | Engine health: `queue_depth`, `orphaned_items`, active dispatches |

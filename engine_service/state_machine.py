@@ -90,6 +90,19 @@ def _handoff_for(outcome: dict, from_step: str, status: str) -> dict | None:
     }
 
 
+def _env_int(ctx, name: str, default: int) -> int:
+    """Read an engine guardrail knob from the run's resolved env vars.
+
+    The platform validates tunables as int ≥ 1 at save time, so a non-int here
+    means the row predates validation or was hand-inserted — fall back to the
+    engine default rather than trusting it. Clamped to ≥ 1 either way.
+    """
+    try:
+        return max(1, int(ctx.env_vars.get(name, default)))
+    except (TypeError, ValueError):
+        return max(1, default)
+
+
 def _gate_card(gate: dict, outcome: dict) -> dict:
     """The reviewer-facing card, stored on the awaiting_approval transition so a
     gate survives engine restarts (ADR-003) and approve can re-route from it."""
@@ -271,7 +284,7 @@ async def _loop(session: AsyncSession, ctx, config, runtime, *, start: str,
         # Visit cap (per dispatch — a gate pauses between cycles, so this only
         # fires on loops that never reach a human).
         visits[step_id] = visits.get(step_id, 0) + 1
-        cap = max(1, config.engine.max_step_visits)
+        cap = _env_int(ctx, "BB_MAX_STEP_VISITS", config.engine.max_step_visits)
         if visits[step_id] > cap:
             await _fail_run(session, run, step_id=step_id,
                             reason=f"step '{step_id}' visited {visits[step_id]} times in one "
@@ -360,7 +373,7 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
     run = ctx.run
     skill = spec.get("skill", step_id)
     deadline = float(spec.get("deadline", 900))
-    max_attempts = max(1, config.engine.max_attempts)
+    max_attempts = _env_int(ctx, "BB_MAX_ATTEMPTS", config.engine.max_attempts)
 
     row = await _get_step(session, run.id, step_id)
     if row is None:
