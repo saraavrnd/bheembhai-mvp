@@ -18,8 +18,16 @@
                 <h4 class="box-title">Members — <span id="project-name-display">...</span></h4>
             </div>
             <div class="box-body">
+                <div class="bb-table-search mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="members-search" placeholder="Search members..." autocomplete="off">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
                 <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                    <table class="table table-hover mb-0" id="members-table">
                         <thead>
                             <tr>
                                 <th>User</th>
@@ -33,6 +41,10 @@
                             <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
                         </tbody>
                     </table>
+                </div>
+                <div id="members-no-match" class="text-center text-muted py-3" style="display:none;">
+                    <i class="ti-search fs-24 d-block mb-2"></i>
+                    No matches.
                 </div>
             </div>
         </div>
@@ -151,10 +163,11 @@ function loadMembers() {
             const tbody = document.getElementById('members-tbody');
             if (!members.length) {
                 tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No members yet. Add one!</td></tr>';
+                BBTableSearch.apply('members-table');
                 return;
             }
             tbody.innerHTML = members.map(m => `
-                <tr>
+                <tr data-search="${esc(m.user_name)} ${esc(m.user_email)}">
                     <td><strong>${esc(m.user_name)}</strong></td>
                     <td>${esc(m.user_email)}</td>
                     <td><span class="badge rounded-pill bg-info">${esc(m.role.replace(/_/g, ' '))}</span></td>
@@ -177,6 +190,7 @@ function loadMembers() {
                     </td>
                 </tr>
             `).join('');
+            BBTableSearch.apply('members-table');
         })
         .catch(() => {
             document.getElementById('members-tbody').innerHTML = '<tr><td colspan="5" class="text-center text-danger">Failed to load members.</td></tr>';
@@ -226,5 +240,7 @@ function removeMember(membershipId, name) {
 }
 
 function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+BBTableSearch.attachDom('members-search', 'members-table', 'members-no-match');
 </script>
 {% endblock %}

@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import httpx
+from bheembhai.env_vars import merge_env_var_rows
 from bheembhai.github import (
     DEFAULT_GITHUB_URL,
     GITHUB_API_HEADERS,
@@ -27,12 +28,13 @@ from bheembhai.github import (
     _clone_base,
     _slug_from_url,
 )
+from bheembhai.models.environment import EnvironmentVariable
 from bheembhai.models.project import ProjectIntegration
 from bheembhai.models.run import Run, Step
 from bheembhai.models.workflow import Policy, Workflow
 from bheembhai.resolver import ResolvedIntegration, mask_credential, resolve_credentials
 from bheembhai.skill_publish import publish_skill
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine_service.persistence import record_transition
@@ -78,6 +80,7 @@ class InitContext:
     run_branch: str
     model_map: dict[str, str]      # step_id -> resolved concrete vendor model id
     skill_bundle: dict[str, tuple[str, str]]  # skill name -> (s3_key, sha256)
+    env_vars: dict[str, str] = field(default_factory=dict)  # name -> resolved value (project overrides platform)
 
 
 # ── Branch name derivation ──────────────────────────────────────────────
@@ -240,6 +243,29 @@ def _pick(resolved: list[ResolvedIntegration], integration_id) -> ResolvedIntegr
     return None
 
 
+async def _resolve_env_vars(rows, secure_storage) -> dict[str, str]:
+    """Merge platform + project env-var rows (project wins) and resolve values.
+
+    Plain rows contribute `value` directly; secret rows are fetched fresh from
+    SecureStorage (ADR-012 — the DB holds only the ref). A missing secret is a
+    deterministic config problem: fail fast with `failed_execution` before any
+    container launches. Logs names/refs only — never values.
+    """
+    env: dict[str, str] = {}
+    for name, row in merge_env_var_rows(rows).items():
+        if row.value_type == "plain":
+            env[name] = row.value
+        else:
+            cred = await secure_storage.get(row.credential_ref)
+            if cred is None:
+                raise InitFailure(
+                    "failed_execution",
+                    f"environment variable '{name}' secret missing in Secure "
+                    f"Storage at ref '{row.credential_ref}'")
+            env[name] = cred.value
+    return env
+
+
 async def init_run(session: AsyncSession, run_id, config, secure_storage, store=None) -> InitContext:
     """ADR-013 §2: load → validate → resolve models → create branch → persist.
 
@@ -340,6 +366,26 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage, store=
             f"AI-vendor integration '{ai_vendor.label}' maps no model tiers "
             "(model_high/medium/low config keys are empty)")
 
+    # ── Environment variables: platform + project rows, project overrides ──
+    # Resolved once per run (bookkeeper principle — same as integrations): the
+    # merged dict rides InitContext into every step's env bundle. Secret refs
+    # are fetched now; an unresolvable secret fails the run before any launch.
+    env_var_rows = (
+        await session.execute(
+            select(EnvironmentVariable).where(
+                or_(
+                    EnvironmentVariable.scope == "platform",
+                    and_(EnvironmentVariable.scope == "project",
+                         EnvironmentVariable.project_id == run.project_id),
+                )
+            )
+        )
+    ).scalars().all()
+    env_vars = await _resolve_env_vars(env_var_rows, secure_storage)
+    if env_vars:
+        logger.info("run %s: %d environment variables resolved: %s",
+                    run_id, len(env_vars), ", ".join(sorted(env_vars)))
+
     git_target = compose_git_target(github.config)
     # The run row wins: the platform resolves the user's per-run override (or
     # the integration's base_branch at submit time) into runs.source_branch.
@@ -418,4 +464,5 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage, store=
         run_branch=run_branch,
         model_map=model_map,
         skill_bundle=skill_bundle,
+        env_vars=env_vars,
     )

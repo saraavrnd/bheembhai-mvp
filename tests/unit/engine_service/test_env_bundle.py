@@ -33,7 +33,7 @@ def ri(iid, rtype, label, config, credential="sec-ret", ref="ref-1"):
 
 
 def make_ctx(*, vendor_type="claude", vendor_config=None, jira_config=None,
-             git_config=None):
+             git_config=None, env_vars=None):
     run = SimpleNamespace(id=uuid.UUID("12345678-1234-1234-1234-123456789abc"),
                           story_id="LNPRTL-101")
     wf = WorkflowSpec.load_yaml(WF_YAML)
@@ -52,7 +52,8 @@ def make_ctx(*, vendor_type="claude", vendor_config=None, jira_config=None,
         git_target=GitTarget("https://api.github.com", "https://github.com/acme/demo.git",
                              "acme/demo"),
         source_branch="main", run_branch="feat/lnprtl-101/140820260930-1234",
-        model_map={"story-design": "model-A"}, skill_bundle={})
+        model_map={"story-design": "model-A"}, skill_bundle={},
+        env_vars=env_vars or {})
 
 
 def bundle(**ctx_kwargs):
@@ -154,3 +155,40 @@ def test_missing_model_maps_to_empty_string():
     env = build_env_bundle(ctx, step_id="story-design", attempt_no=1,
                            skill="story-design", model=None, context=context)
     assert env["BB_MODEL"] == ""
+
+
+# ── User-configured environment variables (platform + project, init-resolved) ──
+
+def test_user_env_var_exported():
+    env = bundle(env_vars={"TOOL_API_KEY": "user-secret-value",
+                           "MY_PLAIN": "hello"})
+    assert env["TOOL_API_KEY"] == "user-secret-value"
+    assert env["MY_PLAIN"] == "hello"
+
+
+def test_user_env_var_cannot_shadow_engine_keys():
+    # Defense in depth (save-time validation is the primary gate): even if a
+    # reserved name somehow reaches the bundle, engine-owned keys win.
+    env = bundle(env_vars={"GH_TOKEN": "attacker-token",
+                           "RUN_ID": "forged",
+                           "BB_CONTEXT": "forged-context",
+                           "BB_MAX_STEP_VISITS": "999"})
+    assert env["GH_TOKEN"] == "ghp_abcd"
+    assert env["RUN_ID"] == "12345678-1234-1234-1234-123456789abc"
+    assert json.loads(env["BB_CONTEXT"])["run_id"] == "12345678-1234-1234-1234-123456789abc"
+    # BB_MAX_* are NOT reserved — they flow through to the container and the
+    # engine reads them separately as guardrail knobs.
+    assert env["BB_MAX_STEP_VISITS"] == "999"
+
+
+def test_tunables_pass_through():
+    env = bundle(env_vars={"BB_MAX_STEP_VISITS": "1", "BB_MAX_ATTEMPTS": "5"})
+    assert env["BB_MAX_STEP_VISITS"] == "1"
+    assert env["BB_MAX_ATTEMPTS"] == "5"
+
+
+def test_empty_env_vars_leaves_bundle_unchanged():
+    # No configured variables → identical bundle to before the feature.
+    env = bundle(env_vars={})
+    assert "TOOL_API_KEY" not in env
+    assert env["GH_TOKEN"] == "ghp_abcd"

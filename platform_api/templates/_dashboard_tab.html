@@ -62,8 +62,16 @@
                     </div>
                 </div>
                 <div class="box-body p-0">
+                    <div class="bb-table-search p-15 pb-0">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="bb-runs-search" placeholder="Search runs..." autocomplete="off">
+                            <span class="input-group-text bg-primary border-primary">
+                                <i class="ti-search text-white"></i>
+                            </span>
+                        </div>
+                    </div>
                     <div class="table-responsive">
-                        <table class="table no-margin bb-runs-table">
+                        <table class="table no-margin bb-runs-table" id="bb-runs-table">
                             <thead>
                                 <tr>
                                     <th>STORY</th>
@@ -75,6 +83,10 @@
                             </thead>
                             <tbody id="bb-runs"></tbody>
                         </table>
+                    </div>
+                    <div id="bb-runs-no-match" class="text-center text-muted py-3 px-15" style="display:none;">
+                        <i class="ti-search fs-24 d-block mb-2"></i>
+                        No matches.
                     </div>
                 </div>
             </div>
@@ -372,6 +384,7 @@
                 '<i class="fa fa-play-circle text-primary me-5"></i> No runs yet for this project. ' +
                 '<a href="/projects/' + esc(state.projectId) + '?tab=runs&new=1">Start a run</a> to see it here.' +
                 '</td></tr>';
+            BBTableSearch.apply('bb-runs-table');
             return;
         }
 
@@ -381,7 +394,8 @@
             const segs = (run.stage_progress || []).map(s =>
                 '<span class="bb-seg-pill ' + esc(s.progress_state || 'pending') + '" title="' + esc(s.label) + '"></span>'
             ).join('');
-            return '<tr class="bb-run-row" data-run="' + esc(run.id) + '">' +
+            return '<tr class="bb-run-row" data-run="' + esc(run.id) + '" data-search="' +
+                esc(run.story_id || run.run_branch || '') + ' ' + esc(storyTitle(run.story_id)) + '">' +
                 '<td>' +
                     '<div class="bb-story-key">' + esc(run.story_id || run.run_branch || '—') + '</div>' +
                     '<div class="fs-12 text-muted">' + esc(storyTitle(run.story_id)) + '</div>' +
@@ -398,6 +412,7 @@
                 window.location = '/projects/' + state.projectId + '/runs/' + row.dataset.run;
             });
         });
+        BBTableSearch.apply('bb-runs-table');
     }
 
     /* ════════════════════ Header badge ════════════════════ */
@@ -491,6 +506,8 @@
             mineToggle.classList.remove('btn-primary');
         });
     }
+
+    BBTableSearch.attachDom('bb-runs-search', 'bb-runs-table', 'bb-runs-no-match');
 
     /* ════════════════════ Init — project page context ════════════════════ */
     window.addEventListener('bb:userReady', function (ev) {

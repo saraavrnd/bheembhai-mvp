@@ -15,16 +15,16 @@
         <div class="box">
             <div class="box-header with-border">
                 <h4 class="box-title">Platform Users</h4>
-                <div class="box-controls pull-right">
-                    <div class="input-group input-group-sm" style="width: 260px;">
-                        <input type="text" class="form-control" id="user-search" placeholder="Search by name or email..." oninput="filterUsers()">
+            </div>
+            <div class="box-body">
+                <div class="bb-table-search mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="user-search" placeholder="Search by name or email..." autocomplete="off">
                         <span class="input-group-text bg-primary border-primary">
                             <i class="ti-search text-white"></i>
                         </span>
                     </div>
                 </div>
-            </div>
-            <div class="box-body">
                 <div class="table-responsive">
                     <table class="table table-hover mb-0" id="users-table">
                         <thead>
@@ -75,6 +75,7 @@ function renderTable(users) {
     if (!users.length) {
         tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No users found.</td></tr>';
         noResults.style.display = 'none';
+        BBTableSearch.apply('users-table');
         return;
     }
 
@@ -104,7 +105,7 @@ function renderTable(users) {
                </button>`;
 
         return `
-            <tr class="${u.is_enabled ? '' : 'table-secondary'}">
+            <tr class="${u.is_enabled ? '' : 'table-secondary'}" data-search="${esc(u.display_name)} ${esc(u.email)}">
                 <td><strong>${esc(u.display_name)}</strong></td>
                 <td>${esc(u.email)}</td>
                 <td>${roleBadge}</td>
@@ -121,29 +122,7 @@ function renderTable(users) {
     }).join('');
 
     noResults.style.display = 'none';
-}
-
-function filterUsers() {
-    const query = document.getElementById('user-search').value.toLowerCase().trim();
-    const tbody = document.getElementById('users-tbody');
-    const noResults = document.getElementById('no-results');
-
-    if (!query) {
-        renderTable(allUsers);
-        return;
-    }
-
-    const filtered = allUsers.filter(u =>
-        (u.display_name || '').toLowerCase().includes(query) ||
-        (u.email || '').toLowerCase().includes(query)
-    );
-
-    if (filtered.length) {
-        renderTable(filtered);
-    } else {
-        tbody.innerHTML = '';
-        noResults.style.display = 'block';
-    }
+    BBTableSearch.apply('users-table');
 }
 
 function toggleRole(userId, name, currentRole) {
@@ -177,6 +156,7 @@ function toggleEnabled(userId, name, enable) {
 
 function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
 
+BBTableSearch.attachDom('user-search', 'users-table', 'no-results');
 loadUsers();
 </script>
 {% endblock %}

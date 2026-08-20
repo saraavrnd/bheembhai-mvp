@@ -19,8 +19,16 @@
                 <h4 class="box-title">Mapped Workflows — <span id="project-name-display">...</span></h4>
             </div>
             <div class="box-body">
+                <div class="bb-table-search mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="mapped-search" placeholder="Search mapped workflows..." autocomplete="off">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
                 <div class="table-responsive">
-                    <table class="table table-hover mb-0">
+                    <table class="table table-hover mb-0" id="mapped-table">
                         <thead>
                             <tr>
                                 <th>Name</th>
@@ -35,6 +43,10 @@
                             <tr><td colspan="6" class="text-center text-muted">Loading...</td></tr>
                         </tbody>
                     </table>
+                </div>
+                <div id="mapped-no-match" class="text-center text-muted py-3" style="display:none;">
+                    <i class="ti-search fs-24 d-block mb-2"></i>
+                    No matches.
                 </div>
             </div>
         </div>
@@ -112,6 +124,7 @@ function renderMapped() {
     const tbody = document.getElementById('mapped-tbody');
     if (!mappedWorkflows.length) {
         tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No workflows mapped yet. Map one from the right panel.</td></tr>';
+        BBTableSearch.apply('mapped-table');
         return;
     }
     tbody.innerHTML = mappedWorkflows.map(w => {
@@ -124,7 +137,7 @@ function renderMapped() {
             ? '<span class="badge rounded-pill bg-success">active</span>'
             : '<span class="badge rounded-pill bg-dark">inactive</span>';
         return `
-            <tr>
+            <tr data-search="${esc(w.name)}">
                 <td>
                     <a href="/admin/workflows/${w.id}" class="text-decoration-none fw-bold">${esc(w.name)}</a>
                 </td>
@@ -138,6 +151,7 @@ function renderMapped() {
                 </td>
             </tr>`;
     }).join('');
+    BBTableSearch.apply('mapped-table');
 }
 
 function renderPlatform() {
@@ -191,5 +205,7 @@ function unlinkWorkflow(wfId, wfName) {
 }
 
 function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+
+BBTableSearch.attachDom('mapped-search', 'mapped-table', 'mapped-no-match');
 </script>
 {% endblock %}

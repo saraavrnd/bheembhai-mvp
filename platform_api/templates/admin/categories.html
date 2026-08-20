@@ -19,8 +19,16 @@
     </div>
     <div class="box-body">
         <p class="small text-muted">Categories group workflows (e.g. Software Delivery, Operations, Marketing). A workflow and its project copies always share the same category.</p>
+        <div class="bb-table-search mb-3">
+            <div class="input-group">
+                <input type="text" class="form-control" id="categories-search" placeholder="Search categories..." autocomplete="off">
+                <span class="input-group-text bg-primary border-primary">
+                    <i class="ti-search text-white"></i>
+                </span>
+            </div>
+        </div>
         <div class="table-responsive">
-            <table class="table table-hover mb-0">
+            <table class="table table-hover mb-0" id="categories-table">
                 <thead>
                     <tr>
                         <th>Name</th>
@@ -32,6 +40,10 @@
                     <tr><td colspan="3" class="text-center text-muted">Loading...</td></tr>
                 </tbody>
             </table>
+        </div>
+        <div id="categories-no-match" class="text-center text-muted py-3" style="display:none;">
+            <i class="ti-search fs-24 d-block mb-2"></i>
+            No matches.
         </div>
     </div>
 </div>
@@ -89,11 +101,12 @@ function renderCategories() {
     const tbody = document.getElementById('categories-tbody');
     if (!categoriesData.length) {
         tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No categories yet. Create one!</td></tr>';
+        BBTableSearch.apply('categories-table');
         return;
     }
     tbody.innerHTML = categoriesData.map(c => {
         return `
-            <tr>
+            <tr data-search="${esc(c.name)} ${esc(c.description || '')}">
                 <td class="fw-bold">${esc(c.name)}</td>
                 <td class="small text-muted">${esc(c.description || '—')}</td>
                 <td class="text-end">
@@ -102,6 +115,7 @@ function renderCategories() {
                 </td>
             </tr>`;
     }).join('');
+    BBTableSearch.apply('categories-table');
 }
 
 // ── Create / Edit ──
@@ -157,6 +171,7 @@ function deleteCategory(id, name) {
 
 function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
 
+BBTableSearch.attachDom('categories-search', 'categories-table', 'categories-no-match');
 loadCategories();
 </script>
 {% endblock %}

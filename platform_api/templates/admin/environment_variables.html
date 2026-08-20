@@ -1,0 +1,283 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Environment Variables{% endblock %}
+{% block nav_envvars %}active menu-open{% endblock %}
+
+{% block page_title %}Environment Variables{% endblock %}
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item active" aria-current="page">Environment Variables</li>
+{% endblock %}
+
+{% block content %}
+<style>
+    .evv-badge { font-size: 0.68rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+    .evv-badge-platform { background: #eef2ff; color: #2a62d5; }
+    .evv-badge-project { background: #eefaf2; color: #28a745; }
+    .evv-code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+</style>
+<div class="row">
+    <div class="col-12">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title">Platform Variables</h4>
+                <small class="text-muted ms-2">Exported into every step container on every run — project variables of the same name override these.</small>
+            </div>
+            <div class="box-body">
+                <div class="bb-table-search mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="evv-search" placeholder="Search platform variables..." autocomplete="off">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="evv-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Value</th>
+                                <th>Description</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="evv-tbody">
+                            <tr><td colspan="5" class="text-center text-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="evv-no-match" class="text-center text-muted py-3" style="display:none;">
+                    <i class="ti-search fs-24 d-block mb-2"></i>
+                    No matches.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-12">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title" id="evv-form-title"><i class="fa fa-plus me-2"></i>Add variable</h4>
+            </div>
+            <div class="box-body">
+                <div class="row g-2">
+                    <div class="col-md-3">
+                        <label class="small text-muted" for="evv-name">Name</label>
+                        <input type="text" class="form-control form-control-sm evv-code" id="evv-name" placeholder="TOOL_API_KEY">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="small text-muted" for="evv-type">Type</label>
+                        <select class="form-select form-select-sm" id="evv-type">
+                            <option value="plain">Plain</option>
+                            <option value="secret">Secret</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="small text-muted" for="evv-value">Value</label>
+                        <div class="input-group input-group-sm">
+                            <input type="password" class="form-control form-control-sm" id="evv-value" placeholder="">
+                            <button class="btn btn-outline-secondary btn-sm" type="button" id="evv-replace-btn" style="display:none;">Replace</button>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="small text-muted" for="evv-desc">Description</label>
+                        <input type="text" class="form-control form-control-sm" id="evv-desc" placeholder="Optional">
+                    </div>
+                </div>
+                <div class="d-flex align-items-center justify-content-between mt-3">
+                    <div>
+                        <button class="btn btn-primary btn-sm" onclick="BBEnvVars.save()">
+                            <i class="ti-save-alt"></i> <span id="evv-save-label">Add variable</span>
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm ms-2" id="evv-cancel-btn" style="display:none;" onclick="BBEnvVars.resetForm()">Cancel</button>
+                    </div>
+                    <p class="small text-muted mb-0">
+                        <i class="ti-lock"></i> Secret values are write-only — stored in Secure Storage (SSM).
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+
+    let rows = [];
+    let editId = null;
+
+    function throwIfError(r) {
+        if (r.ok) return r;
+        return r.text().then(t => {
+            let msg = r.statusText;
+            try { const d = JSON.parse(t); msg = d.detail || msg; } catch (e) { /* not JSON */ }
+            throw new Error(msg);
+        });
+    }
+
+    function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+
+    function typeBadge(r) {
+        return r.value_type === 'secret'
+            ? '<span class="evv-badge evv-badge-platform">secret</span>'
+            : '<span class="evv-badge evv-badge-project">plain</span>';
+    }
+
+    function valueCell(r) {
+        if (r.value_type === 'secret') {
+            return '<input type="password" class="form-control form-control-sm d-inline-block" style="max-width:140px;" value="••••••••" readonly disabled>';
+        }
+        return '<code class="evv-code">' + esc(r.value || '') + '</code>';
+    }
+
+    function render() {
+        const tbody = document.getElementById('evv-tbody');
+        if (rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No platform variables yet.</td></tr>';
+            BBTableSearch.apply('evv-table');
+            return;
+        }
+        let html = '';
+        rows.forEach(r => {
+            html += '<tr data-search="' + esc(r.name) + ' ' + esc(r.value_type) + ' ' + esc(r.description || '') + '"><td><code class="evv-code">' + esc(r.name) + '</code></td>' +
+                '<td>' + typeBadge(r) + '</td>' +
+                '<td>' + valueCell(r) + '</td>' +
+                '<td><small class="text-muted">' + esc(r.description || '') + '</small></td>' +
+                '<td style="white-space:nowrap;">' +
+                '<button class="btn btn-outline-secondary btn-xs" onclick="BBEnvVars.edit(\'' + r.id + '\')"><i class="ti-pencil"></i></button> ' +
+                '<button class="btn btn-outline-danger btn-xs" onclick="BBEnvVars.remove(\'' + r.id + '\', \'' + esc(r.name) + '\')"><i class="ti-trash"></i></button>' +
+                '</td></tr>';
+        });
+        tbody.innerHTML = html;
+        BBTableSearch.apply('evv-table');
+    }
+
+    function resetForm() {
+        editId = null;
+        document.getElementById('evv-form-title').innerHTML = '<i class="fa fa-plus me-2"></i>Add variable';
+        document.getElementById('evv-save-label').textContent = 'Add variable';
+        document.getElementById('evv-name').value = '';
+        document.getElementById('evv-name').disabled = false;
+        document.getElementById('evv-type').value = 'plain';
+        document.getElementById('evv-type').disabled = false;
+        document.getElementById('evv-value').value = '';
+        document.getElementById('evv-value').type = 'password';
+        document.getElementById('evv-value').readOnly = false;
+        document.getElementById('evv-desc').value = '';
+        document.getElementById('evv-replace-btn').style.display = 'none';
+        document.getElementById('evv-cancel-btn').style.display = 'none';
+    }
+
+    function edit(id) {
+        const r = rows.find(x => x.id === id);
+        if (!r) return;
+        editId = id;
+        document.getElementById('evv-form-title').innerHTML =
+            '<i class="fa fa-pencil me-2"></i>Edit <code class="evv-code">' + esc(r.name) + '</code>';
+        document.getElementById('evv-save-label').textContent = 'Save changes';
+        document.getElementById('evv-name').value = r.name;
+        document.getElementById('evv-name').disabled = true;
+        document.getElementById('evv-type').value = r.value_type;
+        document.getElementById('evv-type').disabled = true;
+        document.getElementById('evv-desc').value = r.description || '';
+        document.getElementById('evv-cancel-btn').style.display = '';
+
+        const valueEl = document.getElementById('evv-value');
+        if (r.value_type === 'secret') {
+            valueEl.type = 'password';
+            valueEl.value = '••••••••';
+            valueEl.readOnly = true;
+            document.getElementById('evv-replace-btn').style.display = '';
+        } else {
+            valueEl.type = 'text';
+            valueEl.value = r.value || '';
+            valueEl.readOnly = false;
+            document.getElementById('evv-replace-btn').style.display = 'none';
+        }
+    }
+
+    function replaceSecret() {
+        const el = document.getElementById('evv-value');
+        el.readOnly = false;
+        el.type = 'text';
+        el.value = '';
+        el.placeholder = 'Paste new secret...';
+        el.focus();
+    }
+
+    function save() {
+        const name = document.getElementById('evv-name').value.trim();
+        const type = document.getElementById('evv-type').value;
+        const valueEl = document.getElementById('evv-value');
+        const description = document.getElementById('evv-desc').value.trim();
+
+        if (editId === null) {
+            if (!name) { alert('Please enter a variable name.'); return; }
+            if (!valueEl.value) { alert('Please enter a value.'); return; }
+            fetch('/api/admin/environment-variables', {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+                body: JSON.stringify({ name, value_type: type, value: valueEl.value,
+                                       description: description || null }),
+            })
+                .then(throwIfError).then(r => r.json())
+                .then(() => { resetForm(); load(); })
+                .catch(err => alert('Error: ' + err.message));
+        } else {
+            const r = rows.find(x => x.id === editId);
+            const payload = {};
+            if (r && r.value_type === 'plain' && valueEl.value) payload.value = valueEl.value;
+            if (r && r.value_type === 'secret' && !valueEl.readOnly && valueEl.value && valueEl.value !== '••••••••') {
+                payload.value = valueEl.value;
+            }
+            if (description) payload.description = description;
+            fetch('/api/admin/environment-variables/' + editId, {
+                method: 'PATCH',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+                body: JSON.stringify(payload),
+            })
+                .then(throwIfError).then(r => r.json())
+                .then(() => { resetForm(); load(); })
+                .catch(err => alert('Error: ' + err.message));
+        }
+    }
+
+    function remove(id, name) {
+        if (!confirm('Delete the platform variable "' + name + '"? It stops applying to every project.')) return;
+        fetch('/api/admin/environment-variables/' + id, {
+            method: 'DELETE',
+            headers: authHeaders(),
+        })
+            .then(throwIfError)
+            .then(() => { if (editId === id) resetForm(); load(); })
+            .catch(err => alert('Error: ' + err.message));
+    }
+
+    function load() {
+        fetch('/api/admin/environment-variables', { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(data => { rows = data; render(); })
+            .catch(err => {
+                document.getElementById('evv-tbody').innerHTML =
+                    '<tr><td colspan="5" class="text-center text-danger">' + esc(err.message) + '</td></tr>';
+            });
+    }
+
+    document.getElementById('evv-replace-btn').addEventListener('click', replaceSecret);
+    document.getElementById('evv-type').addEventListener('change', function () {
+        if (editId === null) {
+            document.getElementById('evv-value').type =
+                (this.value === 'secret') ? 'password' : 'text';
+        }
+    });
+
+    window.BBEnvVars = { save, edit, remove, resetForm };
+    BBTableSearch.attachDom('evv-search', 'evv-table', 'evv-no-match');
+    load();
+})();
+</script>
+{% endblock %}

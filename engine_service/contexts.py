@@ -133,6 +133,12 @@ def build_env_bundle(ctx: "InitContext", *, step_id: str, attempt_no: int,
     # /ctx bind mount).
     env["BB_CONTEXT"] = json.dumps(context, separators=(",", ":"))
     env["CONTEXT_FILE"] = "/home/node/context.json"
+
+    # User-configured environment variables (platform + project, resolved at
+    # init — project overrides platform). setdefault: engine-owned keys win,
+    # defense in depth on top of save-time reserved-name validation.
+    for key, value in (ctx.env_vars or {}).items():
+        env.setdefault(key, value)
     return env
 
 

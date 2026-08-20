@@ -1,0 +1,349 @@
+<!-- ══════════ Configuration sub-tab: Environment Variables ══════════
+     Included by project.html inside #config-panel-envvars. Lazy-activated via
+     BBConfig.envvars.activate(); fetches /api/projects/{id}/environment-variables.
+
+     Platform variables (managed by admins) are listed read-only; project
+     variables are created/edited/deleted here. A project row sharing a
+     platform row's name overrides it. Secrets are write-only — masked,
+     with a Replace button; values go to SecureStorage, never to the DB. -->
+
+<style>
+    .evv-badge { font-size: 0.68rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; }
+    .evv-badge-platform { background: #eef2ff; color: #2a62d5; }
+    .evv-badge-project { background: #eefaf2; color: #28a745; }
+    .evv-badge-overridden { background: #fff4e5; color: #b96b1f; }
+    .evv-code { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
+    .evv-table th { font-size: 0.75rem; text-transform: uppercase; color: #6c757d; }
+    .evv-table td { vertical-align: middle; }
+</style>
+
+<div class="row">
+    <!-- Platform variables (read-only — managed by admins on the admin page) -->
+    <div class="col-md-5">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title"><i class="fa fa-globe me-2"></i>Platform Variables</h4>
+                <small class="text-muted ms-2">Shared across all projects</small>
+            </div>
+            <div class="box-body p-0">
+                <div class="bb-table-search p-15 pb-0">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="evv-platform-search" placeholder="Search platform variables..." autocomplete="off">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
+                <div id="evv-platform-list">
+                    <p class="text-center text-muted p-3">Loading...</p>
+                </div>
+                <div id="evv-platform-no-match" class="text-center text-muted py-3 px-15" style="display:none;">
+                    <i class="ti-search fs-24 d-block mb-2"></i>
+                    No matches.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Project variables (editable) + add/edit form -->
+    <div class="col-md-7">
+        <div class="box">
+            <div class="box-header with-border">
+                <h4 class="box-title"><i class="fa fa-sliders-h me-2"></i>Project Variables</h4>
+                <small class="text-muted ms-2">Exported into step containers; override platform variables</small>
+            </div>
+            <div class="box-body p-0">
+                <div class="bb-table-search p-15 pb-0">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="evv-project-search" placeholder="Search project variables..." autocomplete="off">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
+                <div id="evv-project-list">
+                    <p class="text-center text-muted p-3">Loading...</p>
+                </div>
+                <div id="evv-project-no-match" class="text-center text-muted py-3 px-15" style="display:none;">
+                    <i class="ti-search fs-24 d-block mb-2"></i>
+                    No matches.
+                </div>
+            </div>
+        </div>
+
+        <div class="box" id="evv-form-box">
+            <div class="box-header with-border">
+                <h4 class="box-title" id="evv-form-title"><i class="fa fa-plus me-2"></i>Add variable</h4>
+            </div>
+            <div class="box-body">
+                <div class="row g-2">
+                    <div class="col-md-3">
+                        <label class="small text-muted" for="evv-name">Name</label>
+                        <input type="text" class="form-control form-control-sm evv-code" id="evv-name"
+                               placeholder="TOOL_API_KEY">
+                    </div>
+                    <div class="col-md-2">
+                        <label class="small text-muted" for="evv-type">Type</label>
+                        <select class="form-select form-select-sm" id="evv-type">
+                            <option value="plain">Plain</option>
+                            <option value="secret">Secret</option>
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        <label class="small text-muted" for="evv-value">Value</label>
+                        <div class="input-group input-group-sm">
+                            <input type="password" class="form-control form-control-sm" id="evv-value" placeholder="">
+                            <button class="btn btn-outline-secondary btn-sm" type="button"
+                                    id="evv-replace-btn" style="display:none;">Replace</button>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <label class="small text-muted" for="evv-desc">Description</label>
+                        <input type="text" class="form-control form-control-sm" id="evv-desc" placeholder="Optional">
+                    </div>
+                </div>
+                <div class="d-flex align-items-center justify-content-between mt-3">
+                    <div>
+                        <button class="btn btn-primary btn-sm" onclick="BBConfig.envvars.save()">
+                            <i class="ti-save-alt"></i> <span id="evv-save-label">Add variable</span>
+                        </button>
+                        <button class="btn btn-outline-secondary btn-sm ms-2" id="evv-cancel-btn"
+                                style="display:none;" onclick="BBConfig.envvars.resetForm()">Cancel</button>
+                    </div>
+                    <p class="small text-muted mb-0">
+                        <i class="ti-lock"></i> Secret values are write-only — stored in Secure Storage (SSM).
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+(function () {
+    'use strict';
+    const projectId = window.BB_PROJECT_ID;
+
+    let rows = [];        // merged list from the API
+    let editId = null;    // DB id when editing, null when adding
+
+    // Reject non-2xx with the server's detail message when present
+    function throwIfError(r) {
+        if (r.ok) return r;
+        return r.text().then(t => {
+            let msg = r.statusText;
+            try { const d = JSON.parse(t); msg = d.detail || msg; } catch (e) { /* not JSON */ }
+            throw new Error(msg);
+        });
+    }
+
+    function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+
+    function valueCell(r) {
+        if (r.value_type === 'secret') {
+            return '<input type="password" class="form-control form-control-sm d-inline-block" style="max-width:140px;" value="••••••••" readonly disabled>';
+        }
+        return '<code class="evv-code">' + esc(r.value || '') + '</code>';
+    }
+
+    function typeBadge(r) {
+        return r.value_type === 'secret'
+            ? '<span class="evv-badge evv-badge-platform">secret</span>'
+            : '<span class="evv-badge evv-badge-project">plain</span>';
+    }
+
+    function render() {
+        const platform = rows.filter(r => r.source === 'platform');
+        const project = rows.filter(r => r.source === 'project');
+
+        // ── Platform list (read-only) ──
+        const pEl = document.getElementById('evv-platform-list');
+        if (platform.length === 0) {
+            pEl.innerHTML = '<p class="text-center text-muted p-3">No platform variables.</p>';
+        } else {
+            let html = '<table class="table table-sm mb-0 evv-table" id="evv-platform-table"><thead><tr>' +
+                '<th class="ps-3">Name</th><th>Type</th><th>Value</th><th></th></tr></thead><tbody>';
+            platform.forEach(r => {
+                html += '<tr data-search="' + esc(r.name) + ' ' + esc(r.value_type) + '"><td class="ps-3"><code class="evv-code">' + esc(r.name) + '</code></td>' +
+                    '<td>' + typeBadge(r) + '</td>' +
+                    '<td>' + valueCell(r) + '</td>' +
+                    '<td>' + (r.overridden
+                        ? '<span class="evv-badge evv-badge-overridden" title="A project variable of this name overrides it">Overridden</span>'
+                        : '') + '</td></tr>';
+            });
+            html += '</tbody></table>';
+            pEl.innerHTML = html;
+            BBTableSearch.apply('evv-platform-table');
+        }
+
+        // ── Project list (editable) ──
+        const jEl = document.getElementById('evv-project-list');
+        if (project.length === 0) {
+            jEl.innerHTML = '<p class="text-center text-muted p-3">No project variables yet.</p>';
+        } else {
+            let html = '<table class="table table-sm mb-0 evv-table" id="evv-project-table"><thead><tr>' +
+                '<th class="ps-3">Name</th><th>Type</th><th>Value</th><th>Description</th><th></th></tr></thead><tbody>';
+            project.forEach(r => {
+                html += '<tr data-search="' + esc(r.name) + ' ' + esc(r.value_type) + ' ' + esc(r.description || '') + '"><td class="ps-3"><code class="evv-code">' + esc(r.name) + '</code></td>' +
+                    '<td>' + typeBadge(r) + '</td>' +
+                    '<td>' + valueCell(r) + '</td>' +
+                    '<td><small class="text-muted">' + esc(r.description || '') + '</small></td>' +
+                    '<td class="text-end pe-2" style="white-space:nowrap;">' +
+                    (r.overrides_platform
+                        ? '<span class="evv-badge evv-badge-overridden me-2" title="Overrides the platform variable of the same name">override</span>'
+                        : '') +
+                    '<button class="btn btn-outline-secondary btn-xs" onclick="BBConfig.envvars.edit(\'' + r.id + '\')"><i class="ti-pencil"></i></button> ' +
+                    '<button class="btn btn-outline-danger btn-xs" onclick="BBConfig.envvars.remove(\'' + r.id + '\', \'' + esc(r.name) + '\')"><i class="ti-trash"></i></button>' +
+                    '</td></tr>';
+            });
+            html += '</tbody></table>';
+            jEl.innerHTML = html;
+            BBTableSearch.apply('evv-project-table');
+        }
+    }
+
+    // ── Form ──────────────────────────────────────────────────────────────────
+
+    function resetForm() {
+        editId = null;
+        document.getElementById('evv-form-title').innerHTML = '<i class="fa fa-plus me-2"></i>Add variable';
+        document.getElementById('evv-save-label').textContent = 'Add variable';
+        document.getElementById('evv-name').value = '';
+        document.getElementById('evv-name').disabled = false;
+        document.getElementById('evv-type').value = 'plain';
+        document.getElementById('evv-type').disabled = false;
+        document.getElementById('evv-value').value = '';
+        document.getElementById('evv-value').type = 'password';
+        document.getElementById('evv-value').readOnly = false;
+        document.getElementById('evv-value').placeholder = '';
+        document.getElementById('evv-desc').value = '';
+        document.getElementById('evv-replace-btn').style.display = 'none';
+        document.getElementById('evv-cancel-btn').style.display = 'none';
+    }
+
+    function edit(id) {
+        const r = rows.find(x => x.id === id);
+        if (!r) return;
+        editId = id;
+        document.getElementById('evv-form-title').innerHTML =
+            '<i class="fa fa-pencil me-2"></i>Edit <code class="evv-code">' + esc(r.name) + '</code>';
+        document.getElementById('evv-save-label').textContent = 'Save changes';
+        document.getElementById('evv-name').value = r.name;
+        document.getElementById('evv-name').disabled = true;   // rename = delete + re-add
+        document.getElementById('evv-type').value = r.value_type;
+        document.getElementById('evv-type').disabled = true;   // type is immutable
+        document.getElementById('evv-desc').value = r.description || '';
+        document.getElementById('evv-cancel-btn').style.display = '';
+
+        const valueEl = document.getElementById('evv-value');
+        if (r.value_type === 'secret') {
+            valueEl.type = 'password';
+            valueEl.value = '••••••••';
+            valueEl.readOnly = true;
+            valueEl.placeholder = '';
+            document.getElementById('evv-replace-btn').style.display = '';
+        } else {
+            valueEl.type = 'text';
+            valueEl.value = r.value || '';
+            valueEl.readOnly = false;
+            valueEl.placeholder = '';
+            document.getElementById('evv-replace-btn').style.display = 'none';
+        }
+    }
+
+    function replaceSecret() {
+        const el = document.getElementById('evv-value');
+        el.readOnly = false;
+        el.type = 'text';
+        el.value = '';
+        el.placeholder = 'Paste new secret...';
+        el.focus();
+    }
+
+    function save() {
+        const name = document.getElementById('evv-name').value.trim();
+        const type = document.getElementById('evv-type').value;
+        const valueEl = document.getElementById('evv-value');
+        const description = document.getElementById('evv-desc').value.trim();
+
+        if (editId === null) {
+            // ── Create ──
+            if (!name) { alert('Please enter a variable name.'); return; }
+            if (!valueEl.value) { alert('Please enter a value.'); return; }
+            const payload = { name, value_type: type, value: valueEl.value,
+                              description: description || null };
+            fetch('/api/projects/' + projectId + '/environment-variables', {
+                method: 'POST',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+                body: JSON.stringify(payload),
+            })
+                .then(throwIfError).then(r => r.json())
+                .then(() => { resetForm(); load(); })
+                .catch(err => alert('Error: ' + err.message));
+        } else {
+            // ── Update ──
+            const r = rows.find(x => x.id === editId);
+            const payload = {};
+            if (r && r.value_type === 'plain' && valueEl.value) payload.value = valueEl.value;
+            // Secret rotation only when the Replace field was activated
+            if (r && r.value_type === 'secret' && !valueEl.readOnly && valueEl.value && valueEl.value !== '••••••••') {
+                payload.value = valueEl.value;
+            }
+            if (description) payload.description = description;
+            fetch('/api/projects/' + projectId + '/environment-variables/' + editId, {
+                method: 'PATCH',
+                headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+                body: JSON.stringify(payload),
+            })
+                .then(throwIfError).then(r => r.json())
+                .then(() => { resetForm(); load(); })
+                .catch(err => alert('Error: ' + err.message));
+        }
+    }
+
+    function remove(id, name) {
+        if (!confirm('Delete the "' + name + '" variable from this project?')) return;
+        fetch('/api/projects/' + projectId + '/environment-variables/' + id, {
+            method: 'DELETE',
+            headers: authHeaders(),
+        })
+            .then(throwIfError)
+            .then(() => { if (editId === id) resetForm(); load(); })
+            .catch(err => alert('Error: ' + err.message));
+    }
+
+    // ── Data loading ──────────────────────────────────────────────────────────
+
+    function load() {
+        fetch('/api/projects/' + projectId + '/environment-variables', { headers: authHeaders() })
+            .then(throwIfError)
+            .then(r => r.json())
+            .then(data => { rows = data; render(); })
+            .catch(err => {
+                document.getElementById('evv-project-list').innerHTML =
+                    '<p class="text-center text-danger p-3">' + esc(err.message) + '</p>';
+            });
+    }
+
+    document.getElementById('evv-replace-btn').addEventListener('click', replaceSecret);
+    // New-variable secret values get a password field; plain ones a text field.
+    document.getElementById('evv-type').addEventListener('change', function () {
+        if (editId === null) {
+            document.getElementById('evv-value').type =
+                (this.value === 'secret') ? 'password' : 'text';
+        }
+    });
+
+    BBTableSearch.attachDom('evv-platform-search', 'evv-platform-table', 'evv-platform-no-match');
+    BBTableSearch.attachDom('evv-project-search', 'evv-project-table', 'evv-project-no-match');
+
+    window.BBConfig = window.BBConfig || {};
+    window.BBConfig.envvars = {
+        activate: load,
+        save: save,
+        edit: edit,
+        remove: remove,
+        resetForm: resetForm,
+    };
+})();
+</script>

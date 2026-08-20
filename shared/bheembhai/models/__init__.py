@@ -1,6 +1,7 @@
-"""SQLAlchemy ORM models — all 10 tables from the data model."""
+"""SQLAlchemy ORM models — all tables from the data model."""
 
 from bheembhai.models.base import Base
+from bheembhai.models.environment import EnvironmentVariable
 from bheembhai.models.project import Project, ProjectIntegration
 from bheembhai.models.run import Run, RunLog, Step, Transition
 from bheembhai.models.skill import Skill, SkillFile
@@ -11,6 +12,7 @@ from bheembhai.models.workflow_category import WorkflowCategory
 
 __all__ = [
     "Base",
+    "EnvironmentVariable",
     "Membership",
     "Policy",
     "Project",

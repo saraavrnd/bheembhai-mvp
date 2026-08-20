@@ -12,6 +12,7 @@
     <link rel="stylesheet" href="/static/eduadmin/assets/icons/icomoon/style.css?v=4">
     <link rel="stylesheet" href="/static/eduadmin/css/style.css?v=4">
     <link rel="stylesheet" href="/static/eduadmin/css/skin_color.css?v=4">
+    <script src="/static/bb-table-search.js?v=4"></script>
     <style>
         /* Logo text — white on dark navy logo-box */
         .main-header .logo .light-logo {
@@ -41,6 +42,15 @@
             background-color: #172b4c;
         }
     </style>
+    <script>
+        // Auth header helper — declared in <head> so scripts inside the
+        // content block (which execute before the footer scripts) can use
+        // it at parse time, e.g. a page's initial load() fetch.
+        function authHeaders() {
+            const tok = sessionStorage.getItem('bb_id_token');
+            return tok ? { 'Authorization': 'Bearer ' + tok } : {};
+        }
+    </script>
 </head>
 
 <body class="hold-transition light-skin sidebar-mini theme-primary fixed">
@@ -143,6 +153,12 @@
                                 <span>Users</span>
                             </a>
                         </li>
+                        <li class="{% block nav_envvars %}{% endblock %}">
+                            <a href="/admin/environment-variables">
+                                <i class="fa fa-sliders-h"></i>
+                                <span>Environment Variables</span>
+                            </a>
+                        </li>
                     </ul>
                 </div>
             </div>
@@ -186,12 +202,7 @@
 <script src="/static/eduadmin/assets/icons/feather-icons/feather.min.js?v=4"></script>
 <script src="/static/eduadmin/js/template.js?v=4"></script>
 <script>
-    // ── Auth guard ──
-    function authHeaders() {
-        const tok = sessionStorage.getItem('bb_id_token');
-        return tok ? { 'Authorization': 'Bearer ' + tok } : {};
-    }
-
+    // ── Auth guard ── (authHeaders() is declared in <head>)
     fetch('/api/auth/me', { headers: authHeaders() })
         .then(r => {
             if (r.status === 401 || r.status === 403) { window.location = '/login'; return null; }
