@@ -215,12 +215,17 @@ async def _latest_step_payload(db, run_id, step_id: str) -> dict:
     Gate approval is recorded as an ``awaiting_approval→completed`` transition
     with an *empty* payload — skip content-less rows so an approved step still
     renders its gate card / completion result instead of falling back to the
-    demo stubs."""
+    demo stubs.
+
+    Deliberately NOT filtered by to_state: the engine records verdict rows for
+    non-happy results (BLOCK / changes_requested / escalation_required) with
+    to_state="failed" (state_machine convention) and those rows carry the
+    display payload — same trap family as _summary_payloads and
+    resolve_step_sha (the content-key check below is the discriminator)."""
     stmt = (
         select(Transition)
         .where(Transition.run_id == run_id,
-               Transition.step_id == step_id,
-               Transition.to_state.in_(["completed", "awaiting_approval"]))
+               Transition.step_id == step_id)
         .order_by(Transition.id.desc())
     )
     rows = (await db.execute(stmt)).scalars().all()

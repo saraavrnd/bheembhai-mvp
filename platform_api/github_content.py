@@ -50,12 +50,18 @@ def _content_commits(rows: list[Transition]) -> list[str]:
 async def resolve_step_sha(db, run_id, step_id: str, commit: str | None) -> str | None:
     """Authoritative SHA for (run, step): the caller's ``commit`` wins only if it
     appears in this run's recorded payloads (multi-visit loops store a different
-    SHA per visit); otherwise the newest recorded SHA; else None."""
+    SHA per visit); otherwise the newest recorded SHA; else None.
+
+    Deliberately NOT filtered by to_state: the engine records verdict rows for
+    non-happy results (BLOCK / changes_requested / escalation_required) with
+    to_state="failed" (state_machine convention) — a to_state filter here
+    excluded run cafbe28c's changes_requested row, resolved no SHA, and the
+    viewer fell through to the placeholder. The content-key discriminator
+    below is the authority."""
     stmt = (
         select(Transition)
         .where(Transition.run_id == run_id,
-               Transition.step_id == step_id,
-               Transition.to_state.in_(["completed", "awaiting_approval"]))
+               Transition.step_id == step_id)
         .order_by(Transition.id.desc())
     )
     rows = (await db.execute(stmt)).scalars().all()
