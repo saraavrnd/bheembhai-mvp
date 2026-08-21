@@ -182,6 +182,27 @@ async def _create_ref(client: httpx.AsyncClient, api_base: str, token: str,
         raise InitFailure("failed_infra", f"GitHub unreachable ({exc.__class__.__name__})") from exc
 
 
+async def verify_ad_hoc_branch(git_target: GitTarget, token: str,
+                               branch: str,
+                               *, client: httpx.AsyncClient | None = None) -> str:
+    """ADR-016 — adopt the user-named branch for an ad-hoc session, never create one.
+
+    The GET is the only call: a missing ref surfaces as a classified
+    InitFailure (404 → failed_execution) before any container minute is
+    spent, and no POST ever creates a branch for an ad-hoc session.
+    Returns the branch's HEAD sha.
+    """
+    own_client = client is None
+    if own_client:
+        client = httpx.AsyncClient(timeout=15.0)
+    try:
+        return await _get_ref_sha(client, git_target.api_base, token,
+                                  git_target.repository, branch)
+    finally:
+        if own_client:
+            await client.aclose()
+
+
 async def create_branch_github(git_target: GitTarget, token: str,
                                source_branch: str, run_branch: str,
                                *, client: httpx.AsyncClient | None = None,
@@ -400,6 +421,16 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage, store=
         run_branch = run.run_branch
         logger.info("run %s already carries branch %s — init resumed, creation skipped",
                     run_id, run_branch)
+    elif run.run_kind == "adhoc":
+        # Bring-your-own-branch (ADR-016): the platform put the user-named
+        # branch in source_branch. Verify the ref exists (fail fast — a typo
+        # is failed_execution, not a container minute) and work directly on
+        # it; the engine never creates a branch for an ad-hoc session.
+        sha = await verify_ad_hoc_branch(git_target, github.token, source_branch)
+        logger.info("run %s: ad-hoc session on user branch %s (sha %.7s…)",
+                    run_id, source_branch, sha)
+        run_branch = source_branch
+        run.run_branch = run_branch
     else:
         run_branch = await create_branch_github(
             git_target, github.token, source_branch,

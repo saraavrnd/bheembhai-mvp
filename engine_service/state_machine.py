@@ -31,7 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine_service.contexts import build_env_bundle, build_step_context
-from engine_service.log_upload import upload_step_logs
+from engine_service.log_upload import register_logs_at_launch, upload_step_logs
 from engine_service.persistence import (
     RUN_LEVEL_ATTEMPT,
     RUN_LEVEL_STEP,
@@ -405,7 +405,8 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
 
         context = build_step_context(str(run.id), step_id, skill, run.story_id,
                                      ctx.workflow_spec, ctx.policy_spec,
-                                     reviewer_feedback=reviewer_feedback, handoff=handoff)
+                                     reviewer_feedback=reviewer_feedback, handoff=handoff,
+                                     user_query=run.user_query or "")
         env = build_env_bundle(ctx, step_id=step_id, attempt_no=attempt,
                                skill=skill, model=ctx.model_map.get(step_id),
                                context=context)
@@ -518,6 +519,11 @@ async def _run_step(session: AsyncSession, ctx, config, runtime, step_id: str,
             await _clear_attempt_channels(store, str(run.id), step_id, attempt)
             h = await runtime.launch(str(run.id), step_id, attempt, env, context=context)
             row.fargate_task_arn = h.container_id
+            # Live-log reference rows (size 0 = "waiting for first upload") —
+            # agent.log is heartbeated every ~5 s, so the platform can serve
+            # and tail this attempt WHILE it runs, not only after it ends.
+            # Commits atomically with the launch transition below.
+            await register_logs_at_launch(session, run, step_id, attempt, store)
             record_transition(session, run.id, ExecState.RUNNING, ExecState.AWAITING_RESULT,
                               step_id=step_id, attempt_no=attempt,
                               reason="container launched")

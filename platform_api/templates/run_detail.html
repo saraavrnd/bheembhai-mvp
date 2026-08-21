@@ -745,6 +745,12 @@ function loadRunDetail() {
         .then(r => { if (!r.ok) throw new Error('Run not found'); return r.json(); })
         .then(run => {
             runData = run;
+            // Ad-hoc sessions (ADR-016) have their own page — bounce over
+            // instead of rendering them through the pipeline viewer.
+            if (run.run_kind === 'adhoc') {
+                window.location.replace('/projects/' + window.BB_PROJECT_ID + '/sessions/' + run.id);
+                return;
+            }
             renderStageRail(run);
             // Header shows the story plus the unique run id — story ids can
             // repeat across runs (retries, re-runs), the run id never does.
@@ -1048,9 +1054,14 @@ function selectStage(idx, fromUser) {
             if (hasSummary) selectSummary();
             else selectFile(0);
         } else if (logsViewActive) {
-            // Live-poll refresh while the inline log view is up: the attempt's
-            // logs are immutable, so leave the view alone — just re-apply the
-            // pill highlight (the pills were rebuilt above).
+            // Live-poll refresh while the inline log view is up: a RUNNING
+            // step's logs grow (agent.log heartbeats every ~5 s), so silently
+            // re-tail them; a finished attempt's logs are immutable — leave
+            // the view alone and just re-apply the pill highlight (the pills
+            // were rebuilt above).
+            if (node.exec_state === 'running' && lastLogMode === 'tail') {
+                loadStageLog('tail', true);
+            }
             const chosen = files.findIndex(f => f.path === selectedFilePath);
             document.querySelectorAll('.file-pill').forEach(el => {
                 const active = selectedFilePath === null
@@ -1680,7 +1691,7 @@ function renderAgentBlocks(blocks) {
     return html || '<div class="log-plain">(empty log)</div>';
 }
 
-function loadStageLog(mode) {
+function loadStageLog(mode, silent) {
     const node = logNode();
     if (!node) return;
     lastLogMode = mode;
@@ -1697,12 +1708,16 @@ function loadStageLog(mode) {
     const renderedBox = document.getElementById('log-rendered');
     const sizeEl = document.getElementById('log-size');
     const noteEl = document.getElementById('log-note');
-    box.textContent = 'Loading…';
-    renderedBox.innerHTML = '';
+    // Silent refreshes (the live-tail poll while the step runs) keep the
+    // current content on screen until the new window arrives — no flash.
+    if (!silent) {
+        box.textContent = 'Loading…';
+        renderedBox.innerHTML = '';
+        sizeEl.textContent = '';
+        noteEl.style.display = 'none';
+    }
     box.style.display = useRendered ? 'none' : '';
     renderedBox.style.display = useRendered ? '' : 'none';
-    sizeEl.textContent = '';
-    noteEl.style.display = 'none';
     fetch('/api/runs/' + window.BB_RUN_ID + '/logs?' + params.toString(),
           { headers: authHeaders() })
         .then(r => {
@@ -1716,6 +1731,18 @@ function loadStageLog(mode) {
             return r.json();
         })
         .then(d => {
+            if (d.pending) {
+                // Launch-registered log whose first upload hasn't landed —
+                // keep the view in "waiting" mode and poll on.
+                sizeEl.textContent = 'waiting…';
+                if (useRendered) {
+                    renderedBox.innerHTML =
+                        '<div class="log-plain">(waiting for the agent to start writing its log…)</div>';
+                } else {
+                    box.textContent = '(waiting for the log upload — arrives every ~5s while the step runs)';
+                }
+                return;
+            }
             sizeEl.textContent = (d.size || 0) > 0
                 ? formatLogSize(d.size) + (d.mode === 'full' ? ' (full)' : ' (tail)')
                 : 'empty';

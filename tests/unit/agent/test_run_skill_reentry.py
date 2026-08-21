@@ -316,3 +316,50 @@ def test_unreachable_result_url_exits_failed_infra(tmp_path):
     payload = _result(out)
     assert payload["status"] == "failed_infra"
     assert "result upload failed" in payload["reason"]
+
+
+# ── Ad-hoc mode (ADR-016): the user query IS the prompt ─────────────────────
+
+
+def _adhoc_env(tmp_path: Path, query: str | None) -> dict[str, str]:
+    """Skill bundle + context.json + stop-after-prompt env for ad-hoc tests.
+
+    BB_STOP_AFTER_PROMPT exits right after the prompt is composed — before
+    Claude Code is invoked — so the prompt contract is testable without a
+    model call.
+    """
+    bundle, sha = _bundle(tmp_path)
+    ctx_file = tmp_path / "context.json"
+    ctx_file.write_text(json.dumps({
+        "user_query": query if query is not None else "",
+        "allowed_result_statuses": ["completed"],
+        "result_status_meanings": {},
+        "gate_follows": False,
+        "story_id": "",
+    }))
+    return {"BB_STOP_AFTER_INIT": "0", "BB_STOP_AFTER_SKILLS": "0",
+            "BB_STOP_AFTER_PROMPT": "1", "BB_MODE": "adhoc",
+            "BB_SKILL_URL": bundle.as_uri(), "BB_SKILL_SHA256": sha,
+            "CONTEXT_FILE": str(ctx_file)}
+
+
+def test_adhoc_mode_builds_prompt_from_user_query(tmp_path):
+    remote = _make_remote(tmp_path)
+    proc, _ws, out = _run_skill(
+        tmp_path, remote, "feat/adhoc",
+        env_overrides=_adhoc_env(tmp_path, "fix the flaky login test"))
+    assert proc.returncode == 0, proc.stderr
+    assert "adhoc mode: prompt ready" in (out / "agent.log").read_text()
+
+
+def test_adhoc_mode_without_query_fails_execution(tmp_path):
+    """BB_MODE=adhoc with an empty/absent user_query is a deterministic
+    failure — the runner refuses to launch Claude Code with no task."""
+    remote = _make_remote(tmp_path)
+    proc, _ws, out = _run_skill(
+        tmp_path, remote, "feat/adhoc-noquery",
+        env_overrides=_adhoc_env(tmp_path, None))
+    assert proc.returncode == 1, proc.stderr
+    payload = _result(out)
+    assert payload["status"] == "failed_execution"
+    assert "user_query" in payload["reason"]

@@ -15,6 +15,7 @@ from engine_service.run_init import (
     create_branch_github,
     derive_run_branch,
     safe_story,
+    verify_ad_hoc_branch,
 )
 
 # ── Branch naming ──────────────────────────────────────────────────────
@@ -225,3 +226,47 @@ async def test_create_branch_validation_422_without_existing_ref():
             await create_branch_github(TARGET, "t", "main", "feat/x", client=client)
     assert ei.value.kind == "failed_execution"
     assert "protected branch" in ei.value.reason
+
+
+# ── Ad-hoc bring-your-own-branch (ADR-016) ────────────────────────────
+
+
+async def test_verify_ad_hoc_branch_adopts_existing_ref():
+    """The GET is the only call — an ad-hoc session adopts the user-named
+    branch and NEVER creates one."""
+    mock = GitHubMock()
+    async with mock.client() as client:
+        sha = await verify_ad_hoc_branch(TARGET, "ghp_tok", "main", client=client)
+    assert sha == "abc123"
+    assert [r.method for r in mock.requests] == ["GET"]
+    assert mock.requests[0].url.path == "/repos/acme/demo/git/ref/heads/main"
+    assert mock.requests[0].headers["Authorization"] == "Bearer ghp_tok"
+
+
+async def test_verify_ad_hoc_branch_missing_ref_is_failed_execution():
+    """A typo in the branch name fails init (failed_execution) — no container
+    minute is spent on a branch that doesn't exist."""
+    mock = GitHubMock()
+    async with mock.client() as client:
+        with pytest.raises(InitFailure) as ei:
+            await verify_ad_hoc_branch(TARGET, "t", "typo-branch", client=client)
+    assert ei.value.kind == "failed_execution"
+    assert "404" in ei.value.reason
+
+
+async def test_verify_ad_hoc_branch_auth_401_is_failed_execution():
+    mock = GitHubMock()
+    mock.fail = (401, '{"message": "Bad credentials"}')
+    async with mock.client() as client:
+        with pytest.raises(InitFailure) as ei:
+            await verify_ad_hoc_branch(TARGET, "bad", "main", client=client)
+    assert ei.value.kind == "failed_execution"
+
+
+async def test_verify_ad_hoc_branch_server_5xx_is_failed_infra():
+    mock = GitHubMock()
+    mock.fail = (502, "Bad gateway")
+    async with mock.client() as client:
+        with pytest.raises(InitFailure) as ei:
+            await verify_ad_hoc_branch(TARGET, "t", "main", client=client)
+    assert ei.value.kind == "failed_infra"

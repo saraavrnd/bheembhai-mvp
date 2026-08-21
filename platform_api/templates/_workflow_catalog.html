@@ -57,6 +57,24 @@
     .bb-rr-action { font-size: 12px; font-weight: 600; white-space: nowrap; }
     .bb-rr-action.review { color: #b34d2c; }
     .bb-rr-sub { font-size: 11.5px; color: #8a7a6a; margin-top: -6px; margin-bottom: 10px; }
+
+    /* ── Ad-hoc session card (ADR-016) — sits above the workflow grid ── */
+    .bb-adhoc-card {
+        border: 1px dashed #c9b58e; border-radius: 8px; padding: 14px 16px;
+        background: var(--sand, #f5f0e8); display: flex; align-items: center;
+        gap: 14px; margin-bottom: 14px;
+    }
+    .bb-adhoc-card .glyph {
+        font-size: 22px; color: #8b3a2a; background: #fff; border-radius: 8px;
+        width: 44px; height: 44px; display: flex; align-items: center;
+        justify-content: center; flex-shrink: 0;
+    }
+    .bb-adhoc-card .body { flex: 1; }
+    .bb-adhoc-card .name { font-size: 15px; font-weight: 700; color: #2a2a3a; }
+    .bb-adhoc-card .desc {
+        font-size: 12.5px; color: #5a5a6e; line-height: 1.45;
+    }
+    .bb-adhoc-card .bb-wf-last { border-top: none; padding-top: 0; }
 </style>
 
 <div class="row">
@@ -91,6 +109,8 @@
         </div>
     </div>
 </div>
+
+{% include "_start_adhoc_modal.html" %}
 
 <script>
 (function () {
@@ -154,7 +174,10 @@
     function renderMain() {
         const wfs = data.workflows || [];
         const cat = (data.categories || []).find(c => c.id === selectedCat) || null;
+        // The ad-hoc template's project copy is superseded by the dedicated
+        // session card below — it never shows as a normal pipeline card.
         const visible = (selectedCat ? wfs.filter(w => w.category_id === selectedCat) : wfs)
+            .filter(w => w.name !== 'adhoc')
             .filter(w => !catQuery || cardMatches(w, catQuery));
 
         document.getElementById('bb-catalog-title').innerHTML =
@@ -173,8 +196,16 @@
 
     function renderCards(wfs) {
         const el = document.getElementById('bb-wf-grid');
-        if (!wfs.length) {
-            el.innerHTML = `
+        // The ad-hoc session card (ADR-016) is the project-level entry point
+        // — always visible in the All-workflows view, even before the first
+        // session has auto-provisioned a project copy of the template.
+        const showAdhoc = !selectedCat &&
+            (!catQuery || ('adhoc session').indexOf(catQuery) !== -1);
+        let html = showAdhoc ? renderAdhocCard() : '';
+        if (wfs.length) {
+            html += '<div class="bb-wf-grid">' + wfs.map(renderCard).join('') + '</div>';
+        } else if (!showAdhoc) {
+            html = `
                 <div class="runs-empty">
                     <p class="mb-10"><i class="fa fa-sitemap" style="font-size:32px;color:#c5c5d0;"></i></p>
                     <p>${catQuery
@@ -183,22 +214,52 @@
                             ? 'No workflows in this category yet.'
                             : 'No workflows in this project yet — a project manager can copy platform templates from the Configuration tab.')}</p>
                 </div>`;
-            return;
         }
-        el.innerHTML = '<div class="bb-wf-grid">' + wfs.map(renderCard).join('') + '</div>';
+        el.innerHTML = html;
         el.querySelectorAll('.bb-wf-start').forEach(btn => {
             btn.addEventListener('click', function () { createNewRun(this.dataset.wfId); });
         });
+        const adhocBtn = el.querySelector('#bb-adhoc-start');
+        if (adhocBtn) adhocBtn.addEventListener('click', openAdhocModal);
+    }
+
+    function renderAdhocCard() {
+        const last = (data.recent_runs || []).find(r => r.run_kind === 'adhoc');
+        const lastLine = last
+            ? '<span class="run-state-dot ' + esc(last.state) + '"></span>'
+                + '<span class="bb-wf-last-state">' + esc(cap(last.state)) + '</span>'
+                + '<span class="bb-wf-last-story">' + esc((last.user_query || 'adhoc session').substring(0, 60)) + '</span>'
+                + '<span class="bb-wf-last-time">' + esc(last.updated || '') + '</span>'
+            : '<span class="run-state-dot pending"></span><span class="bb-wf-last-state">No sessions yet</span>';
+        return `
+            <div class="bb-adhoc-card">
+                <div class="glyph"><i class="fa fa-comment-dots"></i></div>
+                <div class="body">
+                    <div class="name">Ad-hoc session</div>
+                    <div class="desc">Check out an existing branch, ask Claude Code to do something, watch the transcript stream back. Committed + pushed to the branch when done.</div>
+                    <div class="bb-wf-last">${lastLine}</div>
+                </div>
+                <button class="btn btn-sm btn-primary" id="bb-adhoc-start">
+                    <i class="fa fa-rocket"></i> New session
+                </button>
+            </div>`;
     }
 
     function renderCard(w) {
         const tint = (window.BBCatalogRail && window.BBCatalogRail.tint)
             ? window.BBCatalogRail.tint(w.category_name || '') : 0;
         const last = w.last_run;
+        // story_id is null for ad-hoc runs — show the query snippet instead
+        // of rendering the literal "null".
+        const lastStory = last
+            ? (last.run_kind === 'adhoc'
+                ? (last.user_query || 'adhoc session').substring(0, 60)
+                : last.story_id)
+            : '';
         const lastLine = last
             ? '<span class="run-state-dot ' + esc(last.state) + '"></span>'
                 + '<span class="bb-wf-last-state">' + esc(cap(last.state)) + '</span>'
-                + '<span class="bb-wf-last-story">' + esc(last.story_id) + '</span>'
+                + '<span class="bb-wf-last-story">' + esc(lastStory) + '</span>'
                 + '<span class="bb-wf-last-time">' + esc(last.relative || '') + '</span>'
             : '<span class="run-state-dot pending"></span><span class="bb-wf-last-state">No runs yet</span>';
         const openHref = '/projects/' + window.BB_PROJECT_ID + '/workflows/' + w.id
@@ -269,7 +330,10 @@
 
         el.querySelectorAll('tr[data-run-id]').forEach(row => {
             row.addEventListener('click', function () {
-                window.location.href = '/projects/' + window.BB_PROJECT_ID + '/runs/' + this.dataset.runId;
+                // Ad-hoc runs open the session page, pipeline runs the
+                // stage-rail detail page.
+                const sub = this.dataset.runKind === 'adhoc' ? '/sessions/' : '/runs/';
+                window.location.href = '/projects/' + window.BB_PROJECT_ID + sub + this.dataset.runId;
             });
         });
         // The action link navigates the same way — stop the row handler from
@@ -280,20 +344,24 @@
     }
 
     function renderRecentRow(r) {
+        const isAdhoc = r.run_kind === 'adhoc';
+        const sub = isAdhoc ? '/sessions/' : '/runs/';
         const stateHtml = r.needs_review
             ? '<span class="run-state-inline"><span class="run-state-dot needs-review"></span>'
                 + '<span style="color:#e07b5a;">Needs review</span></span>'
             : '<span class="run-state-inline"><span class="run-state-dot ' + esc(r.state) + '"></span>'
                 + esc(cap(r.state)) + '</span>';
         const action = r.needs_review
-            ? '<a class="bb-rr-action review" href="/projects/' + window.BB_PROJECT_ID + '/runs/' + esc(r.run_id) + '">Review →</a>'
-            : '<a class="bb-rr-action" href="/projects/' + window.BB_PROJECT_ID + '/runs/' + esc(r.run_id) + '">View →</a>';
+            ? '<a class="bb-rr-action review" href="/projects/' + window.BB_PROJECT_ID + sub + esc(r.run_id) + '">Review →</a>'
+            : '<a class="bb-rr-action" href="/projects/' + window.BB_PROJECT_ID + sub + esc(r.run_id) + '">View →</a>';
+        const storyCell = isAdhoc
+            ? '<div class="story-id">💬 ad-hoc</div>'
+                + '<div class="story-title">' + esc((r.user_query || '').substring(0, 90) || '#…') + '</div>'
+            : '<div class="story-id">' + esc(r.story_id) + '</div>'
+                + '<div class="story-title">#' + esc(r.run_id.substring(0, 8)) + '</div>';
         return `
-            <tr data-run-id="${esc(r.run_id)}">
-                <td class="story-col">
-                    <div class="story-id">${esc(r.story_id)}</div>
-                    <div class="story-title">#${esc(r.run_id.substring(0, 8))}</div>
-                </td>
+            <tr data-run-id="${esc(r.run_id)}" data-run-kind="${isAdhoc ? 'adhoc' : 'workflow'}">
+                <td class="story-col">${storyCell}</td>
                 <td>${esc(r.workflow_name)}</td>
                 <td>${stateHtml}</td>
                 <td class="updated-col">${esc(r.updated || '')}</td>
@@ -307,7 +375,7 @@
     }
 
     function recentRunMatches(r, q) {
-        const hay = [r.story_id, r.workflow_name, r.state].filter(Boolean).join(' ').toLowerCase();
+        const hay = [r.story_id, r.user_query, r.workflow_name, r.state].filter(Boolean).join(' ').toLowerCase();
         return hay.indexOf(q) !== -1;
     }
 

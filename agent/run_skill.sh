@@ -384,6 +384,9 @@ if [ -n "${CONTEXT_FILE:-}" ] && [ -f "$CONTEXT_FILE" ]; then
   HANDOFF_STATUS=$(jq -r '.upstream_handoff.status // ""' "$CONTEXT_FILE" 2>/dev/null || echo "")
   HANDOFF_SUMMARY=$(jq -r '.upstream_handoff.summary // ""' "$CONTEXT_FILE" 2>/dev/null || echo "")
   HANDOFF_FILES=$(jq -r '(.upstream_handoff.report_files // []) | join(", ")' "$CONTEXT_FILE" 2>/dev/null || echo "")
+  # Ad-hoc sessions (BB_MODE=adhoc): the user's free-form query rides the same
+  # context channel as everything else and becomes the prompt verbatim.
+  USER_QUERY=$(jq -r '.user_query // ""' "$CONTEXT_FILE" 2>/dev/null || echo "")
 fi
 
 # --- DEMO/MOCK MODE ---
@@ -451,6 +454,33 @@ own hand-off doc, mirror the same set here. These become the reviewer's default 
 Do not create or modify any file for the purpose of reporting that outcome — the line in your
 reply is the only thing that is read.
 $( [ "$GATE_FOLLOWS" = "true" ] && echo "A human reviewer will read your summary before the run continues — write your closing summary for them." )"
+
+# --- AD-HOC MODE (ADR-016) -------------------------------------------------
+# The user's query IS the prompt. No BB_OUTCOME/BB_REVIEW vocabulary (the
+# verdict defaults to completed when absent) — the agent's final reply is
+# shown to the user verbatim and becomes the summary. Everything else (clone,
+# MCP, diagnostics, commit/push, upload channels) is identical to workflow mode.
+if [ "${BB_MODE:-workflow}" = "adhoc" ]; then
+  [ -n "${USER_QUERY:-}" ] || fail failed_execution "BB_MODE=adhoc but the context carries no user_query" 1
+  PROMPT="You are an ad-hoc agent session working on the user's branch (${RUN_BRANCH:-unknown}). Follow the house style in ${WORKDIR_REPO}/.claude/skills/${SKILL}/SKILL.md — it describes how to operate in this session.
+
+The user asks:
+---
+${USER_QUERY}
+---
+
+Do exactly what the user asked, in the repo's working tree. Verify your work (run tests or builds where relevant) before you finish. The session runner commits and pushes your changes automatically when you finish — never run git commit, git push, or create branches yourself.
+
+When you are completely finished, end your reply with a concise report for the user: what you changed (file paths), what you verified, and anything they should know (assumptions, follow-ups, risks). Your final message is shown to the user verbatim — write it for them; no outcome codes, no protocol lines."
+  # The transcript gets a marker that the query is loaded and the run is about
+  # to start — also the re-entry harness's assertion point (it stops the run
+  # right after prompt composition, before Claude Code is invoked).
+  echo "adhoc mode: prompt ready (${#PROMPT} bytes) — query head: $(printf '%s' "$USER_QUERY" | head -c 100)" >> "$AGENT_LOG" 2>/dev/null || true
+fi
+
+# Test/verification hook: stop right after the prompt is composed — the unit
+# harness asserts the prompt contract without invoking Claude Code.
+[ "${BB_STOP_AFTER_PROMPT:-0}" = "1" ] && exit 0
 
 # Non-interactive. --permission-mode acceptEdits avoids edit prompts; MCP config is picked up
 # from /workspace/.mcp.json. (Note: --dangerously-skip-permissions is blocked under root, so we

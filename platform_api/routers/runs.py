@@ -24,6 +24,10 @@ from platform_api.agent_log import LogBlock, parse_agent_log
 from platform_api.dependencies import get_current_enabled_user
 from platform_api.github_content import build_chain, git_fetch_content, resolve_step_sha
 from platform_api.routers._integration_shared import AI_VENDOR_TYPES
+from platform_api.routers._workflow_shared import (
+    _parse_workflow_yaml,
+    clone_referenced_skills,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,13 +48,19 @@ class RunCreateRequest(BaseModel):
     project_id: str = Field(..., min_length=1)
     workflow_id: str = Field(..., min_length=1)
     policy_id: str | None = None
-    story_id: str = Field(..., min_length=1)
+    # Required for workflow runs; ignored for ad-hoc sessions.
+    story_id: str | None = Field(None, min_length=1)
     github_integration_id: str = Field(..., min_length=1)
     jira_integration_id: str | None = None
     ai_vendor_integration_id: str = Field(..., min_length=1)
     # Per-run override for the branch the engine cuts the run branch OFF
     # (defaults to the GitHub integration's base_branch — ADR-013 deferred item).
+    # For ad-hoc runs this is the REQUIRED user-named branch to work on directly.
     source_branch: str | None = Field(None, max_length=200)
+    # Ad-hoc sessions (ADR-016): "adhoc" runs the user's query verbatim on
+    # their branch; the default "workflow" is the governed pipeline.
+    run_kind: str = Field("workflow", pattern="^(workflow|adhoc)$")
+    query: str | None = Field(None, description="User query (required for ad-hoc runs)")
 
 
 class DecisionRequest(BaseModel):
@@ -104,6 +114,8 @@ def _run_summary(run: Run, started_by: User | None = None) -> dict:
         "workflow_id": str(run.workflow_id),
         "policy_id": str(run.policy_id),
         "story_id": run.story_id,
+        "run_kind": run.run_kind,
+        "user_query": run.user_query,
         "state": run.state,
         "current_step": run.current_step,
         "cost_usd": float(run.cost_usd),
@@ -686,7 +698,7 @@ async def _build_run_detail(db, run: Run, started_by: User | None = None) -> dic
     # Build the full detail response
     timeline = await _run_timeline(db, run, workflow_def, gates)
     return {
-        **{k: _run_summary(run, started_by)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "state", "current_step", "cost_usd", "created_at", "started_by", "github_integration_id", "jira_integration_id", "ai_vendor_integration_id"]},
+        **{k: _run_summary(run, started_by)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "run_kind", "user_query", "state", "current_step", "cost_usd", "created_at", "started_by", "github_integration_id", "jira_integration_id", "ai_vendor_integration_id"]},
         "source_branch": run.source_branch,
         "run_branch": run.run_branch,
         "workflow_name": run.workflow.name if run.workflow else "",
@@ -1046,16 +1058,88 @@ async def create_run(
     workflow = await db.get(Workflow, body.workflow_id)
     if workflow is None:
         raise HTTPException(404, f"Workflow {body.workflow_id} not found")
+
+    is_adhoc = body.run_kind == "adhoc"
+    if is_adhoc:
+        # The query is the task and the branch is where it happens — both are
+        # the whole point of the session, so missing ones fail here (422),
+        # before the engine spends anything.
+        if not body.query or not body.query.strip():
+            raise HTTPException(422, "Ad-hoc runs require a query")
+        if not body.source_branch:
+            raise HTTPException(
+                422, "Ad-hoc runs require a branch to work on (source_branch)")
+        # The ad-hoc workflow is the single-step carrier for the query; anything
+        # else would execute the query once per pipeline step.
+        parsed_wf = _parse_workflow_yaml(workflow.yaml_content)
+        if parsed_wf is None or len(parsed_wf.steps) != 1:
+            raise HTTPException(
+                400, "Ad-hoc runs require the 1-step 'adhoc' workflow "
+                     "(this workflow has a different shape)")
+    elif not body.story_id:
+        raise HTTPException(422, "story_id is required for workflow runs")
+
     # Runs are project-scoped: platform templates (project_id IS NULL) must be
-    # copied into the project first — they cannot back a run directly.
+    # copied into the project first — they cannot back a run directly. The one
+    # exception is the ad-hoc template, which is auto-provisioned into the
+    # project on first use (ADR-016 "wide open": starting a session is the
+    # same permission as starting a run).
+    workflow_id = body.workflow_id
     if workflow.project_id is None or str(workflow.project_id) != body.project_id:
-        raise HTTPException(400, "Workflow does not belong to this project")
+        if not (is_adhoc and workflow.project_id is None and workflow.name == "adhoc"):
+            raise HTTPException(400, "Workflow does not belong to this project")
+        # Auto-copy the platform ad-hoc template (workflow + policy + skills),
+        # or reuse the project's existing copy so repeated submits are idempotent.
+        project_wf = (
+            await db.execute(
+                select(Workflow).where(
+                    Workflow.project_id == body.project_id,
+                    Workflow.name == "adhoc",
+                    Workflow.version == workflow.version,
+                )
+            )
+        ).scalar_one_or_none()
+        if project_wf is not None:
+            workflow_id = str(project_wf.id)
+        else:
+            clone = Workflow(
+                project_id=body.project_id,
+                name=workflow.name,
+                description=workflow.description,
+                version=workflow.version,
+                yaml_content=workflow.yaml_content,
+                is_active=True,
+                workflow_category_id=workflow.workflow_category_id,
+            )
+            db.add(clone)
+            await db.flush()
+            policies_result = await db.execute(
+                select(Policy).where(Policy.workflow_id == workflow.id)
+            )
+            for pol in policies_result.scalars().all():
+                db.add(Policy(
+                    project_id=body.project_id,
+                    workflow_id=clone.id,
+                    name=pol.name,
+                    version=pol.version,
+                    yaml_content=pol.yaml_content,
+                    is_active=pol.is_active,
+                ))
+            await clone_referenced_skills(
+                db, workflow, body.project_id,
+                store=getattr(request.app.state, "object_store", None),
+            )
+            workflow_id = str(clone.id)
+            logger.info(
+                "Ad-hoc template auto-provisioned: platform workflow %s → project %s clone %s",
+                workflow.id, body.project_id, clone.id,
+            )
 
     policy_id = body.policy_id
     if not policy_id:
         policies_result = await db.execute(
             select(Policy)
-            .where(Policy.workflow_id == body.workflow_id, Policy.is_active == True)
+            .where(Policy.workflow_id == workflow_id, Policy.is_active == True)
             .order_by(Policy.created_at.desc())
             .limit(1)
         )
@@ -1067,7 +1151,7 @@ async def create_run(
         policy = await db.get(Policy, policy_id)
         if policy is None:
             raise HTTPException(404, f"Policy {policy_id} not found")
-        if str(policy.workflow_id) != body.workflow_id:
+        if str(policy.workflow_id) != workflow_id:
             raise HTTPException(400, "Policy does not belong to the selected workflow")
 
     # ── Integrations: capture the user's verified selections ────────────────
@@ -1095,9 +1179,11 @@ async def create_run(
 
     run = Run(
         project_id=_uuid.UUID(body.project_id),
-        workflow_id=_uuid.UUID(body.workflow_id),
+        workflow_id=_uuid.UUID(workflow_id),
         policy_id=_uuid.UUID(policy_id),
-        story_id=body.story_id,
+        # Ad-hoc sessions carry no story — the query is the task. The branch
+        # still rides source_branch (the engine verifies + adopts it at init).
+        story_id=body.story_id if not is_adhoc else None,
         source_branch=source_branch,
         run_branch=None,
         github_integration_id=github.id,
@@ -1105,6 +1191,8 @@ async def create_run(
         ai_vendor_integration_id=ai_vendor.id,
         started_by_user_id=current_user.id,
         state="pending",
+        run_kind=body.run_kind,
+        user_query=body.query.strip() if is_adhoc else None,
     )
     db.add(run)
     await db.flush()
@@ -1120,8 +1208,9 @@ async def create_run(
     await db.refresh(run)
 
     logger.info(
-        "Run created: %s project=%s story=%s github=%s ai=%s by=%s",
-        run.id, body.project_id, body.story_id, github.id, ai_vendor.id, current_user.id,
+        "Run created: %s project=%s kind=%s story=%s branch=%s github=%s ai=%s by=%s",
+        run.id, body.project_id, run.run_kind, run.story_id, run.source_branch,
+        github.id, ai_vendor.id, current_user.id,
     )
     return _run_summary(run)
 
@@ -1236,6 +1325,14 @@ def _rendered_log_response(kind: str, mode: str, size: int,
             "blocks": [b.to_dict() for b in blocks]}
 
 
+def _pending_log_response(kind: str, mode: str) -> dict:
+    """A launch-registered log whose first upload hasn't landed yet — the
+    reference row exists (size 0) but the object does not. The live-tail UI
+    treats this as "waiting", not an error, and keeps polling."""
+    return {"kind": kind, "mode": mode, "size": 0, "pending": True,
+            "content": "", "blocks": []}
+
+
 @router.get("/{run_id}/logs")
 async def get_run_logs(
     run_id: str,
@@ -1287,6 +1384,8 @@ async def get_run_logs(
     if mode == "full":
         obj = await store.get(row.object_key)
         if obj is None:
+            if row.size_bytes == 0:
+                return _pending_log_response(kind, "full")
             raise HTTPException(404, "log artifact missing from storage (stale reference)")
         data = obj.data
         truncated = len(data) > _LOG_FULL_MAX
@@ -1304,6 +1403,11 @@ async def get_run_logs(
 
     head = await store.head(row.object_key)
     if head is None:
+        if row.size_bytes == 0:
+            # Launch-registered row whose first upload hasn't landed yet
+            # (agent.log heartbeats arrive every ~5 s) — pending, not a 404,
+            # so the live-tail UI keeps polling instead of erroring.
+            return _pending_log_response(kind, "tail")
         raise HTTPException(404, "log artifact missing from storage (stale reference)")
     start = max(0, head.size - _LOG_TAIL_BYTES)
     data = await store.get_range(row.object_key, start, head.size - 1)

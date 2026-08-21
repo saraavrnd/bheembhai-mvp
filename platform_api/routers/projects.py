@@ -450,6 +450,8 @@ async def get_workflow_catalog(
             "workflow_id": str(run.workflow_id),
             "workflow_name": run.workflow.name if run.workflow else "",
             "story_id": run.story_id,
+            "run_kind": run.run_kind,
+            "user_query": run.user_query,
             "state": run.state,
             "needs_review": run.state == "paused",
             "updated": _relative_time(updated_ts) if updated_ts is not None

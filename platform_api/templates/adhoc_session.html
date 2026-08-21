@@ -1,0 +1,492 @@
+{% extends "user_base.html" %}
+
+{% block title %}Ad-hoc Session — BheemBhai{% endblock %}
+
+{% block page_title %}<span id="run-title">Ad-hoc Session</span>{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a id="bc-project" href="#">Project</a></li>
+<li class="breadcrumb-item active" aria-current="page" id="bc-run">Session</li>
+{% endblock %}
+
+{% block head %}
+<!-- Vendored markdown renderer (no CDN dependency at runtime) -->
+<script src="/static/vendor/marked/marked.min.js?v=1"></script>
+<style>
+    :root {
+        --sage: #5a9e6f;
+        --sage-bg: #e8f5e9;
+        --terracotta: #e07b5a;
+        --terracotta-bg: #fef0eb;
+        --deep-brown: #8b3a2a;
+        --grey-stage: #7a7a8e;
+        --grey-bg: #eaeaef;
+        --sand: #f5f0e8;
+        --cream: #fefcf7;
+    }
+
+    .session-wrap {
+        max-width: 940px; margin: 0 auto; padding: 0 16px 40px;
+    }
+
+    /* ── Meta strip ── */
+    .session-meta {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+        background: #fff; border: 1px solid #eee5d8; border-radius: 8px;
+        padding: 12px 16px; margin-bottom: 14px;
+    }
+    .session-meta .state {
+        font-weight: 700; font-size: 13px; padding: 3px 10px;
+        border-radius: 999px; background: var(--grey-bg); color: #5a5a6e;
+    }
+    .session-meta .state.running { background: #e3f0ff; color: #2a62d5; }
+    .session-meta .state.completed { background: var(--sage-bg); color: #2a5a3a; }
+    .session-meta .state.failed, .session-meta .state.cancelled { background: var(--terracotta-bg); color: var(--deep-brown); }
+    .session-meta .kv { font-size: 12.5px; color: #6e7681; }
+    .session-meta .kv code {
+        font-family: 'JetBrains Mono', monospace; font-size: 12px;
+        color: var(--deep-brown); background: var(--sand); padding: 2px 6px;
+        border-radius: 4px; word-break: break-all;
+    }
+    .session-meta .cost {
+        font-family: 'JetBrains Mono', monospace; font-size: 14px;
+        font-weight: 700; color: #2a5a3a;
+    }
+    .session-meta .cost-label {
+        font-family: 'Inter', -apple-system, sans-serif; font-size: 10px;
+        font-weight: 600; color: #8a7a6a; text-transform: uppercase;
+        letter-spacing: 0.04em; margin-right: 4px;
+    }
+    .session-meta .btn-stop {
+        margin-left: auto; padding: 6px 12px; font-size: 12px; font-weight: 600;
+        color: #fff; background: var(--deep-brown);
+        border: 1px solid var(--deep-brown); border-radius: 6px; cursor: pointer;
+    }
+    .session-meta .btn-stop:hover { background: #6e2b1d; }
+    .session-meta .btn-stop:disabled { opacity: 0.6; cursor: default; }
+
+    /* ── Query bubble ── */
+    .session-query {
+        background: #fff; border: 1px solid #eee5d8; border-radius: 8px;
+        padding: 12px 16px; margin-bottom: 14px;
+    }
+    .session-query .q-label {
+        font-size: 10.5px; font-weight: 700; color: #8a7a6a;
+        text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;
+    }
+    .session-query .q-body {
+        font-size: 14px; color: #2a2a3a; line-height: 1.55;
+        max-height: 220px; overflow-y: auto;
+    }
+    .session-query .q-body > :last-child { margin-bottom: 0; }
+
+    /* ── Transcript panel ── */
+    .session-log {
+        background: #fff; border: 1px solid #eee5d8; border-radius: 8px;
+        display: flex; flex-direction: column; margin-bottom: 14px;
+    }
+    .session-log-head {
+        display: flex; align-items: center; gap: 8px;
+        padding: 10px 16px; border-bottom: 1px solid #f5f0e8;
+    }
+    .session-log-head .title {
+        font-size: 13px; font-weight: 700; color: #2a2a3a;
+    }
+    .session-log-head .size {
+        font-family: 'JetBrains Mono', monospace; font-size: 11px;
+        color: #8a7a6a; margin-left: auto;
+    }
+    .session-log-head .pulse {
+        width: 8px; height: 8px; border-radius: 50%; background: var(--terracotta);
+        animation: pulse-ring 2s ease-in-out infinite;
+    }
+    @keyframes pulse-ring {
+        0% { box-shadow: 0 0 0 0 rgba(224,123,90,0.5); }
+        70% { box-shadow: 0 0 0 6px rgba(224,123,90,0); }
+        100% { box-shadow: 0 0 0 0 rgba(224,123,90,0); }
+    }
+    .session-log-body {
+        padding: 14px 16px; overflow-y: auto; max-height: 56vh;
+        font-size: 13.5px; color: #2a2a3a; line-height: 1.55;
+        background: var(--cream);
+    }
+    .session-log-note {
+        display: none; padding: 8px 16px; border-top: 1px solid #f5f0e8;
+        font-size: 11.5px; color: #8a7a6a;
+    }
+
+    /* Transcript block styles — mirrors run_detail's rendered log view */
+    .agent-msg { margin: 0 0 10px; }
+    .agent-msg > :last-child { margin-bottom: 0; }
+    .log-tool-row { margin: 4px 0; }
+    .log-tool-row summary {
+        cursor: pointer; font-family: 'JetBrains Mono', monospace;
+        font-size: 12px; color: #5a5a6e; list-style: none;
+        padding: 3px 8px; background: var(--grey-bg); border-radius: 4px;
+    }
+    .log-tool-row summary::before { content: '▸ '; }
+    .log-tool-row[open] summary::before { content: '▾ '; }
+    .log-tool-row pre {
+        margin: 4px 0 0; padding: 8px 10px; background: #f0ebe0;
+        border-radius: 4px; font-size: 11.5px; overflow-x: auto;
+        font-family: 'JetBrains Mono', monospace; color: #4a4a5e;
+    }
+    .log-plain {
+        font-family: 'JetBrains Mono', monospace; font-size: 12px;
+        color: #6e7681; margin: 4px 0; white-space: pre-wrap;
+    }
+    .log-truncated {
+        font-size: 11.5px; color: #8a7a6a; font-style: italic;
+        padding: 6px 0;
+    }
+    .tool-ok { color: var(--sage); }
+    .tool-err { color: var(--deep-brown); }
+    .tool-unk { color: #8a7a6a; }
+    .table-scroll { overflow-x: auto; margin: 0 0 12px; }
+
+    /* ── Final report card ── */
+    .session-report {
+        background: #fff; border: 1px solid #cfe3d4; border-radius: 8px;
+        padding: 14px 16px; margin-bottom: 14px;
+    }
+    .session-report .r-label {
+        font-size: 10.5px; font-weight: 700; color: #2a5a3a;
+        text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px;
+    }
+    .session-report .r-body { font-size: 13.5px; color: #2a2a3a; line-height: 1.6; }
+    .session-report .r-body > :last-child { margin-bottom: 0; }
+    .session-report .r-commit {
+        margin-top: 10px; font-family: 'JetBrains Mono', monospace;
+        font-size: 11px; color: #8a7a6a; word-break: break-all;
+    }
+    .session-report .r-files { margin-top: 8px; }
+    .session-report .r-files a {
+        display: inline-block; margin: 0 10px 4px 0;
+        font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+        color: #2a62d5; text-decoration: none;
+    }
+    .session-report .r-files a:hover { text-decoration: underline; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="session-wrap">
+    <div class="session-meta" id="session-meta">
+        <span class="state" id="meta-state">⏳ Loading…</span>
+        <span class="kv" id="meta-branch"></span>
+        <span class="kv" id="meta-model"></span>
+        <span class="kv" id="meta-elapsed"></span>
+        <span class="cost" id="meta-cost"></span>
+        <button class="btn-stop" id="btn-stop-run" onclick="stopSession()" style="display:none;">
+            <i class="fa fa-stop"></i> Stop session
+        </button>
+    </div>
+
+    <div class="session-query" id="session-query" style="display:none;">
+        <div class="q-label">💬 You asked</div>
+        <div class="q-body" id="query-body"></div>
+    </div>
+
+    <div class="session-log">
+        <div class="session-log-head">
+            <span class="pulse" id="log-pulse"></span>
+            <span class="title">Live transcript</span>
+            <span class="size" id="log-size"></span>
+        </div>
+        <div class="session-log-body" id="session-transcript">
+            <div class="log-plain">Waiting for the session…</div>
+        </div>
+        <div class="session-log-note" id="log-note"></div>
+    </div>
+
+    <div class="session-report" id="session-report" style="display:none;">
+        <div class="r-label">✓ Final report</div>
+        <div class="r-body" id="report-body"></div>
+        <div class="r-commit" id="report-commit"></div>
+        <div class="r-files" id="report-files"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.BB_PROJECT_ID = '{{ project_id }}';
+window.BB_RUN_ID = '{{ run_id }}';
+
+let runData = null;
+let lastTranscriptHtml = '';
+let transcriptOk = false;
+
+// ── Markdown renderer (marked, vendored at /static/vendor/marked) ──
+// Raw HTML in rendered content is escaped rather than passed through —
+// agent-produced text is not trusted input. (Contained copy of the
+// run_detail config; plain-escape fallback — no parseDocMarkdown here.)
+if (window.marked && typeof marked.parse === 'function') {
+    const mdRenderer = new marked.Renderer();
+    mdRenderer.html = function (tok) {
+        return esc(typeof tok === 'string' ? tok : (tok && tok.text ? tok.text : ''));
+    };
+    marked.setOptions({ renderer: mdRenderer, gfm: true, breaks: false });
+}
+
+function renderMarkdown(md) {
+    if (window.marked && typeof marked.parse === 'function') {
+        try {
+            let html = marked.parse(md || '');
+            if (html.length < 400000) {
+                html = html.replace(/<table[\s\S]*?<\/table>/g, function (m) {
+                    return '<div class="table-scroll">' + m + '</div>';
+                });
+            }
+            return html;
+        } catch (e) { /* fall through to the plain-escape fallback */ }
+    }
+    return '<p>' + esc(md || '') + '</p>';
+}
+
+// ── Transcript renderer — folds tool_call+tool_result pairs by tool id,
+//    same shape as run_detail's renderAgentBlocks ──
+function renderAgentBlocks(blocks) {
+    const rows = [];
+    for (const b of (blocks || [])) {
+        if (b.kind === 'tool_result' && rows.length &&
+            rows[rows.length - 1].kind === 'tool_call' &&
+            rows[rows.length - 1].tool_id === b.tool_id) {
+            const call = rows[rows.length - 1];
+            call.tool_status = b.tool_status;
+            call.tool_output_raw = b.raw;
+            continue;
+        }
+        rows.push(b);
+    }
+    let html = '';
+    for (const b of rows) {
+        if (b.kind === 'assistant_text' || b.kind === 'result_text') {
+            html += '<div class="agent-msg">' + renderMarkdown(b.text || '') + '</div>';
+        } else if (b.kind === 'tool_call') {
+            const glyph = b.tool_status === 'ok'
+                ? '<span class="tool-ok" title="ok">✓</span>'
+                : b.tool_status === 'error'
+                    ? '<span class="tool-err" title="error">✗</span>'
+                    : '<span class="tool-unk" title="outcome unknown">?</span>';
+            let body = '<pre>' + esc(b.raw || '(no input)') + '</pre>';
+            if (b.tool_output_raw) {
+                body += '<pre>' + esc(b.tool_output_raw) + '</pre>';
+            }
+            html += '<details class="log-tool-row"><summary>' + glyph + ' ' +
+                esc(b.tool_name || 'tool') +
+                (b.tool_summary ? ' — ' + esc(b.tool_summary) : '') +
+                '</summary>' + body + '</details>';
+        } else if (b.kind === 'tool_result') {
+            const glyph = b.tool_status === 'error'
+                ? '<span class="tool-err" title="error">✗</span>'
+                : '<span class="tool-ok" title="ok">✓</span>';
+            html += '<div class="log-plain">' + glyph + ' ' +
+                (b.tool_id ? esc(b.tool_id) + ' — ' : '') +
+                esc(b.tool_summary || '(result)') + '</div>';
+        } else if (b.kind === 'plain') {
+            html += '<div class="log-plain">' + esc(b.text || '') + '</div>';
+        } else if (b.kind === 'truncated_notice') {
+            html += '<div class="log-truncated">' + esc(b.text || '') + '</div>';
+        }
+    }
+    return html || '<div class="log-plain">(empty log)</div>';
+}
+
+const STATE_LABELS = {
+    'pending': '⏳ Pending',
+    'running': '⚡ Working…',
+    'paused': '⏸ Paused',
+    'completed': '✅ Done',
+    'failed': '✕ Failed',
+    'cancelled': '⊘ Cancelled',
+};
+
+window.addEventListener('bb:userReady', function(e) {
+    const data = e.detail;
+
+    // Verify membership — same gate as run_detail
+    const membership = (data.memberships || []).find(m => m.project_id === window.BB_PROJECT_ID);
+    if (!membership) {
+        document.getElementById('session-transcript').innerHTML =
+            '<div class="log-plain" style="color:#f85149;">You are not a member of this project.</div>';
+        return;
+    }
+
+    document.getElementById('bc-project').href = '/projects/' + window.BB_PROJECT_ID + '?tab=runs';
+    document.getElementById('bc-project').textContent = membership.project_name;
+
+    loadSession();
+});
+
+function loadSession() {
+    fetch('/api/runs/' + window.BB_RUN_ID, { headers: authHeaders() })
+        .then(r => { if (!r.ok) throw new Error('Run not found'); return r.json(); })
+        .then(run => {
+            // A session viewed through the pipeline page bounces here — and
+            // vice versa; the two pages are shaped for their run kind.
+            if (run.run_kind !== 'adhoc') {
+                window.location.replace('/projects/' + window.BB_PROJECT_ID + '/runs/' + run.id);
+                return;
+            }
+            runData = run;
+            renderMeta(run);
+            renderQuery(run);
+            renderReport(run);
+
+            const runIdShort = run.id.substring(0, 8);
+            const heading = 'Session — #' + runIdShort;
+            document.getElementById('bc-run').textContent = heading;
+            document.getElementById('run-title').textContent = heading;
+            document.title = heading + ' — BheemBhai';
+
+            const active = run.state === 'pending' || run.state === 'running' || run.state === 'paused';
+            const stage = (run.stages || [])[0];
+            if (stage) loadTranscript(stage, active);
+            if (active) setTimeout(loadSession, 3000);
+        })
+        .catch(err => {
+            document.getElementById('session-transcript').innerHTML =
+                '<div class="log-plain" style="color:#f85149;">Failed to load: ' + esc(err.message) + '</div>';
+        });
+}
+
+function renderMeta(run) {
+    const stateEl = document.getElementById('meta-state');
+    stateEl.textContent = STATE_LABELS[run.state] || run.state;
+    stateEl.className = 'state ' + (run.state || '');
+
+    const branchEl = document.getElementById('meta-branch');
+    branchEl.textContent = '';
+    if (run.run_branch) {
+        branchEl.innerHTML = '⎇ <code>' + esc(run.run_branch) + '</code>';
+    }
+
+    const stage = (run.stages || [])[0] || {};
+    document.getElementById('meta-model').textContent =
+        stage.model ? ('model: ' + stage.model) : (run.workflow_name || '');
+    document.getElementById('meta-elapsed').textContent = run.elapsed_total || '';
+    document.getElementById('meta-cost').innerHTML =
+        '<span class="cost-label">Total cost</span>$' + Number(run.cost_usd || 0).toFixed(2);
+
+    const pulse = document.getElementById('log-pulse');
+    pulse.style.display = (run.state === 'running' || run.state === 'pending') ? '' : 'none';
+
+    const stopBtn = document.getElementById('btn-stop-run');
+    const cancellable = run.state === 'pending' || run.state === 'running' || run.state === 'paused';
+    stopBtn.style.display = cancellable ? '' : 'none';
+    stopBtn.disabled = !cancellable;
+}
+
+function renderQuery(run) {
+    if (!run.user_query) return;
+    document.getElementById('session-query').style.display = '';
+    document.getElementById('query-body').innerHTML = renderMarkdown(run.user_query);
+}
+
+function renderReport(run) {
+    // The final report card only appears once the run is terminal — while
+    // it works, the live transcript is the view. The summary is the agent's
+    // final reply, stored on the step payload by the engine.
+    const terminal = run.state === 'completed' || run.state === 'failed' || run.state === 'cancelled';
+    const stage = (run.stages || [])[0] || {};
+    if (!terminal || !stage.summary) {
+        document.getElementById('session-report').style.display = 'none';
+        return;
+    }
+    document.getElementById('session-report').style.display = '';
+    document.getElementById('report-body').innerHTML = renderMarkdown(stage.summary);
+    document.getElementById('report-commit').textContent = stage.commit
+        ? 'commit ' + stage.commit : '';
+    const files = stage.files || [];
+    document.getElementById('report-files').innerHTML = files.map(f => {
+        const params = new URLSearchParams({ path: f.path, step_id: stage.step_id || 'adhoc' });
+        if (stage.commit) params.set('commit', stage.commit);
+        return '<a href="/api/runs/' + window.BB_RUN_ID + '/file?' + params.toString() + '" target="_blank">' +
+            esc(f.path) + '</a>';
+    }).join('');
+}
+
+function loadTranscript(stage, active) {
+    const params = new URLSearchParams({
+        step_id: stage.step_id,
+        attempt_no: stage.attempt_no || 1,
+        kind: 'agent',
+        mode: 'tail',
+    });
+    params.set('render', 'agent');
+    const box = document.getElementById('session-transcript');
+    const sizeEl = document.getElementById('log-size');
+    const noteEl = document.getElementById('log-note');
+
+    fetch('/api/runs/' + window.BB_RUN_ID + '/logs?' + params.toString(),
+          { headers: authHeaders() })
+        .then(r => {
+            // No RunLog row yet — the launch hasn't happened (or the log
+            // isn't registered). Waiting, not an error.
+            if (r.status === 404) return { missing: true };
+            if (!r.ok) {
+                return r.text().then(t => {
+                    let msg = r.statusText;
+                    try { msg = JSON.parse(t).detail || msg; } catch (e) { /* not JSON */ }
+                    throw new Error(msg);
+                });
+            }
+            return r.json();
+        })
+        .then(d => {
+            if (d.missing || d.pending) {
+                sizeEl.textContent = 'waiting…';
+                noteEl.style.display = 'none';
+                if (!transcriptOk && !lastTranscriptHtml) {
+                    box.innerHTML = '<div class="log-plain">(waiting for the agent to start — '
+                        + 'the log uploads every ~5 s while it works)</div>';
+                }
+                return;
+            }
+            transcriptOk = true;
+            sizeEl.textContent = (d.size || 0) > 0 ? '~' + d.size + ' bytes (tail)' : 'empty';
+            if (d.truncated_render) {
+                noteEl.style.display = '';
+                noteEl.textContent = 'Showing only the most recent portion of the transcript (rendered view).';
+            } else {
+                noteEl.style.display = 'none';
+            }
+            const html = renderAgentBlocks(d.blocks);
+            if (html !== lastTranscriptHtml) {
+                // Stick to the bottom when the user is already there; a
+                // reader who scrolled up keeps their place.
+                const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+                lastTranscriptHtml = html;
+                box.innerHTML = html;
+                if (stick || !active) box.scrollTop = box.scrollHeight;
+            }
+        })
+        .catch(err => {
+            sizeEl.textContent = '';
+            noteEl.style.display = 'none';
+            if (!transcriptOk) {
+                box.innerHTML = '<div class="log-plain" style="color:#f85149;">'
+                    + esc(err.message) + '</div>';
+            }
+        });
+}
+
+function stopSession() {
+    if (!confirm('Stop this session? The engine cancels the run and stops the container.')) return;
+    fetch('/api/runs/' + window.BB_RUN_ID + '/cancel', { method: 'POST', headers: authHeaders() })
+        .then(r => {
+            if (!r.ok && r.status !== 404) {
+                return r.text().then(t => {
+                    let msg = r.statusText;
+                    try { msg = JSON.parse(t).detail || msg; } catch (e) { /* not JSON */ }
+                    throw new Error(msg);
+                });
+            }
+            loadSession();
+        })
+        .catch(err => alert('Cancel failed: ' + err.message));
+}
+</script>
+{% endblock %}

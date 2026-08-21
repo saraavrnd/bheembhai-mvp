@@ -1,0 +1,7 @@
+policy: adhoc
+version: 1
+applies_to: adhoc
+# Wide-open by design (ADR-016): the ad-hoc session is the governed
+# platform's terminal escape hatch — existing project run access and a
+# user-named branch are the only prerequisites. No gates.
+gates: {}

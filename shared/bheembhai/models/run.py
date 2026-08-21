@@ -69,6 +69,21 @@ class Run(Base):
     started_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Ad-hoc sessions (ADR-016): run_kind discriminates the governed pipeline
+    # ("workflow") from a free-form user-query session ("adhoc"). The query
+    # persists on the run so it survives engine restarts; the session columns
+    # carry the Claude Code --session-id and the reaper's lifecycle clock.
+    run_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="workflow", server_default="workflow"
+    )
+    user_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claude_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    session_phase: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    session_last_activity_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc),
         server_default=func.now()
