@@ -353,11 +353,13 @@
         // Highlight active tab from URL (default dashboard; detail pages have
         // no ?tab= param, so infer from the path). /config/ must be checked
         // BEFORE /workflows/ — the PM editor route contains both segments.
+        // Ad-hoc sessions live under /sessions/ but are Runs.
         const params = new URLSearchParams(window.location.search);
         const activeTab = params.get('tab') || (
             window.location.pathname.indexOf('/config/') !== -1 ? 'config'
             : window.location.pathname.indexOf('/workflows/') !== -1 ? 'workflows'
-            : window.location.pathname.indexOf('/runs/') !== -1 ? 'runs'
+            : (window.location.pathname.indexOf('/runs/') !== -1
+               || window.location.pathname.indexOf('/sessions/') !== -1) ? 'runs'
             : 'dashboard');
         document.querySelectorAll('#navbar-links .nav-pill').forEach(p => p.classList.remove('active'));
         const activePill = document.querySelector('#navbar-links [data-tab="' + activeTab + '"]');

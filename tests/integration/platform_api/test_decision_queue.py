@@ -74,7 +74,7 @@ def client(monkeypatch):
         yield c
 
 
-async def _make_world(state: str) -> Run:
+async def _make_world(state: str, run_kind: str = "workflow") -> Run:
     """Insert minimal world rows; return the Run plus its cleanup ids."""
     suffix = uuid.uuid4().hex[:8]
     async with _sm() as session:
@@ -108,6 +108,7 @@ async def _make_world(state: str) -> Run:
         run = Run(
             project_id=project.id, workflow_id=workflow.id, policy_id=policy.id,
             source_branch="main", state=state, started_by_user_id=user.id,
+            run_kind=run_kind,
         )
         session.add(run)
         await session.commit()
@@ -188,6 +189,21 @@ async def test_send_back_enqueues_target_and_comment(client):
             "comment": "redo it",
             "actor": "dev@bheembhai.local",
         }
+        assert await _run_state(run.id) == "paused"
+    finally:
+        await _cleanup(run)
+
+
+async def test_decision_on_adhoc_session_rejected(client):
+    """R5: an ad-hoc session's `paused` is awaiting_input, never an approval
+    gate — POST /decision must 409 without enqueuing anything. Turns and End
+    session are the only actions."""
+    run = await _make_world(state="paused", run_kind="adhoc")
+    try:
+        resp = client.post(f"/api/runs/{run.id}/decision", json={"action": "approve"})
+        assert resp.status_code == 409
+        assert "no approval gates" in resp.json()["detail"]
+        assert await _items(run.id) == []
         assert await _run_state(run.id) == "paused"
     finally:
         await _cleanup(run)

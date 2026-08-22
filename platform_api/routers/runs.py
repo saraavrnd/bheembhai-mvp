@@ -69,6 +69,10 @@ class DecisionRequest(BaseModel):
     comment: str | None = Field(None, description="Reviewer comment")
 
 
+class TurnRequest(BaseModel):
+    query: str = Field(..., description="The user's next message to the session")
+
+
 _BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
@@ -117,6 +121,10 @@ def _run_summary(run: Run, started_by: User | None = None) -> dict:
         "run_kind": run.run_kind,
         "user_query": run.user_query,
         "state": run.state,
+        # Ad-hoc sessions (ADR-016 §2): the reaper's lifecycle clock.
+        "session_phase": run.session_phase,
+        "session_last_activity_at": run.session_last_activity_at.isoformat()
+        if run.session_last_activity_at else None,
         "current_step": run.current_step,
         "cost_usd": float(run.cost_usd),
         "created_at": run.created_at.isoformat() if run.created_at else "",
@@ -618,6 +626,36 @@ async def _run_timeline(db, run: Run, workflow_def: list[dict],
     return _build_timeline(rows, workflow_def, gates, run.state, log_rows)
 
 
+async def _session_turns(db, run: Run) -> list[dict]:
+    """Ad-hoc session turn history (ADR-016 §2) — the chat transcript, rebuilt
+    from the Transition stream: durable, auditable, independent of object
+    storage. One entry per COMPLETED or failed turn (kind=="turn" completion
+    rows), newest last. A turn in flight shows as run.state == "running" and
+    has no entry yet."""
+    rows = (await db.execute(
+        select(Transition)
+        .where(Transition.run_id == run.id)
+        .order_by(Transition.id)
+    )).scalars().all()
+    turns = []
+    for t in rows:
+        p = t.payload or {}
+        if p.get("kind") != "turn":
+            continue
+        turns.append({
+            "seq": p.get("seq"),
+            "query": p.get("query", ""),
+            "response": p.get("response", ""),
+            "result_status": p.get("result_status"),
+            "commit": p.get("commit"),
+            "files": p.get("files") or [],
+            "cost_usd": p.get("cost_usd"),
+            "cost_reported": bool(p.get("cost_reported")),
+            "ts": float(t.ts) if t.ts else None,
+        })
+    return turns
+
+
 async def _build_run_detail(db, run: Run, started_by: User | None = None) -> dict:
     """Full run detail with steps, workflow definition, and gate map."""
     workflow_def = _parse_workflow_steps(run.workflow) if run.workflow else []
@@ -697,10 +735,12 @@ async def _build_run_detail(db, run: Run, started_by: User | None = None) -> dic
 
     # Build the full detail response
     timeline = await _run_timeline(db, run, workflow_def, gates)
+    turns = await _session_turns(db, run) if run.run_kind == "adhoc" else []
     return {
-        **{k: _run_summary(run, started_by)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "run_kind", "user_query", "state", "current_step", "cost_usd", "created_at", "started_by", "github_integration_id", "jira_integration_id", "ai_vendor_integration_id"]},
+        **{k: _run_summary(run, started_by)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "run_kind", "user_query", "state", "current_step", "cost_usd", "created_at", "started_by", "github_integration_id", "jira_integration_id", "ai_vendor_integration_id", "session_phase", "session_last_activity_at"]},
         "source_branch": run.source_branch,
         "run_branch": run.run_branch,
+        "turns": turns,
         "workflow_name": run.workflow.name if run.workflow else "",
         "policy_name": run.policy.name if run.policy else "",
         "stages": stages,
@@ -1325,6 +1365,16 @@ def _rendered_log_response(kind: str, mode: str, size: int,
             "blocks": [b.to_dict() for b in blocks]}
 
 
+def _raw_log_response(kind: str, mode: str, size: int,
+                      window_cut: bool, text: str) -> dict:
+    """Raw agent-log response: the served window exactly as the container
+    wrote it (UTF-8 text, one event per line). The session page renders each
+    line as a collapsed accordion row — no server-side parsing, no markdown,
+    the transcript as it happened in the container."""
+    return {"kind": kind, "mode": mode, "size": size, "render": "raw",
+            "truncated_render": window_cut, "text": text}
+
+
 def _pending_log_response(kind: str, mode: str) -> dict:
     """A launch-registered log whose first upload hasn't landed yet — the
     reference row exists (size 0) but the object does not. The live-tail UI
@@ -1341,7 +1391,7 @@ async def get_run_logs(
     kind: str = Query(..., description="agent | container | diagnostics"),
     mode: str = Query("tail", pattern="^(tail|full)$"),
     lines: int = Query(200, ge=1, le=_LOG_TAIL_LINES_MAX),
-    render: str | None = Query(None, pattern="^(agent)$"),
+    render: str | None = Query(None, pattern="^(agent|raw)$"),
     db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
     request: Request = None,
@@ -1357,14 +1407,16 @@ async def get_run_logs(
     ``render=agent`` (agent kind only) parses the served window into typed
     transcript blocks instead of raw text — assistant replies, tool calls,
     and the terminal result — capped at the last 2 MB so a 20 MB full log
-    never turns one click into a megabyte parse.
+    never turns one click into a megabyte parse. ``render=raw`` (agent kind
+    only) returns the same window as plain text under ``text``, unparsed —
+    the session page renders it line-by-line as collapsed event rows.
     """
     if enabled is None:
         raise HTTPException(401, "Authentication required")
     if kind not in KINDS:
         raise HTTPException(400, f"unknown log kind {kind!r} (valid: {', '.join(KINDS)})")
     if render is not None and kind != "agent":
-        raise HTTPException(400, "render=agent applies only to the agent log")
+        raise HTTPException(400, "render= applies only to the agent log")
     run = await db.get(Run, run_id)
     if run is None:
         raise HTTPException(404, f"Run {run_id} not found")
@@ -1396,6 +1448,9 @@ async def get_run_logs(
             window_cut = truncated or len(text) > _LOG_RENDER_FULL_MAX
             if len(text) > _LOG_RENDER_FULL_MAX:
                 text = text[len(text) - _LOG_RENDER_FULL_MAX:]
+            if render == "raw":
+                return _raw_log_response(kind, "full", len(data),
+                                         window_cut, text)
             return _rendered_log_response(kind, "full", len(data),
                                           window_cut, parse_agent_log(text))
         return {"kind": kind, "mode": "full", "size": len(data),
@@ -1417,6 +1472,9 @@ async def get_run_logs(
         # The byte window or the line limit may have cut the beginning —
         # either way the transcript starts partway in and says so.
         window_cut = head.size > _LOG_TAIL_BYTES or len(text.splitlines()) > lines
+        if render == "raw":
+            return _raw_log_response(kind, "tail", head.size,
+                                     window_cut, content)
         return _rendered_log_response(kind, "tail", head.size,
                                       window_cut, parse_agent_log(content))
     return {"kind": kind, "mode": "tail", "size": head.size, "lines": lines,
@@ -1486,6 +1544,16 @@ async def submit_decision(
             "there is no open gate to decide",
         )
 
+    # R5: an ad-hoc session's `paused` is awaiting_input, never an approval
+    # gate — there is no gate card to decide. Turns and End session are the
+    # only actions (POST /api/runs/{id}/turn, /end).
+    if run.run_kind == "adhoc":
+        raise HTTPException(
+            409,
+            "Ad-hoc sessions have no approval gates — use POST "
+            f"/api/runs/{run_id}/turn to send a message or /end to finish",
+        )
+
     actor = current_user.email or str(current_user.id)
 
     if body.action == "approve":
@@ -1552,3 +1620,102 @@ async def cancel_run(
 
     logger.info("Run %s stop requested by %s", run_id, actor)
     return {"id": run_id, "message": "Stop queued — the engine will cancel the run."}
+
+
+async def _session_dispatch_guard(run: Run, db: AsyncSession, what: str) -> None:
+    """Shared turn/end preconditions (ADR-016 §2): the session must be ad-hoc,
+    non-terminal, awaiting input, and not mid-reap — and must have no queued
+    dispatch (one dispatch = one turn = one pause; a second would just be
+    superseded by the engine)."""
+    if run.run_kind != "adhoc":
+        raise HTTPException(400, f"{what} applies to ad-hoc sessions only")
+    if run.state in TERMINAL_RUN_STATES:
+        raise HTTPException(409, f"Session {run.id} already finished ({run.state})")
+    if run.state != "paused":
+        raise HTTPException(
+            409,
+            f"Session {run.id} is in state '{run.state}' — wait for the "
+            "current turn to finish first",
+        )
+    if run.session_phase == "reaping":
+        raise HTTPException(
+            409,
+            "The session is ending after idle — retry in a moment (a fresh "
+            "container will start for the next turn)",
+        )
+    pending = await db.scalar(
+        select(WorkQueueItem.id)
+        .where(WorkQueueItem.run_id == run.id,
+               WorkQueueItem.state.in_(("pending", "claimed")))
+        .limit(1))
+    if pending is not None:
+        raise HTTPException(409, "A dispatch is already queued for this session")
+
+
+@router.post("/{run_id}/turn")
+async def submit_turn(
+    run_id: str,
+    body: TurnRequest,
+    db: AsyncSession = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+) -> dict:
+    """Queue the next session turn (bookkeeper, ADR-016 §2).
+
+    One turn = one dispatch = one pause: the platform validates the session is
+    awaiting input, then enqueues a `continue` item carrying the query. The
+    engine claims it, writes the turn inbox, runs it in the live session
+    container, and pauses the run again (awaiting_input) when the outbox
+    answers. The platform never mutates run state here.
+    """
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+    current_user, _ = enabled
+
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+    await _session_dispatch_guard(run, db, "Turns")
+
+    query = (body.query or "").strip()
+    if not query:
+        raise HTTPException(400, "query is required")
+
+    actor = current_user.email or str(current_user.id)
+    db.add(WorkQueueItem(run_id=run.id, action="continue",
+                         payload={"action": "turn", "query": query, "actor": actor}))
+    await db.commit()
+
+    logger.info("Run %s turn queued by %s (query: %s)", run_id, actor, query[:80])
+    return {"id": run_id, "message": "Turn queued — the engine will run it."}
+
+
+@router.post("/{run_id}/end")
+async def end_session(
+    run_id: str,
+    db: AsyncSession = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+) -> dict:
+    """Queue End session (bookkeeper, ADR-016 §2).
+
+    The engine writes the end sentinel and waits for the container to
+    commit+push+exit on its own (hard-kill fallback after the grace window),
+    then completes the run. A session that was already reaped — no live
+    container — completes directly: every turn committed as it happened, so
+    nothing is lost.
+    """
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+    current_user, _ = enabled
+
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+    await _session_dispatch_guard(run, db, "End session")
+
+    actor = current_user.email or str(current_user.id)
+    db.add(WorkQueueItem(run_id=run.id, action="continue",
+                         payload={"action": "end", "actor": actor}))
+    await db.commit()
+
+    logger.info("Run %s end session queued by %s", run_id, actor)
+    return {"id": run_id, "message": "End queued — the engine will close the session."}

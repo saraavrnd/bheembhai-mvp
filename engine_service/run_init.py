@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -436,6 +437,15 @@ async def init_run(session: AsyncSession, run_id, config, secure_storage, store=
             git_target, github.token, source_branch,
             derive_run_branch(run.story_id, run_id))
         run.run_branch = run_branch
+
+    # ── Ad-hoc session id (ADR-016 §3) ──
+    # The engine mints the session id up front and every incarnation launches
+    # with --session-id / --resume <id>, so the transcript filename is
+    # deterministic and the reaper's cold-start restore never scrapes it from
+    # output. Idempotent: a re-init (crash recovery) keeps the existing id.
+    if run.run_kind == "adhoc" and not run.claude_session_id:
+        run.claude_session_id = str(uuid.uuid4())
+        logger.info("run %s: ad-hoc session id %s", run_id, run.claude_session_id)
 
     # ── Persist: run state, step rows (once), transitions ──
     if first_init:

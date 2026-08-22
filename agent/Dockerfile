@@ -8,9 +8,12 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     cp /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/ && \
     chmod 755 /usr/local/bin/uv /usr/local/bin/uvx
 
-ARG CLAUDE_VERSION=latest
-RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION} || \
-    echo "NOTE: install claude-code manually if this fails"
+ARG CLAUDE_VERSION=2.1.218
+# Pinned, not latest: the session transcript JSONL is version-internal, so the
+# CLI silently drifting mid-session would break --resume (ADR-016 §3). A
+# failed install must FAIL the build — an image without claude would only
+# surface later as failed_execution inside every session container.
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION}
 
 # MCP server config template. Credentials are injected at runtime via env (never baked in).
 COPY mcp.json /opt/mcp.json

@@ -13,6 +13,8 @@
 {% block head %}
 <!-- Vendored markdown renderer (no CDN dependency at runtime) -->
 <script src="/static/vendor/marked/marked.min.js?v=1"></script>
+<!-- Shared raw-event accordion renderer for agent logs (BB_AGENT_EVENTS) -->
+<script src="/static/bb_agent_events.js?v=1"></script>
 <style>
     :root {
         --sage: #5a9e6f;
@@ -492,9 +494,11 @@
     }
     .log-note { margin: 8px 24px 14px; font-size: 12px; color: #a06a3a; }
 
-    /* ── Rendered agent transcript (JSONL stream events → blocks) ──
-       Light markdown theme: the raw view stays dark mono, but assistant
-       markdown uses the same light palette as the rest of the viewers. */
+    /* ── Agent events view (raw stream-json lines → accordion) ──
+       Same pattern as the ad-hoc session agent view: one collapsed row per
+       transcript event, consecutive thinking events summed into one node.
+       No markdown here — the machinery, not the conversation. The raw view
+       stays dark mono for plain-text inspection. */
     .log-rendered {
         flex: 1; min-height: 0; overflow-y: auto;
         margin: 0 24px; padding: 12px 14px; background: #fff;
@@ -502,31 +506,30 @@
     }
     .log-tools .log-refresh.active { background: #2f579a; color: #fff; }
     .log-tools .log-refresh:disabled { opacity: 0.45; cursor: not-allowed; }
-    .agent-msg { margin: 0 0 10px; }
-    .agent-msg > :last-child { margin-bottom: 0; }
-    .log-tool-row { margin: 4px 0; }
-    .log-tool-row summary {
-        cursor: pointer; list-style: none;
-        font-family: 'JetBrains Mono', 'Courier New', monospace;
-        font-size: 12px; color: #6e7681;
+    .raw-event { margin: 2px 0; border: 1px solid #efe9dc; border-radius: 4px; background: #fff; }
+    .raw-event summary {
+        cursor: pointer; padding: 4px 8px;
+        font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 11.5px;
+        color: #4a4a5e; background: #faf7f0;
+        overflow-wrap: anywhere;
     }
-    .log-tool-row summary::before { content: '▸ '; }
-    .log-tool-row[open] summary::before { content: '▾ '; }
-    .log-tool-row pre {
-        background: #f4f2ee; border: 1px solid #e8e0d6; border-radius: 6px;
-        padding: 8px 10px; font-size: 12px;
-        white-space: pre-wrap; word-break: break-word; margin: 6px 0 0;
+    .raw-event[open] summary { border-bottom: 1px solid #efe9dc; }
+    .raw-event.raw-think summary { background: #f6f1e6; color: #6b5a3e; }
+    .raw-event pre {
+        margin: 0; padding: 8px 10px; background: #fffdf8;
+        font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 11px;
+        line-height: 1.5; color: #4a4a5e;
+        white-space: pre-wrap; word-break: break-word;
+        max-height: 340px; overflow-y: auto;
     }
     .tool-ok { color: #2f7d4f; }
     .tool-err { color: #b3341f; }
     .tool-unk { color: #a06a3a; }
+    .tool-think { color: #b08968; }
     .log-plain {
         font-family: 'JetBrains Mono', 'Courier New', monospace;
         font-size: 12px; color: #8a8a96;
         margin: 4px 0; white-space: pre-wrap; word-break: break-word;
-    }
-    .log-truncated {
-        font-size: 12px; color: #a06a3a; font-style: italic; margin: 0 0 8px;
     }
 
     /* Responsive — small screens fall back to normal document flow
@@ -595,9 +598,9 @@
                     <select id="log-kind" onchange="logKindChanged()" title="Which log to view"></select>
                     <span class="log-size" id="log-size"></span>
                     <span style="flex:1;"></span>
-                    <button class="log-refresh" id="btn-log-rendered" onclick="setLogRenderMode('rendered')"
-                            title="Transcript view — assistant replies as formatted text">
-                        Rendered
+                    <button class="log-refresh" id="btn-log-events" onclick="setLogRenderMode('events')"
+                            title="Event view — one accordion row per transcript event, thinking grouped">
+                        Events
                     </button>
                     <button class="log-refresh" id="btn-log-raw" onclick="setLogRenderMode('raw')"
                             title="Raw output as captured">
@@ -673,7 +676,7 @@ let logsViewActive = false;
 // The agent log is Claude Code's stream-json (JSONL) output — the readable
 // default has the server parse it into transcript blocks; Raw shows the
 // captured bytes as-is. The other kinds have no structure to parse.
-let logRenderMode = 'rendered';
+let logRenderMode = 'events';
 let lastLogMode = 'tail';
 let decisionSubmitted = false;
 let userPickedStage = false;   // set once the user clicks a stage themselves
@@ -1605,8 +1608,8 @@ function openStageLog() {
     }
     document.getElementById('log-kind').innerHTML =
         node.log_kinds.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
-    // Re-entry defaults to the transcript for agent logs, raw for the rest.
-    logRenderMode = node.log_kinds.includes('agent') ? 'rendered' : 'raw';
+    // Re-entry defaults to the events view for agent logs, raw for the rest.
+    logRenderMode = node.log_kinds.includes('agent') ? 'events' : 'raw';
     logsViewActive = true;
     setLogsButton(true);
     document.getElementById('viewer-content').style.display = 'none';
@@ -1618,12 +1621,12 @@ function openStageLog() {
 
 function updateLogRenderButtons() {
     const kind = document.getElementById('log-kind').value;
-    const renderedAvailable = kind === 'agent';
-    const renderedBtn = document.getElementById('btn-log-rendered');
+    const eventsAvailable = kind === 'agent';
+    const eventsBtn = document.getElementById('btn-log-events');
     const rawBtn = document.getElementById('btn-log-raw');
-    renderedBtn.disabled = !renderedAvailable;
-    renderedBtn.classList.toggle('active', renderedAvailable && logRenderMode === 'rendered');
-    rawBtn.classList.toggle('active', !renderedAvailable || logRenderMode === 'raw');
+    eventsBtn.disabled = !eventsAvailable;
+    eventsBtn.classList.toggle('active', eventsAvailable && logRenderMode === 'events');
+    rawBtn.classList.toggle('active', !eventsAvailable || logRenderMode === 'raw');
 }
 
 function setLogRenderMode(m) {
@@ -1635,75 +1638,27 @@ function setLogRenderMode(m) {
 
 function logKindChanged() {
     logRenderMode = document.getElementById('log-kind').value === 'agent'
-        ? 'rendered' : 'raw';
+        ? 'events' : 'raw';
     updateLogRenderButtons();
     loadStageLog('tail');
 }
 
-function renderAgentBlocks(blocks) {
-    // Stream-json guarantees a tool_result immediately follows the assistant
-    // message that carried its tool_use — fold adjacent matches into one
-    // collapsed row (call + outcome). An orphan from a mid-window start
-    // renders as a standalone muted row.
-    const rows = [];
-    for (const b of (blocks || [])) {
-        if (b.kind === 'tool_result' && rows.length &&
-            rows[rows.length - 1].kind === 'tool_call' &&
-            rows[rows.length - 1].tool_id === b.tool_id) {
-            const call = rows[rows.length - 1];
-            call.tool_status = b.tool_status;
-            call.tool_output_raw = b.raw;
-            continue;
-        }
-        rows.push(b);
-    }
-    let html = '';
-    for (const b of rows) {
-        if (b.kind === 'assistant_text' || b.kind === 'result_text') {
-            html += '<div class="agent-msg">' + renderMarkdown(b.text || '') + '</div>';
-        } else if (b.kind === 'tool_call') {
-            const glyph = b.tool_status === 'ok'
-                ? '<span class="tool-ok" title="ok">✓</span>'
-                : b.tool_status === 'error'
-                    ? '<span class="tool-err" title="error">✗</span>'
-                    : '<span class="tool-unk" title="outcome unknown">?</span>';
-            let body = '<pre>' + esc(b.raw || '(no input)') + '</pre>';
-            if (b.tool_output_raw) {
-                body += '<pre>' + esc(b.tool_output_raw) + '</pre>';
-            }
-            html += '<details class="log-tool-row"><summary>' + glyph + ' ' +
-                esc(b.tool_name || 'tool') +
-                (b.tool_summary ? ' — ' + esc(b.tool_summary) : '') +
-                '</summary>' + body + '</details>';
-        } else if (b.kind === 'tool_result') {
-            const glyph = b.tool_status === 'error'
-                ? '<span class="tool-err" title="error">✗</span>'
-                : '<span class="tool-ok" title="ok">✓</span>';
-            html += '<div class="log-plain">' + glyph + ' ' +
-                (b.tool_id ? esc(b.tool_id) + ' — ' : '') +
-                esc(b.tool_summary || '(result)') + '</div>';
-        } else if (b.kind === 'plain') {
-            html += '<div class="log-plain">' + esc(b.text || '') + '</div>';
-        } else if (b.kind === 'truncated_notice') {
-            html += '<div class="log-truncated">' + esc(b.text || '') + '</div>';
-        }
-    }
-    return html || '<div class="log-plain">(empty log)</div>';
-}
+// The agent events view is shared with the ad-hoc session page:
+// window.BB_AGENT_EVENTS.render(text) (static/bb_agent_events.js).
 
 function loadStageLog(mode, silent) {
     const node = logNode();
     if (!node) return;
     lastLogMode = mode;
     const kind = document.getElementById('log-kind').value;
-    const useRendered = logRenderMode === 'rendered' && kind === 'agent';
+    const useEvents = logRenderMode === 'events' && kind === 'agent';
     const params = new URLSearchParams({
         step_id: node.step_id,
         attempt_no: node.attempt_no,
         kind: kind,
         mode: mode,
     });
-    if (useRendered) params.set('render', 'agent');
+    if (useEvents) params.set('render', 'raw');
     const box = document.getElementById('log-content');
     const renderedBox = document.getElementById('log-rendered');
     const sizeEl = document.getElementById('log-size');
@@ -1716,8 +1671,8 @@ function loadStageLog(mode, silent) {
         sizeEl.textContent = '';
         noteEl.style.display = 'none';
     }
-    box.style.display = useRendered ? 'none' : '';
-    renderedBox.style.display = useRendered ? '' : 'none';
+    box.style.display = useEvents ? 'none' : '';
+    renderedBox.style.display = useEvents ? '' : 'none';
     fetch('/api/runs/' + window.BB_RUN_ID + '/logs?' + params.toString(),
           { headers: authHeaders() })
         .then(r => {
@@ -1735,7 +1690,7 @@ function loadStageLog(mode, silent) {
                 // Launch-registered log whose first upload hasn't landed —
                 // keep the view in "waiting" mode and poll on.
                 sizeEl.textContent = 'waiting…';
-                if (useRendered) {
+                if (useEvents) {
                     renderedBox.innerHTML =
                         '<div class="log-plain">(waiting for the agent to start writing its log…)</div>';
                 } else {
@@ -1746,12 +1701,12 @@ function loadStageLog(mode, silent) {
             sizeEl.textContent = (d.size || 0) > 0
                 ? formatLogSize(d.size) + (d.mode === 'full' ? ' (full)' : ' (tail)')
                 : 'empty';
-            if (useRendered) {
-                renderedBox.innerHTML = renderAgentBlocks(d.blocks);
+            if (useEvents) {
+                renderedBox.innerHTML = window.BB_AGENT_EVENTS.render(d.text || '');
                 if (d.truncated_render) {
                     noteEl.style.display = '';
                     noteEl.textContent =
-                        'Showing only the most recent portion of the transcript (rendered view).';
+                        'Showing only the most recent portion of the transcript (events view).';
                 }
             } else {
                 box.textContent = d.content || '(empty log)';
@@ -1763,7 +1718,7 @@ function loadStageLog(mode, silent) {
             }
         })
         .catch(err => {
-            if (useRendered) {
+            if (useEvents) {
                 renderedBox.innerHTML =
                     '<div class="log-plain">Failed to load log: ' + esc(err.message) + '</div>';
             } else {

@@ -124,6 +124,12 @@ class Step(Base):
         Numeric(10, 4), nullable=False, default=0, server_default="0"
     )
     attempt_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    # Ad-hoc sessions (ADR-016 Phase 2): global-monotonic turn sequence. The
+    # engine increments it per user turn before writing the turn's inbox
+    # object; the container echoes it in the outbox reply. Spans attempts
+    # (container incarnations) so the inbox/outbox `seq` stays stable across
+    # cold-start relaunches. Workflow steps leave it 0.
+    turn_no: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     fargate_task_arn: Mapped[str | None] = mapped_column(Text, nullable=True)
     artifact_storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(

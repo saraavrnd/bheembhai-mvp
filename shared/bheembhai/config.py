@@ -110,6 +110,13 @@ class EngineConfig:
     docker_endpoint: str = ""               # unix socket / tcp://… ; empty -> docker.from_env()
     max_step_visits: int = 3                # runaway-loop seatbelt (BB_MAX_STEP_VISITS)
     max_attempts: int = 2                   # per-step container attempts (BB_MAX_ATTEMPTS)
+    # Ad-hoc sessions (ADR-016): seconds of idle before the reaper ends a
+    # live session container gracefully (end sentinel → commit+push → exit).
+    ad_hoc_idle_seconds: int = 600          # BB_ADHOC_IDLE_SECONDS
+    # How long End session / the reaper waits for the container to exit after
+    # the end sentinel before the hard-kill fallback (only the transcript
+    # upload is lost — turns commit per turn, so nothing uncommitted dies).
+    ad_hoc_end_grace_seconds: int = 60      # BB_ADHOC_END_GRACE_SECONDS
     mem_limit: str = "4g"
     network: str = "bridge"
     keep_containers: bool = False           # debugging aid — leave containers for post-mortem
@@ -145,6 +152,8 @@ class EngineConfig:
             docker_endpoint=os.getenv("DOCKER_ENDPOINT", ""),
             max_step_visits=int(os.getenv("BB_MAX_STEP_VISITS", "3")),
             max_attempts=int(os.getenv("BB_MAX_ATTEMPTS", "2")),
+            ad_hoc_idle_seconds=int(os.getenv("BB_ADHOC_IDLE_SECONDS", "600")),
+            ad_hoc_end_grace_seconds=int(os.getenv("BB_ADHOC_END_GRACE_SECONDS", "60")),
             mem_limit=os.getenv("BB_MEM_LIMIT", "4g"),
             network=os.getenv("BB_NETWORK", "bridge"),
             keep_containers=os.getenv("BB_KEEP_CONTAINERS", "0") == "1",
