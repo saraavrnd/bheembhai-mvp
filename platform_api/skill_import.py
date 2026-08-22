@@ -83,13 +83,15 @@ def _path_problem(name: str) -> str | None:
     return None
 
 
-def analyze_zip(data: bytes) -> ZipAnalysis:
-    """Parse + validate a skills zip into a :class:`ZipAnalysis`.
+def collect_entries(data: bytes) -> dict[str, bytes]:
+    """Open + validate a zip (fatal guards) → {normalized entry name: content}.
 
     Raises :class:`ZipValidationError` for fatal problems: not a zip, empty
-    zip, no ``skills/`` folder, unsafe paths, duplicate entry names, duplicate
-    resolved skill names, or a decompression-budget overrun. Skill dirs
-    without ``SKILL.md`` are non-fatal (reported in ``invalid_dirs``).
+    zip, unsafe paths, duplicate entry names, or a budget overrun (entry
+    count / single-file size / total decompressed size — measured on the
+    DECOMPRESSED content, defeating lying ZipInfo.file_size headers).
+    Directory markers are dropped. Shared by the skill and workflow importers
+    (``platform_api.workflow_zip``) so the two formats never drift on safety.
     """
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
@@ -105,7 +107,6 @@ def analyze_zip(data: bytes) -> ZipAnalysis:
                 f"The zip has too many entries (max {MAX_ENTRY_COUNT})"
             )
 
-        # ── Pass 1: normalize + safety + budgets, collect file contents ──
         entries: dict[str, bytes] = {}
         total = 0
         for info in infos:
@@ -130,82 +131,111 @@ def analyze_zip(data: bytes) -> ZipAnalysis:
                     f"{MAX_DECOMPRESSED_BYTES // (1024 * 1024)} MB budget"
                 )
             entries[name] = content
+    return entries
 
-        # ── Pass 2: classify into skills/<dirname>/… bundles ──
-        analysis = ZipAnalysis()
-        skill_files: dict[str, dict[str, str]] = {}
-        for name, content in entries.items():
-            if not name.startswith(SKILL_DIR + "/"):
-                analysis.other_entries.append(name)
-                continue
-            rest = name[len(SKILL_DIR) + 1:]
-            dirname, _, rel = rest.partition("/")
-            if not rel:
-                continue  # `skills/<name>` itself (dir marker or stray file)
-            skill_files.setdefault(dirname, {})[rel] = content.decode(
-                "utf-8", errors="replace"
+
+def build_skill_bundles(
+    entries: dict[str, bytes],
+) -> tuple[list[SkillBundle], list[str]]:
+    """Classify ``skills/<dirname>/…`` entries into ``(bundles, invalid_dirs)``.
+
+    Bundles and invalid dirs come back in zip order; non-``skills/`` entries
+    are ignored. Raises :class:`ZipValidationError` when the zip has no
+    ``skills/`` folder with skill directories at its root, or on duplicate
+    resolved skill names. Skill dirs without ``SKILL.md`` are non-fatal
+    (``invalid_dirs``). Shared with ``platform_api.workflow_zip``.
+    """
+    skill_files: dict[str, dict[str, str]] = {}
+    for name, content in entries.items():
+        if not name.startswith(SKILL_DIR + "/"):
+            continue
+        rest = name[len(SKILL_DIR) + 1:]
+        dirname, _, rel = rest.partition("/")
+        if not rel:
+            continue  # `skills/<name>` itself (dir marker or stray file)
+        skill_files.setdefault(dirname, {})[rel] = content.decode(
+            "utf-8", errors="replace"
+        )
+
+    if not skill_files:
+        raise ZipValidationError(
+            "The zip has no skills/ folder with skill directories at its root"
+        )
+
+    bundles: list[SkillBundle] = []
+    invalid_dirs: list[str] = []
+    seen_names: set[str] = set()
+    for dirname, files in skill_files.items():
+        if SKILL_MD not in files:
+            invalid_dirs.append(f"{SKILL_DIR}/{dirname}")
+            continue
+
+        skill_md = files[SKILL_MD]
+        fm = parse_skill_frontmatter(skill_md, dirname)
+        if fm is None:
+            fm = parse_skill_frontmatter("", dirname)
+            fm.warnings.append(
+                "SKILL.md frontmatter unparseable — using defaults"
             )
-
-        if not skill_files:
+        if fm.name in seen_names:
             raise ZipValidationError(
-                "The zip has no skills/ folder with skill directories at its root"
+                f"duplicate skill name '{fm.name}' in zip"
+            )
+        seen_names.add(fm.name)
+        if len(fm.name) > 100:  # Skill.name max_length — import will refuse it
+            fm.warnings.append(
+                "skill name exceeds 100 characters — cannot be imported"
             )
 
-        # ── Pass 3: build bundles in zip order ──
-        seen_names: set[str] = set()
-        for dirname, files in skill_files.items():
-            if SKILL_MD not in files:
-                analysis.invalid_dirs.append(f"{SKILL_DIR}/{dirname}")
-                continue
+        # SKILL.md first, then the rest sorted — stable for the UI table.
+        ordered: dict[str, str] = {"SKILL.md": files.pop(SKILL_MD)}
+        for path in sorted(files):
+            ordered[path] = files[path]
 
-            skill_md = files[SKILL_MD]
-            fm = parse_skill_frontmatter(skill_md, dirname)
-            if fm is None:
-                fm = parse_skill_frontmatter("", dirname)
-                fm.warnings.append(
-                    "SKILL.md frontmatter unparseable — using defaults"
-                )
-            if fm.name in seen_names:
-                raise ZipValidationError(
-                    f"duplicate skill name '{fm.name}' in zip"
-                )
-            seen_names.add(fm.name)
-            if len(fm.name) > 100:  # Skill.name max_length — import will refuse it
-                fm.warnings.append(
-                    "skill name exceeds 100 characters — cannot be imported"
-                )
+        refs = scan_referenced_files(
+            skill_md,
+            set(ordered),
+            directory=f"{SKILL_DIR}/{dirname}",
+            zip_entries=set(entries),
+        )
 
-            # SKILL.md first, then the rest sorted — stable for the UI table.
-            ordered: dict[str, str] = {"SKILL.md": files.pop(SKILL_MD)}
-            for path in sorted(files):
-                ordered[path] = files[path]
-
-            refs = scan_referenced_files(
-                skill_md,
-                set(ordered),
+        bundles.append(
+            SkillBundle(
                 directory=f"{SKILL_DIR}/{dirname}",
-                zip_entries=set(entries),
+                name=fm.name,
+                description=fm.description,
+                model=fm.model,
+                compatibility=fm.compatibility,
+                warnings=fm.warnings,
+                files=ordered,
+                missing_referenced=refs.missing,
+                external_references=refs.external,
+                external_refs=refs.external_refs,
+                external_files={
+                    path: entries[path].decode("utf-8", errors="replace")
+                    for path in refs.external
+                },
             )
+        )
 
-            analysis.skills.append(
-                SkillBundle(
-                    directory=f"{SKILL_DIR}/{dirname}",
-                    name=fm.name,
-                    description=fm.description,
-                    model=fm.model,
-                    compatibility=fm.compatibility,
-                    warnings=fm.warnings,
-                    files=ordered,
-                    missing_referenced=refs.missing,
-                    external_references=refs.external,
-                    external_refs=refs.external_refs,
-                    external_files={
-                        path: entries[path].decode("utf-8", errors="replace")
-                        for path in refs.external
-                    },
-                )
-            )
+    return bundles, invalid_dirs
 
+
+def analyze_zip(data: bytes) -> ZipAnalysis:
+    """Parse + validate a skills zip into a :class:`ZipAnalysis`.
+
+    Raises :class:`ZipValidationError` for fatal problems: not a zip, empty
+    zip, no ``skills/`` folder, unsafe paths, duplicate entry names, duplicate
+    resolved skill names, or a decompression-budget overrun. Skill dirs
+    without ``SKILL.md`` are non-fatal (reported in ``invalid_dirs``).
+    """
+    entries = collect_entries(data)
+
+    analysis = ZipAnalysis()
+    analysis.other_entries = [
+        name for name in entries if not name.startswith(SKILL_DIR + "/")
+    ]
+    analysis.skills, analysis.invalid_dirs = build_skill_bundles(entries)
     return analysis
 
 

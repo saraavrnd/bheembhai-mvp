@@ -285,6 +285,19 @@ async def admin_workflows(request: Request):
     return templates.TemplateResponse(request, "admin/workflows.html", {"request": request})
 
 
+@app.get("/admin/workflows/import", include_in_schema=False)
+async def admin_workflow_import(request: Request, project_id: str | None = None):
+    """Admin workflow management — zip import page, optionally project-scoped.
+
+    Must stay registered BEFORE /admin/workflows/{workflow_id}: FastAPI
+    matches in registration order and {workflow_id} would swallow "import".
+    """
+    return templates.TemplateResponse(
+        request, "admin/workflows_import.html",
+        {"request": request, "project_id": project_id},
+    )
+
+
 @app.get("/admin/categories", include_in_schema=False)
 async def admin_categories(request: Request):
     """Admin workflow categories — list page."""

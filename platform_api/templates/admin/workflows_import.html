@@ -1,0 +1,479 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Import Workflows{% endblock %}
+{% block nav_workflows %}active menu-open{% endblock %}
+{% block page_title %}Import Workflows{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/admin"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a href="/admin/workflows">Workflows</a></li>
+<li class="breadcrumb-item active" aria-current="page">Import ZIP</li>
+{% endblock %}
+
+{% block content %}
+<style>
+    /* Toast — same idiom as the skills import page */
+    .bb-toast {
+        position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+        background: #3e2f26; color: #fefcf7; padding: 10px 20px; border-radius: 10px;
+        font-size: 12.5px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        animation: bbFade 0.18s ease-out; max-width: 80vw;
+    }
+    @keyframes bbFade { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    /* The theme moves every native checkbox offscreen and only draws a styled
+       box when a <label> follows the input (Materialize pattern). Our
+       selection checkboxes carry no labels — restore the native control. */
+    #check-all, .row-check {
+        position: static !important;
+        left: auto !important;
+        opacity: 1 !important;
+        cursor: pointer;
+    }
+    .import-muted-note { font-size: 12px; color: #8a7a6a; }
+    /* Section divider rows — empty data-search so a filter query hides them. */
+    .section-divider td {
+        background: #f6f7f9;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #8a7a6a;
+        padding: 6px 10px;
+    }
+</style>
+
+<div class="row">
+    <div class="col-12">
+
+        <!-- Step 1 · Upload -->
+        <div class="box" id="upload-card">
+            <div class="box-header with-border">
+                <h4 class="box-title">1 · Upload workflows ZIP</h4>
+            </div>
+            <div class="box-body">
+                <p class="text-muted">
+                    Max <strong>5 MB</strong>. The zip must have a <code>workflows/</code> folder at its root —
+                    one <code>&lt;slug&gt;.yaml</code> manifest per workflow — with each workflow's policies
+                    under <code>policies/&lt;workflow-slug&gt;/</code> and every referenced skill under
+                    <code>skills/</code>. Other root entries (e.g. <code>tools/</code>) are ignored by the import.
+                </p>
+                <div id="scope-banner" class="alert alert-info py-2" style="display:none;">
+                    <i class="ti-target"></i>
+                    Importing into project: <strong id="scope-project-name">...</strong> —
+                    workflows, policies, and skills will be created as project-scoped rows.
+                </div>
+                <div class="input-group" style="max-width: 560px;">
+                    <input type="file" class="form-control" id="zip-file" accept=".zip,application/zip">
+                    <button class="btn btn-primary" id="btn-analyze" onclick="analyzeZip()" disabled>
+                        <i class="ti-search"></i> Analyze ZIP
+                    </button>
+                </div>
+                <div id="upload-error" class="text-danger mt-2" style="display:none;"></div>
+            </div>
+        </div>
+
+        <!-- Step 2 · Analysis -->
+        <div class="box" id="analysis-card" style="display:none;">
+            <div class="box-header with-border">
+                <h4 class="box-title">2 · Review — choose what to import</h4>
+            </div>
+            <div class="box-body">
+                <div class="bb-table-search mb-3">
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="analysis-search" placeholder="Search workflows, policies, and skills in the zip..." autocomplete="off">
+                        <span class="input-group-text bg-primary border-primary">
+                            <i class="ti-search text-white"></i>
+                        </span>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0" id="analysis-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 36px;"><input type="checkbox" id="check-all" title="Select all"></th>
+                                <th>Item</th>
+                                <th>Details</th>
+                                <th>Existing?</th>
+                                <th style="width: 150px;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="analysis-tbody">
+                            <tr><td colspan="5" class="text-center text-muted">Analyzing…</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="analysis-no-match" class="text-center text-muted py-3" style="display:none;">
+                    <i class="ti-search fs-24 d-block mb-2"></i>
+                    No matches.
+                </div>
+                <div id="analysis-extras" class="import-muted-note mt-2"></div>
+                <div class="d-flex align-items-center mt-3 gap-2">
+                    <button class="btn btn-success" id="btn-import" onclick="doImport()" disabled>
+                        <i class="ti-import"></i> Import selected (<span id="selected-count">0</span>)
+                    </button>
+                    <button class="btn btn-secondary" onclick="resetAll()">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3 · Results -->
+        <div class="box" id="results-card" style="display:none;">
+            <div class="box-header with-border">
+                <h4 class="box-title">3 · Import results</h4>
+            </div>
+            <div class="box-body">
+                <div id="results-summary" class="mb-3"></div>
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Action</th>
+                                <th>Status</th>
+                                <th>Message</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-tbody"></tbody>
+                    </table>
+                </div>
+                <div class="mt-3">
+                    <a class="btn btn-success" id="btn-done" href="/admin/workflows">
+                        <i class="ti-check"></i> Go to Workflows
+                    </a>
+                    <button class="btn btn-secondary" onclick="resetAll()">Import another ZIP</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let zipFile = null;      // File object kept in JS state — re-uploaded on confirm
+let analysis = null;     // last analyze response (server re-validates on import)
+
+const MAX_ZIP = 5 * 1024 * 1024;
+const params = new URLSearchParams(location.search);
+const projectId = params.get('project_id') || null;
+
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+function toast(msg) {
+    const el = document.createElement('div');
+    el.className = 'bb-toast';
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
+}
+
+function showUploadError(msg) {
+    const el = document.getElementById('upload-error');
+    el.textContent = msg;
+    el.style.display = msg ? '' : 'none';
+}
+
+BBTableSearch.attachDom('analysis-search', 'analysis-table', 'analysis-no-match');
+
+// ── Project scope (optional ?project_id=) ──
+if (projectId) {
+    document.getElementById('scope-banner').style.display = '';
+    document.getElementById('btn-done').href = `/admin/projects/${projectId}/workflows`;
+    fetch(`/api/admin/projects/${projectId}`)
+        .then(r => r.json())
+        .then(p => { document.getElementById('scope-project-name').textContent = p.name; })
+        .catch(() => { document.getElementById('scope-project-name').textContent = projectId.substring(0, 8) + '…'; });
+}
+
+document.getElementById('zip-file').addEventListener('change', function() {
+    zipFile = this.files[0] || null;
+    document.getElementById('btn-analyze').disabled = !zipFile;
+    showUploadError('');
+    // New file invalidates any prior analysis/results.
+    document.getElementById('analysis-card').style.display = 'none';
+    document.getElementById('results-card').style.display = 'none';
+    analysis = null;
+});
+
+async function postZip(url, formData) {
+    const r = await fetch(url, { method: 'POST', headers: authHeaders(), body: formData });
+    if (!r.ok) {
+        const e = await r.json().catch(() => ({}));
+        throw new Error(e.detail || r.statusText);
+    }
+    return r.json();
+}
+
+function scopeFormData() {
+    const fd = new FormData();
+    fd.append('zip_file', zipFile, zipFile.name);
+    if (projectId) fd.append('project_id', projectId);
+    return fd;
+}
+
+async function analyzeZip() {
+    if (!zipFile) return;
+    if (zipFile.size > MAX_ZIP) {
+        showUploadError('File is larger than 5 MB — choose a smaller zip.');
+        return;
+    }
+    showUploadError('');
+    document.getElementById('btn-analyze').disabled = true;
+    try {
+        analysis = await postZip('/api/admin/workflows/import/analyze', scopeFormData());
+        renderAnalysis(analysis);
+        document.getElementById('analysis-card').style.display = '';
+        document.getElementById('results-card').style.display = 'none';
+        toast(`Found ${analysis.workflows.length} workflow(s), ${analysis.skills.length} skill(s), ${analysis.policies.length} polic${analysis.policies.length === 1 ? 'y' : 'ies'} — pick what to import.`);
+    } catch (err) {
+        showUploadError(err.message);
+    } finally {
+        document.getElementById('btn-analyze').disabled = false;
+    }
+}
+
+function modelBadge(model) {
+    if (model === 'high') return '<span class="badge rounded-pill bg-danger">High</span>';
+    if (model === 'low') return '<span class="badge rounded-pill bg-success">Low</span>';
+    return '<span class="badge rounded-pill bg-warning">Medium</span>';
+}
+
+function existsBadge(exists) {
+    return exists
+        ? '<span class="badge rounded-pill bg-warning">exists</span>'
+        : '<span class="badge rounded-pill bg-success">new</span>';
+}
+
+function actionSelect(exists) {
+    return exists
+        ? '<option value="skip" selected>Skip</option><option value="overwrite">Overwrite</option>'
+        : '<option value="import" selected>Import new</option><option value="skip">Skip</option>';
+}
+
+function warningsHtml(warnings) {
+    return warnings.length
+        ? `<div class="text-warning small">${warnings.map(esc).join('<br>')}</div>` : '';
+}
+
+function renderAnalysis(a) {
+    const tbody = document.getElementById('analysis-tbody');
+    const rows = [];
+
+    const divider = label =>
+        `<tr class="section-divider" data-search=""><td colspan="5">${esc(label)}</td></tr>`;
+
+    a.workflows.forEach((w, idx) => {
+        const categoryBadge = w.category
+            ? `<span class="badge rounded-pill bg-info ms-1">${esc(w.category)}</span>` : '';
+        const skillChips = (w.referenced_skills || []).map(s =>
+            `<span class="badge rounded-pill bg-secondary ms-1" title="referenced skill">${esc(s)}</span>`).join('');
+        const policyChips = (w.policy_names || []).map(p =>
+            `<span class="badge rounded-pill bg-dark ms-1" title="policy">${esc(p)}</span>`).join('');
+        rows.push(`
+            <tr data-kind="workflow" data-idx="${idx}" data-search="${esc(w.name)}">
+                <td><input type="checkbox" class="row-check" ${w.exists ? '' : 'checked'}></td>
+                <td>
+                    <strong>${esc(w.name)}</strong>
+                    <span class="badge rounded-pill bg-primary ms-1">v${w.version}</span>${categoryBadge}
+                </td>
+                <td>
+                    ${w.description ? `<span class="text-muted small">${esc(w.description)}</span>` : ''}
+                    ${skillChips}${policyChips}
+                    ${warningsHtml(w.warnings)}
+                </td>
+                <td>${existsBadge(w.exists)}</td>
+                <td><select class="form-select form-select-sm row-action">${actionSelect(w.exists)}</select></td>
+            </tr>`);
+    });
+
+    if (a.skills.length) rows.push(divider('Dependent skills'));
+    a.skills.forEach((s, idx) => {
+        // Project scope: a platform skill of the same name will be shadowed
+        // by the imported project copy — worth saying so, not an error.
+        const shadowNote = (projectId && !s.exists && s.platform_exists)
+            ? '<div class="text-info small">A platform skill with this name exists — importing creates a project copy that overrides it for this project.</div>'
+            : '';
+        rows.push(`
+            <tr data-kind="skill" data-idx="${idx}" data-search="${esc(s.name)}">
+                <td><input type="checkbox" class="row-check" ${s.exists ? '' : 'checked'}></td>
+                <td><strong>${esc(s.name)}</strong> ${modelBadge(s.model)}</td>
+                <td>
+                    ${s.description ? `<span class="text-muted small">${esc(s.description)}</span>` : ''}
+                    <span class="badge rounded-pill bg-info ms-1" title="${esc((s.files || []).join('\n'))}">${(s.files || []).length} file(s)</span>
+                    ${shadowNote}
+                    ${warningsHtml(s.warnings)}
+                </td>
+                <td>${existsBadge(s.exists)}</td>
+                <td><select class="form-select form-select-sm row-action">${actionSelect(s.exists)}</select></td>
+            </tr>`);
+    });
+
+    if (a.policies.length) rows.push(divider('Policies'));
+    a.policies.forEach((p, idx) => {
+        rows.push(`
+            <tr data-kind="policy" data-idx="${idx}" data-search="${esc(p.name)} ${esc(p.workflow)}">
+                <td><input type="checkbox" class="row-check" ${p.exists ? '' : 'checked'}></td>
+                <td>
+                    <strong>${esc(p.name)}</strong>
+                    <span class="badge rounded-pill bg-primary ms-1">v${p.version}</span>
+                </td>
+                <td>
+                    <span class="text-muted small">policy of <strong>${esc(p.workflow)}</strong></span>
+                    ${warningsHtml(p.warnings)}
+                </td>
+                <td>${existsBadge(p.exists)}</td>
+                <td><select class="form-select form-select-sm row-action">${actionSelect(p.exists)}</select></td>
+            </tr>`);
+    });
+
+    tbody.innerHTML = rows.length
+        ? rows.join('')
+        : '<tr><td colspan="5" class="text-center text-muted">No importable workflows, policies, or skills found in this zip.</td></tr>';
+
+    BBTableSearch.apply('analysis-table');
+    // Attach listeners by index — names are user-controlled, so they must
+    // never appear inside inline JS handlers.
+    tbody.querySelectorAll('.row-check, .row-action').forEach(el => {
+        el.addEventListener('change', updateSelectedCount);
+    });
+    document.getElementById('check-all').checked = false;
+    document.getElementById('check-all').onclick = function() {
+        const on = this.checked;
+        tbody.querySelectorAll('.row-check').forEach(cb => {
+            if (cb.closest('tr').style.display === 'none') return;
+            cb.checked = on;
+        });
+        updateSelectedCount();
+    };
+    updateSelectedCount();
+
+    const extras = [];
+    if (a.missing_skills.length) {
+        extras.push(`Skills referenced by workflows but missing from the zip: ${a.missing_skills.map(esc).join(', ')}`);
+    }
+    if (a.invalid_workflows.length) {
+        extras.push(`Workflow manifests that failed validation (excluded): ${a.invalid_workflows.map(esc).join(', ')}`);
+    }
+    if (a.invalid_skills.length) {
+        extras.push(`Skills without a valid SKILL.md (excluded): ${a.invalid_skills.map(esc).join(', ')}`);
+    }
+    if (a.orphan_policies.length) {
+        extras.push(`Policy manifests without a workflow in the zip (excluded): ${a.orphan_policies.map(esc).join(', ')}`);
+    }
+    if (a.other_entries.length) {
+        // Group by top-level directory — dozens of loose file names make an
+        // unreadable wall (same idiom as the skills import page).
+        const groups = {};
+        a.other_entries.forEach(p => {
+            const top = p.includes('/') ? p.split('/')[0] + '/' : p;
+            groups[top] = (groups[top] || 0) + 1;
+        });
+        const summary = Object.entries(groups).sort((x, y) => x[0].localeCompare(y[0]))
+            .map(([d, n]) => d.endsWith('/') ? `${d} (${n} files)` : esc(d)).join(', ');
+        extras.push(`Other root entries (ignored): ${summary}`);
+    }
+    if (a.warnings.length) {
+        extras.push(a.warnings.map(esc).join(' · '));
+    }
+    if (extras.length) {
+        extras.unshift('Existing rows default to Skip; overwrite keeps their active flag.');
+    }
+    document.getElementById('analysis-extras').textContent = extras.join(' — ');
+}
+
+function updateSelectedCount() {
+    // Count rows that will actually import: checked AND action is
+    // import/overwrite. Flipping a checked row's action to "Skip" must
+    // decrement — and at 0 the button disables.
+    let n = 0;
+    document.querySelectorAll('#analysis-tbody tr[data-kind]').forEach(tr => {
+        if (!tr.querySelector('.row-check').checked) return;
+        const action = tr.querySelector('.row-action').value;
+        if (action === 'import' || action === 'overwrite') n++;
+    });
+    document.getElementById('selected-count').textContent = n;
+    document.getElementById('btn-import').disabled = n === 0;
+}
+
+async function doImport() {
+    // Every analyzed row gets a decision — unchecked rows are "skip". The
+    // server requires each section to cover its analyzed name set exactly
+    // (policy keys are "<workflow> :: <policy>"), so nothing may be omitted.
+    const decisions = { workflows: {}, skills: {}, policies: {} };
+    document.querySelectorAll('#analysis-tbody tr[data-kind]').forEach(tr => {
+        const idx = Number(tr.dataset.idx);
+        const action = tr.querySelector('.row-check').checked
+            ? tr.querySelector('.row-action').value
+            : 'skip';
+        const kind = tr.dataset.kind;
+        if (kind === 'workflow') decisions.workflows[analysis.workflows[idx].name] = action;
+        else if (kind === 'skill') decisions.skills[analysis.skills[idx].name] = action;
+        else {
+            const p = analysis.policies[idx];
+            decisions.policies[`${p.workflow} :: ${p.name}`] = action;
+        }
+    });
+    const willImport = Object.values(decisions).some(section =>
+        Object.values(section).some(a => a === 'import' || a === 'overwrite'));
+    if (!willImport) { toast('Select at least one row to import.'); return; }
+
+    const fd = scopeFormData();          // same file — server re-validates
+    fd.append('decisions', JSON.stringify(decisions));
+
+    document.getElementById('btn-import').disabled = true;
+    try {
+        const result = await postZip('/api/admin/workflows/import', fd);
+        renderResults(result);
+        document.getElementById('analysis-card').style.display = 'none';
+        document.getElementById('results-card').style.display = '';
+        document.getElementById('results-card').scrollIntoView({ behavior: 'smooth' });
+    } catch (err) {
+        toast('Import failed: ' + err.message);
+        document.getElementById('btn-import').disabled = false;
+    }
+}
+
+const KIND_BADGE = {
+    workflow: 'bg-primary',
+    skill: 'bg-info',
+    policy: 'bg-dark',
+};
+
+function renderResults(result) {
+    const s = result.summary || {};
+    const badge = (label, n, cls) => n
+        ? `<span class="badge rounded-pill ${cls} me-2">${n} ${label}</span>` : '';
+    document.getElementById('results-summary').innerHTML =
+        badge('imported', s.imported, 'bg-success') +
+        badge('overwritten', s.overwritten, 'bg-warning') +
+        badge('skipped', s.skipped, 'bg-secondary') +
+        badge('errors', s.errors, 'bg-danger');
+
+    const statusBadge = st => st === 'error'
+        ? '<span class="badge rounded-pill bg-danger">error</span>'
+        : `<span class="badge rounded-pill bg-success">${esc(st)}</span>`;
+    document.getElementById('results-tbody').innerHTML = result.results.map(r => `
+        <tr>
+            <td>
+                <span class="badge rounded-pill ${KIND_BADGE[r.kind] || 'bg-secondary'}">${esc(r.kind)}</span>
+                <strong>${esc(r.name)}</strong>
+            </td>
+            <td>${esc(r.action)}</td>
+            <td>${statusBadge(r.status)}</td>
+            <td>${r.message ? `<span class="text-danger small">${esc(r.message)}</span>` : ''}</td>
+        </tr>`).join('');
+}
+
+function resetAll() {
+    zipFile = null;
+    analysis = null;
+    document.getElementById('zip-file').value = '';
+    document.getElementById('btn-analyze').disabled = true;
+    document.getElementById('analysis-card').style.display = 'none';
+    document.getElementById('results-card').style.display = 'none';
+    showUploadError('');
+    document.getElementById('upload-card').scrollIntoView({ behavior: 'smooth' });
+}
+</script>
+{% endblock %}

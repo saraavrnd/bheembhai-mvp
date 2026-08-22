@@ -27,19 +27,21 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from platform_api.dependencies import require_admin
 from platform_api.routers._skill_shared import (
     _get_skill_or_404,
     _skill_to_response,
+    collect_skill_files,
     republish_skill,
 )
 from platform_api.routers._workflow_shared import (
     _parse_policy_yaml,
     _parse_workflow_yaml,
     _policy_to_response,
+    _referenced_skill_names,
     _workflow_to_response,
     clone_referenced_skills,
 )
@@ -81,6 +83,13 @@ from platform_api.schemas.admin import (
     WorkflowCategoryResponse,
     WorkflowCategoryUpdate,
     WorkflowCreate,
+    WorkflowExportRequest,
+    WorkflowImportAnalyzeResponse,
+    WorkflowImportPolicyAnalysis,
+    WorkflowImportResponse,
+    WorkflowImportResult,
+    WorkflowImportSkillAnalysis,
+    WorkflowImportWorkflowAnalysis,
     WorkflowResponse,
     WorkflowUpdate,
 )
@@ -91,10 +100,16 @@ from platform_api.skill_import import (
     MAX_SINGLE_FILE_BYTES,
     MAX_UPLOAD_BYTES,
     ZipValidationError,
-    _normalize_entry_name,
-    _path_problem,
     analyze_zip,
     bundle_files_with_external,
+)
+from platform_api.workflow_zip import (
+    PolicyExport,
+    WorkflowExport,
+    build_workflows_zip,
+)
+from platform_api.workflow_zip import (
+    analyze_zip as analyze_workflow_zip,
 )
 
 if TYPE_CHECKING:
@@ -936,37 +951,14 @@ async def export_skills(
     total_bytes = 0
     total_entries = 0
     for name in sorted(by_name):
-        skill = by_name[name]
-        if not any(f.path == "SKILL.md" for f in skill.files):
+        ordered = collect_skill_files(by_name[name])
+        total_bytes += sum(len(c.encode("utf-8")) for c in ordered.values())
+        if total_bytes > MAX_DECOMPRESSED_BYTES:
             raise HTTPException(
-                422, f"Skill '{name}' has no SKILL.md — add files before exporting"
+                422,
+                "export decompresses beyond the "
+                f"{MAX_DECOMPRESSED_BYTES // (1024 * 1024)} MB budget",
             )
-        ordered: dict[str, str] = {}
-        for f in sorted(skill.files, key=lambda f: f.path):
-            path = _normalize_entry_name(f.path)
-            problem = _path_problem(path)
-            if problem is not None:
-                raise HTTPException(422, f"Skill '{name}': {problem}")
-            if path in ordered:
-                raise HTTPException(
-                    422,
-                    f"Skill '{name}': files collide after path normalization: {path}",
-                )
-            size = len(f.content.encode("utf-8"))
-            if size > MAX_SINGLE_FILE_BYTES:
-                raise HTTPException(
-                    422,
-                    f"Skill '{name}': file too large: {path} (max "
-                    f"{MAX_SINGLE_FILE_BYTES // (1024 * 1024)} MB uncompressed)",
-                )
-            total_bytes += size
-            if total_bytes > MAX_DECOMPRESSED_BYTES:
-                raise HTTPException(
-                    422,
-                    "export decompresses beyond the "
-                    f"{MAX_DECOMPRESSED_BYTES // (1024 * 1024)} MB budget",
-                )
-            ordered[path] = f.content
         bundles.append((name, ordered))
         total_entries += len(ordered)
     if total_entries > MAX_ENTRY_COUNT:
@@ -988,6 +980,794 @@ async def export_skills(
             "Cache-Control": "no-store",
         },
     )
+
+
+# ── Workflow zip export/import ──────────────────────────────────────────────
+
+
+async def _resolve_import_scope(db: AsyncSession, project_id: str | None) -> str | None:
+    """Verify the project for project-scoped workflow import/export (404 on
+    unknown). Returns the normalized scope: None → platform."""
+    if project_id is None:
+        return None
+    project = await db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, f"Project {project_id} not found")
+    return project_id
+
+
+async def _existing_scoped_workflows(
+    db: AsyncSession, project_id: str | None, pairs: list[tuple[str, int]]
+) -> dict[tuple[str, int], Workflow]:
+    """Existing workflows in scope keyed by (name, version)."""
+    if not pairs:
+        return {}
+    stmt = select(Workflow).where(
+        Workflow.project_id.is_(None)
+        if project_id is None
+        else Workflow.project_id == project_id
+    )
+    stmt = stmt.where(
+        or_(*[
+            and_(Workflow.name == n, Workflow.version == v) for n, v in pairs
+        ])
+    )
+    result = await db.execute(stmt)
+    return {(w.name, w.version): w for w in result.scalars().all()}
+
+
+async def _existing_scoped_skill_names(
+    db: AsyncSession, project_id: str | None, names: list[str]
+) -> set[str]:
+    """Names among *names* that already exist as skills in the scope."""
+    if not names:
+        return set()
+    result = await db.execute(
+        select(Skill.name).where(
+            Skill.project_id.is_(None)
+            if project_id is None
+            else Skill.project_id == project_id,
+            Skill.name.in_(names),
+        )
+    )
+    return set(result.scalars().all())
+
+
+async def _effective_skill(
+    db: AsyncSession, project_id: str | None, name: str
+) -> Skill | None:
+    """The skill that actually runs for *name* in scope: project skills
+    shadow platform skills (the engine's resolution), so export the
+    project row when it exists and falls back to the platform row."""
+    if project_id is not None:
+        result = await db.execute(
+            select(Skill)
+            .options(selectinload(Skill.files))
+            .where(Skill.project_id == project_id, Skill.name == name)
+        )
+        skill = result.scalars().first()
+        if skill is not None:
+            return skill
+    result = await db.execute(
+        select(Skill)
+        .options(selectinload(Skill.files))
+        .where(Skill.project_id.is_(None), Skill.name == name)
+    )
+    return result.scalars().first()
+
+
+async def _upsert_skill_scoped(
+    db: AsyncSession,
+    *,
+    project_id: str | None,
+    name: str,
+    description: str,
+    model: str,
+    compatibility: str | None,
+    files: dict[str, str],
+) -> Skill:
+    """Upsert a skill in the given scope (project_id None → platform).
+
+    Platform scope delegates to the shared ``upsert_skill``; project scope
+    mirrors it with the same replace-file-set-exactly semantics — one helper
+    so the two import paths cannot drift.
+    """
+    if project_id is None:
+        return await upsert_skill(
+            db,
+            name=name,
+            description=description,
+            model=model,
+            compatibility=compatibility,
+            files=files,
+        )
+    result = await db.execute(
+        select(Skill).where(Skill.project_id == project_id, Skill.name == name)
+    )
+    skill = result.scalar_one_or_none()
+    if skill is None:
+        skill = Skill(
+            project_id=project_id,
+            name=name,
+            description=description,
+            model=model,
+            compatibility=compatibility,
+        )
+        db.add(skill)
+        await db.flush()
+    else:
+        skill.description = description
+        skill.model = model
+        skill.compatibility = compatibility
+
+    existing_result = await db.execute(
+        select(SkillFile).where(SkillFile.skill_id == skill.id)
+    )
+    existing_by_path: dict[str, SkillFile] = {
+        f.path: f for f in existing_result.scalars().all()
+    }
+    for fpath, fcontent in files.items():
+        ef = existing_by_path.pop(fpath, None)
+        if ef is None:
+            db.add(SkillFile(skill_id=skill.id, path=fpath, content=fcontent))
+        else:
+            ef.content = fcontent
+    for stale in existing_by_path.values():
+        await db.delete(stale)
+    await db.flush()
+    return skill
+
+
+async def _policies_of(db: AsyncSession, workflow: Workflow) -> list[Policy]:
+    result = await db.execute(select(Policy).where(Policy.workflow_id == workflow.id))
+    return list(result.scalars().all())
+
+
+async def _category_by_name(
+    db: AsyncSession, name: str | None
+) -> WorkflowCategory | None:
+    """Category row by name (shared reference data across both scopes)."""
+    if not name:
+        return None
+    result = await db.execute(
+        select(WorkflowCategory).where(WorkflowCategory.name == name)
+    )
+    return result.scalar_one_or_none()
+
+
+def _parse_workflow_decisions(decisions: str) -> dict[str, dict[str, str]]:
+    """Validate the namespaced decisions JSON:
+    ``{"workflows": {...}, "skills": {...}, "policies": {...}}`` — each
+    section maps names to import|overwrite|skip (absent sections = empty)."""
+    try:
+        parsed = json.loads(decisions)
+    except json.JSONDecodeError:
+        raise HTTPException(422, "decisions must be a JSON object") from None
+    if not isinstance(parsed, dict):
+        raise HTTPException(422, "decisions must be a JSON object")
+
+    out: dict[str, dict[str, str]] = {}
+    for section in ("workflows", "skills", "policies"):
+        sub = parsed.get(section, {})
+        if not isinstance(sub, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in sub.items()
+        ):
+            raise HTTPException(
+                422, f"decisions.{section} must map names to actions"
+            )
+        bad = {k: v for k, v in sub.items() if v not in _VALID_DECISIONS}
+        if bad:
+            raise HTTPException(
+                422,
+                f"invalid decision action(s) in {section}: "
+                f"{', '.join(sorted(bad))}",
+            )
+        out[section] = sub
+    return out
+
+
+def _check_decision_coverage(
+    section: str, zip_names: set[str], decision_names: set[str]
+) -> None:
+    missing = sorted(zip_names - decision_names)
+    unknown = sorted(decision_names - zip_names)
+    if missing or unknown:
+        raise HTTPException(
+            422,
+            f"decisions.{section} must cover exactly the analyzed rows — "
+            f"missing: {', '.join(missing) or 'none'}; "
+            f"unknown: {', '.join(unknown) or 'none'}",
+        )
+
+
+async def _workflow_import_analysis_response(
+    db: AsyncSession, project_id: str | None, analysis
+) -> WorkflowImportAnalyzeResponse:
+    """Zip analysis → analysis-table response with scope-aware exists flags."""
+    wf_pairs = [(w.name, w.version) for w in analysis.workflows]
+    existing_wfs = await _existing_scoped_workflows(db, project_id, wf_pairs)
+
+    skill_names = [b.name for b in analysis.skills]
+    existing_skills = await _existing_scoped_skill_names(db, project_id, skill_names)
+    platform_skills: set[str] = set()
+    if project_id is not None:
+        result = await db.execute(
+            select(Skill.name).where(
+                Skill.project_id.is_(None), Skill.name.in_(skill_names)
+            )
+        )
+        platform_skills = set(result.scalars().all())
+
+    policy_rows: list[WorkflowImportPolicyAnalysis] = []
+    for w in analysis.workflows:
+        wf_row = existing_wfs.get((w.name, w.version))
+        existing_policies = await _policies_of(db, wf_row) if wf_row else []
+        for p in w.policies:
+            policy_rows.append(WorkflowImportPolicyAnalysis(
+                workflow=w.name,
+                name=p.name,
+                version=p.version,
+                warnings=p.warnings,
+                exists=any(
+                    pol.name == p.name and pol.version == p.version
+                    for pol in existing_policies
+                ),
+            ))
+
+    return WorkflowImportAnalyzeResponse(
+        workflows=[
+            WorkflowImportWorkflowAnalysis(
+                name=w.name,
+                slug=w.slug,
+                version=w.version,
+                description=w.description,
+                category=w.category,
+                warnings=w.warnings,
+                referenced_skills=w.referenced_skills,
+                policy_names=[f"{p.name} v{p.version}" for p in w.policies],
+                exists=(w.name, w.version) in existing_wfs,
+            )
+            for w in analysis.workflows
+        ],
+        skills=[
+            WorkflowImportSkillAnalysis(
+                name=b.name,
+                description=b.description,
+                model=b.model,
+                warnings=b.warnings,
+                files=list(b.files) + list(b.external_files),
+                exists=b.name in existing_skills,
+                platform_exists=b.name in platform_skills,
+            )
+            for b in analysis.skills
+        ],
+        policies=policy_rows,
+        missing_skills=analysis.missing_skills,
+        invalid_workflows=analysis.invalid_workflows,
+        invalid_skills=analysis.invalid_skills,
+        orphan_policies=analysis.orphan_policies,
+        other_entries=analysis.other_entries,
+        warnings=analysis.warnings,
+    )
+
+
+@router.post("/workflows/export")
+async def export_workflows(
+    body: WorkflowExportRequest,
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> Response:
+    """Zip selected workflows (platform or project scope), import-compatible.
+
+    The zip round-trips through ``POST /workflows/import``: one
+    ``workflows/<slug>.yaml`` manifest per workflow, its policies under
+    ``policies/<slug>/``, and every referenced skill under ``skills/`` —
+    project skills win, platform skills fill the gaps (the engine resolves
+    the same way at run init). Unknown ids → 404; a workflow slug collision
+    or an unexportable skill → 422; import budgets hold for the whole zip so
+    the artifact is always re-importable.
+
+    ``project_id`` pins the scope strictly. Without it (the platform list
+    page shows every scope in one table), the selection may mix platform and
+    project workflows: each workflow's skills then resolve in ITS OWN scope,
+    and same-named entries whose scopes disagree fail with an actionable 422
+    rather than shipping the wrong content.
+    """
+    await _resolve_import_scope(db, body.project_id)
+    ids = list(dict.fromkeys(body.workflow_ids))  # dedupe, preserve order
+    stmt = (
+        select(Workflow)
+        .options(selectinload(Workflow.policies))
+        .where(Workflow.id.in_(ids))
+    )
+    if body.project_id is not None:
+        stmt = stmt.where(Workflow.project_id == body.project_id)
+    result = await db.execute(stmt)
+    by_id = {str(w.id): w for w in result.scalars().unique().all()}
+    missing = sorted(set(ids) - set(by_id))
+    if missing:
+        raise HTTPException(
+            404, f"Workflow(s) not found in this scope: {', '.join(missing)}"
+        )
+
+    # Mixed-scope selection: a zip entry can hold one copy of a (name,
+    # version) pair — a workflow shadowing a platform workflow of the same
+    # name+version must be exported separately, not silently merged.
+    name_scopes: dict[tuple[str, int], set[str]] = {}
+    for wf in by_id.values():
+        name_scopes.setdefault((wf.name, wf.version), set()).add(
+            str(wf.project_id) if wf.project_id else "platform"
+        )
+    cross = [
+        f"'{name}' v{version}"
+        for (name, version), scopes in sorted(name_scopes.items())
+        if len(scopes) > 1
+    ]
+    if cross:
+        raise HTTPException(
+            422,
+            "workflow(s) "
+            f"{', '.join(cross)} exist in more than one scope — the zip can "
+            "hold one copy per name; uncheck the duplicates and export each "
+            "scope separately",
+        )
+
+    exports: list[WorkflowExport] = []
+    skill_content_by_name: dict[str, tuple[dict[str, str], str]] = {}
+    total_bytes = 0
+    total_entries = 0
+    for wid in ids:
+        wf = by_id[wid]
+        if len(wf.yaml_content.encode("utf-8")) > MAX_SINGLE_FILE_BYTES:
+            raise HTTPException(
+                422,
+                f"Workflow '{wf.name}': YAML too large (max "
+                f"{MAX_SINGLE_FILE_BYTES // (1024 * 1024)} MB uncompressed)",
+            )
+
+        skills: dict[str, dict[str, str]] = {}
+        for sname in sorted(
+            _referenced_skill_names(_parse_workflow_yaml(wf.yaml_content))
+        ):
+            # Mixed scope: resolve in the workflow's OWN scope (project skill
+            # shadows the platform skill, exactly like run init).
+            skill = await _effective_skill(db, wf.project_id, sname)
+            if skill is None:
+                logger.warning(
+                    "Workflow %s references skill '%s' missing from scope — "
+                    "skipped in export",
+                    wf.id, sname,
+                )
+                continue
+            ordered = collect_skill_files(skill)
+            prev = skill_content_by_name.get(sname)
+            if prev is not None and prev[0] != ordered:
+                raise HTTPException(
+                    422,
+                    f"skill '{sname}' resolves to different content for "
+                    f"workflow '{prev[1]}' and workflow '{wf.name}' (their "
+                    "scopes differ) — uncheck one of them and export each "
+                    "scope separately",
+                )
+            if prev is None:
+                skill_content_by_name[sname] = (ordered, wf.name)
+            skills[sname] = ordered
+            total_bytes += sum(len(c.encode("utf-8")) for c in ordered.values())
+            if total_bytes > MAX_DECOMPRESSED_BYTES:
+                raise HTTPException(
+                    422,
+                    "export decompresses beyond the "
+                    f"{MAX_DECOMPRESSED_BYTES // (1024 * 1024)} MB budget",
+                )
+            total_entries += len(ordered)
+            if total_entries > MAX_ENTRY_COUNT:
+                raise HTTPException(422, f"too many entries (max {MAX_ENTRY_COUNT})")
+
+        # manifests + policies count against the zip entry budget too
+        total_entries += 1 + len(wf.policies)
+        if total_entries > MAX_ENTRY_COUNT:
+            raise HTTPException(422, f"too many entries (max {MAX_ENTRY_COUNT})")
+
+        category = (
+            await db.get(WorkflowCategory, wf.workflow_category_id)
+            if wf.workflow_category_id
+            else None
+        )
+        exports.append(WorkflowExport(
+            name=wf.name,
+            version=wf.version,
+            yaml_content=wf.yaml_content,
+            description=wf.description,
+            category=category.name if category else None,
+            is_active=wf.is_active,
+            policies=[
+                PolicyExport(
+                    name=p.name,
+                    version=p.version,
+                    yaml_content=p.yaml_content,
+                    is_active=p.is_active,
+                )
+                for p in wf.policies
+            ],
+            skills=skills,
+        ))
+
+    try:
+        data = build_workflows_zip(exports)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    filename = f"bheembhai-workflows-{datetime.now(timezone.utc):%Y%m%d}.zip"
+    logger.info(
+        "Workflow export: %d workflows, %d entries, %d bytes → %s",
+        len(exports), total_entries, len(data), filename,
+    )
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.post("/workflows/import/analyze")
+async def analyze_workflow_import(
+    zip_file: UploadFile = File(...),
+    project_id: str | None = Form(None),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> WorkflowImportAnalyzeResponse:
+    """Analyze an uploaded workflows zip (stateless — the zip is never stored).
+
+    Returns one row per importable workflow / skill / policy with scope-aware
+    exists flags (platform rows for platform scope; project rows — plus a
+    ``platform_exists`` hint on skills — for project scope).
+    """
+    await _resolve_import_scope(db, project_id)
+    data = await _read_zip_upload(zip_file)
+    try:
+        analysis = analyze_workflow_zip(data)
+    except ZipValidationError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    logger.info(
+        "Workflow import analysis: %d workflows, %d skills, %d policies",
+        len(analysis.workflows), len(analysis.skills),
+        sum(len(w.policies) for w in analysis.workflows),
+    )
+    return await _workflow_import_analysis_response(db, project_id, analysis)
+
+
+_WORKFLOW_NAME_MAX = 100  # mirrors WorkflowCreate.name max_length
+
+
+async def _import_one_workflow(
+    db: AsyncSession,
+    w,
+    action: str,
+    existing_wfs: dict[tuple[str, int], Workflow],
+    project_id: str | None,
+    results: list[WorkflowImportResult],
+) -> Workflow | None:
+    """One workflow row in its own savepoint; returns the row policies attach
+    to (None when skipped/errored)."""
+    if action == "skip":
+        results.append(WorkflowImportResult(
+            kind="workflow", name=w.name, action=action, status="skipped",
+        ))
+        return None
+    if len(w.name) > _WORKFLOW_NAME_MAX:
+        results.append(WorkflowImportResult(
+            kind="workflow", name=w.name, action=action, status="error",
+            message=f"workflow name exceeds {_WORKFLOW_NAME_MAX} characters",
+        ))
+        return None
+
+    existing = existing_wfs.get((w.name, w.version))
+    try:
+        async with db.begin_nested():
+            if action == "import" and existing is not None:
+                # Mirrors the 409 text of POST /workflows — but as a per-row
+                # error so the rest of the batch still imports.
+                results.append(WorkflowImportResult(
+                    kind="workflow", name=w.name, action=action, status="error",
+                    message=(
+                        f"A workflow named '{w.name}' v{w.version} already "
+                        "exists — choose Overwrite"
+                    ),
+                ))
+                return None
+            if _parse_workflow_yaml(w.yaml_content) is None:
+                results.append(WorkflowImportResult(
+                    kind="workflow", name=w.name, action=action, status="error",
+                    message="workflow YAML unparseable — cannot import",
+                ))
+                return None
+
+            category = await _category_by_name(db, w.category)
+            if category is None and w.category:
+                category = WorkflowCategory(name=w.category, description="")
+                db.add(category)
+                await db.flush()
+
+            if existing is not None:
+                existing.yaml_content = w.yaml_content
+                existing.description = w.description
+                if category is not None:
+                    existing.workflow_category_id = category.id
+                # is_active untouched — overwriting never deactivates a live workflow
+                row = existing
+                status = "overwritten"
+            else:
+                row = Workflow(
+                    project_id=project_id,
+                    name=w.name,
+                    version=w.version,
+                    description=w.description,
+                    yaml_content=w.yaml_content,
+                    is_active=False,  # imported workflows land inactive
+                    workflow_category_id=category.id if category else None,
+                )
+                db.add(row)
+                await db.flush()
+                status = "imported"
+            results.append(WorkflowImportResult(
+                kind="workflow", name=w.name, action=action, status=status,
+                message="no category in the zip — workflow left uncategorized"
+                if w.category is None else None,
+                workflow_id=str(row.id),
+            ))
+            return row
+    except Exception as exc:  # per-row isolation is the point
+        logger.exception("Workflow import failed: %s", w.name)
+        results.append(WorkflowImportResult(
+            kind="workflow", name=w.name, action=action, status="error",
+            message=str(exc),
+        ))
+        return None
+
+
+async def _import_one_skill(
+    request: Request,
+    db: AsyncSession,
+    bundle,
+    action: str,
+    project_id: str | None,
+    existing_names: set[str],
+    results: list[WorkflowImportResult],
+) -> None:
+    """One skill row in its own savepoint (mirrors the skill-import path)."""
+    if action == "skip":
+        results.append(WorkflowImportResult(
+            kind="skill", name=bundle.name, action=action, status="skipped",
+        ))
+        return
+    if len(bundle.name) > _SKILL_NAME_MAX:
+        results.append(WorkflowImportResult(
+            kind="skill", name=bundle.name, action=action, status="error",
+            message=f"skill name exceeds {_SKILL_NAME_MAX} characters",
+        ))
+        return
+    try:
+        async with db.begin_nested():
+            if action == "import" and bundle.name in existing_names:
+                results.append(WorkflowImportResult(
+                    kind="skill", name=bundle.name, action=action, status="error",
+                    message=(
+                        f"A skill named '{bundle.name}' already exists — "
+                        "choose Overwrite"
+                    ),
+                ))
+                return
+            files = bundle_files_with_external(bundle)
+            skill = await _upsert_skill_scoped(
+                db,
+                project_id=project_id,
+                name=bundle.name,
+                description=bundle.description,
+                model=bundle.model,
+                compatibility=bundle.compatibility,
+                files=files,
+            )
+            # Publish-on-write inside the savepoint: a publish failure rolls
+            # this skill's import back into a per-skill error row.
+            store = getattr(request.app.state, "object_store", None)
+            if store is not None:
+                await republish_skill(db, store, skill_id=str(skill.id))
+            status = "overwritten" if (
+                action == "overwrite" and bundle.name in existing_names
+            ) else "imported"
+            message = None
+            if bundle.external_files:
+                message = (
+                    f"included {len(bundle.external_files)} referenced "
+                    "file(s) from outside the skill dir — SKILL.md "
+                    "references updated"
+                )
+            results.append(WorkflowImportResult(
+                kind="skill", name=bundle.name, action=action, status=status,
+                message=message, skill_id=str(skill.id),
+            ))
+    except Exception as exc:
+        logger.exception("Skill import failed: %s", bundle.name)
+        results.append(WorkflowImportResult(
+            kind="skill", name=bundle.name, action=action, status="error",
+            message=str(exc),
+        ))
+
+
+async def _import_one_policy(
+    db: AsyncSession,
+    workflow_row: Workflow | None,
+    existing_workflow: Workflow | None,
+    workflow_name: str,
+    p,
+    action: str,
+    project_id: str | None,
+    results: list[WorkflowImportResult],
+) -> None:
+    """One policy row in its own savepoint.
+
+    Attaches to the workflow row this batch produced, falling back to the
+    workflow row that already exists in scope — the same row the analyze
+    table computed the policy's exists flag against. Neither present → the
+    workflow was skipped/errored without a row to attach to.
+    """
+    target = workflow_row or existing_workflow
+    label = f"{workflow_name} :: {p.name}"
+    if action == "skip":
+        results.append(WorkflowImportResult(
+            kind="policy", name=label, action=action, status="skipped",
+        ))
+        return
+    if target is None:
+        results.append(WorkflowImportResult(
+            kind="policy", name=label, action=action, status="error",
+            message=(
+                f"workflow '{workflow_name}' not imported — import or "
+                "overwrite its workflow first"
+            ),
+        ))
+        return
+    if _parse_policy_yaml(p.yaml_content) is None:
+        results.append(WorkflowImportResult(
+            kind="policy", name=label, action=action, status="error",
+            message="policy YAML unparseable — cannot import",
+        ))
+        return
+
+    existing_policy = next(
+        (
+            pol for pol in await _policies_of(db, target)
+            if pol.name == p.name and pol.version == p.version
+        ),
+        None,
+    )
+    try:
+        async with db.begin_nested():
+            if action == "import" and existing_policy is not None:
+                results.append(WorkflowImportResult(
+                    kind="policy", name=label, action=action, status="error",
+                    message=(
+                        f"A policy named '{p.name}' v{p.version} already "
+                        f"exists on '{workflow_name}' — choose Overwrite"
+                    ),
+                ))
+                return
+            if existing_policy is not None:
+                existing_policy.yaml_content = p.yaml_content
+                row = existing_policy
+                status = "overwritten"
+            else:
+                row = Policy(
+                    project_id=project_id,
+                    workflow_id=target.id,
+                    name=p.name,
+                    version=p.version,
+                    yaml_content=p.yaml_content,
+                    is_active=False,  # imported policies land inactive
+                )
+                db.add(row)
+                await db.flush()
+                status = "imported"
+            results.append(WorkflowImportResult(
+                kind="policy", name=label, action=action, status=status,
+                policy_id=str(row.id),
+            ))
+    except Exception as exc:
+        logger.exception("Policy import failed: %s", label)
+        results.append(WorkflowImportResult(
+            kind="policy", name=label, action=action, status="error",
+            message=str(exc),
+        ))
+
+
+@router.post("/workflows/import")
+async def import_workflows(
+    request: Request,
+    zip_file: UploadFile = File(...),
+    decisions: str = Form(...),
+    project_id: str | None = Form(None),
+    db: AsyncSession = Depends(get_session),
+    _admin: tuple[User, Identity] = Depends(require_admin),
+) -> WorkflowImportResponse:
+    """Apply per-row import decisions from the analysis step.
+
+    The zip is re-uploaded and re-validated (stateless two-phase flow); the
+    decisions are namespaced — ``{"workflows": {...}, "skills": {...},
+    "policies": {...}}`` — and each section must cover its analyzed name set
+    exactly, catching a zip that changed between phases. Policy keys are
+    ``"<workflow> :: <policy>"``. Workflows run first (policies attach to
+    their rows), then skills, then policies; every row runs in its own
+    savepoint so one bad row never kills the batch. Imported workflows and
+    policies land ``is_active=False``; categories match by name and are
+    created when missing.
+    """
+    await _resolve_import_scope(db, project_id)
+    data = await _read_zip_upload(zip_file)
+    try:
+        analysis = analyze_workflow_zip(data)
+    except ZipValidationError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    parsed = _parse_workflow_decisions(decisions)
+    policy_keys = {
+        f"{w.name} :: {p.name}"
+        for w in analysis.workflows
+        for p in w.policies
+    }
+    _check_decision_coverage(
+        "workflows", {w.name for w in analysis.workflows},
+        set(parsed["workflows"]),
+    )
+    _check_decision_coverage(
+        "skills", {b.name for b in analysis.skills}, set(parsed["skills"]),
+    )
+    _check_decision_coverage("policies", policy_keys, set(parsed["policies"]))
+
+    existing_wfs = await _existing_scoped_workflows(
+        db, project_id, [(w.name, w.version) for w in analysis.workflows]
+    )
+    existing_skill_names = await _existing_scoped_skill_names(
+        db, project_id, [b.name for b in analysis.skills]
+    )
+
+    results: list[WorkflowImportResult] = []
+
+    # Workflows first — policies attach to the rows this batch produced.
+    workflow_rows: dict[str, Workflow] = {}
+    for w in analysis.workflows:
+        row = await _import_one_workflow(
+            db, w, parsed["workflows"][w.name], existing_wfs, project_id, results
+        )
+        if row is not None:
+            workflow_rows[w.name] = row
+
+    # Skills are independent of the workflow rows.
+    for b in analysis.skills:
+        await _import_one_skill(
+            request, db, b, parsed["skills"][b.name], project_id,
+            existing_skill_names, results,
+        )
+
+    for w in analysis.workflows:
+        for p in w.policies:
+            await _import_one_policy(
+                db, workflow_rows.get(w.name),
+                existing_wfs.get((w.name, w.version)),
+                w.name, p,
+                parsed["policies"][f"{w.name} :: {p.name}"], project_id, results,
+            )
+
+    await db.commit()
+
+    summary = {"imported": 0, "overwritten": 0, "skipped": 0, "errors": 0}
+    for result in results:
+        # per-row status is "error" (singular); the summary bucket is plural
+        summary["errors" if result.status == "error" else result.status] += 1
+    logger.info("Workflow import complete: %s", summary)
+    return WorkflowImportResponse(results=results, summary=summary)
 
 
 # ── Skill Files ───────────────────────────────────────────────────────────────
