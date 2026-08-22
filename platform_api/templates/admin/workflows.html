@@ -10,10 +10,35 @@
 {% endblock %}
 
 {% block content %}
+<style>
+    /* Toast — same idiom as the skills pages */
+    .bb-toast {
+        position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%);
+        background: #3e2f26; color: #fefcf7; padding: 10px 20px; border-radius: 10px;
+        font-size: 12.5px; z-index: 200; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+        animation: bbFade 0.18s ease-out; max-width: 80vw;
+    }
+    @keyframes bbFade { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+    /* The theme moves every native checkbox offscreen and only draws a styled
+       box when a <label> follows the input (Materialize pattern). Our
+       selection checkboxes carry no labels — restore the native control. */
+    #check-all, .row-check {
+        position: static !important;
+        left: auto !important;
+        opacity: 1 !important;
+        cursor: pointer;
+    }
+</style>
 <div class="box">
     <div class="box-header with-border">
         <h4 class="box-title">Workflows</h4>
         <div class="box-controls pull-right">
+            <button class="btn btn-info btn-sm me-1" id="btn-export" onclick="exportSelected()" disabled>
+                <i class="ti-download"></i> Export ZIP (<span id="export-count">0</span>)
+            </button>
+            <a class="btn btn-success btn-sm me-1" href="/admin/workflows/import">
+                <i class="ti-upload"></i> Import ZIP
+            </a>
             <button class="btn btn-primary btn-sm" onclick="showCreateModal()"><i class="ti-plus"></i> Create Workflow</button>
         </div>
     </div>
@@ -30,6 +55,7 @@
             <table class="table table-hover mb-0" id="workflows-table">
                 <thead>
                     <tr>
+                        <th style="width: 36px;"><input type="checkbox" id="check-all" title="Select all"></th>
                         <th>Name</th>
                         <th>Project</th>
                         <th>Category</th>
@@ -43,7 +69,7 @@
                     </tr>
                 </thead>
                 <tbody id="workflows-tbody">
-                    <tr><td colspan="10" class="text-center text-muted">Loading...</td></tr>
+                    <tr><td colspan="11" class="text-center text-muted">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -123,17 +149,23 @@
 let workflowsData = [];
 let projectsList = [];
 let categoriesList = [];
+let selectedIds = new Set();  // export selection keyed by workflow id
 
 function loadWorkflows() {
     fetch('/api/admin/workflows')
         .then(r => { if (!r.ok) throw new Error(r.statusText); return r.json(); })
         .then(data => {
             workflowsData = data;
+            // Drop selections for workflows that no longer exist — otherwise
+            // a later export would 404 on the stale id.
+            for (const id of Array.from(selectedIds)) {
+                if (!data.some(w => w.id === id)) selectedIds.delete(id);
+            }
             renderTable();
         })
         .catch(err => {
             document.getElementById('workflows-tbody').innerHTML =
-                `<tr><td colspan="10" class="text-center text-danger">Failed to load workflows: ${err.message}</td></tr>`;
+                `<tr><td colspan="11" class="text-center text-danger">Failed to load workflows: ${err.message}</td></tr>`;
         });
 }
 
@@ -157,8 +189,9 @@ function loadCategories() {
 function renderTable() {
     const tbody = document.getElementById('workflows-tbody');
     if (!workflowsData.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No workflows yet. Create one!</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="11" class="text-center text-muted">No workflows yet. Create one!</td></tr>';
         BBTableSearch.apply('workflows-table');
+        updateExportCount();
         return;
     }
     tbody.innerHTML = workflowsData.map(w => {
@@ -190,6 +223,7 @@ function renderTable() {
 
         return `
             <tr data-search="${esc(w.name)} ${isPlatform ? 'platform' : esc(w.project_name || '')} ${esc(w.category_name || '')}">
+                <td><input type="checkbox" class="row-check" data-id="${w.id}" ${selectedIds.has(w.id) ? 'checked' : ''}></td>
                 <td>
                     <a href="/admin/workflows/${w.id}" class="text-decoration-none fw-bold">${esc(w.name)}</a>
                 </td>
@@ -208,7 +242,96 @@ function renderTable() {
                 </td>
             </tr>`;
     }).join('');
+
+    // Check-all toggles only the VISIBLE rows; selections survive filtering
+    // (export ships everything selected, hidden rows included).
+    const checkAll = document.getElementById('check-all');
+    checkAll.checked = false;
+    checkAll.onclick = function () {
+        const on = this.checked;
+        tbody.querySelectorAll('.row-check').forEach(cb => {
+            if (cb.closest('tr').style.display === 'none') return;
+            if (cb.checked !== on) {
+                cb.checked = on;
+                if (on) selectedIds.add(cb.dataset.id);
+                else selectedIds.delete(cb.dataset.id);
+            }
+        });
+        updateExportCount();
+    };
+    // Workflow ids come from the API — read them from the DOM, never inline JS.
+    tbody.querySelectorAll('.row-check').forEach(cb => {
+        cb.addEventListener('change', () => {
+            if (cb.checked) selectedIds.add(cb.dataset.id);
+            else selectedIds.delete(cb.dataset.id);
+            updateExportCount();
+        });
+    });
+    updateExportCount();
     BBTableSearch.apply('workflows-table');
+}
+
+function updateExportCount() {
+    const n = selectedIds.size;
+    document.getElementById('export-count').textContent = n;
+    document.getElementById('btn-export').disabled = n === 0;
+    const visible = Array.from(document.querySelectorAll('.row-check'))
+        .filter(cb => cb.closest('tr').style.display !== 'none');
+    document.getElementById('check-all').checked =
+        visible.length > 0 && visible.every(cb => cb.checked);
+}
+
+async function exportSelected() {
+    const ids = Array.from(selectedIds).sort();
+    if (!ids.length) return;
+    const btn = document.getElementById('btn-export');
+    btn.disabled = true;
+    try {
+        const r = await fetch('/api/admin/workflows/export', {
+            method: 'POST',
+            headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+            body: JSON.stringify({ workflow_ids: ids })
+        });
+        if (!r.ok) {
+            let detail = r.statusText;
+            try {
+                const body = await r.json();
+                detail = detailText(body.detail) || detail;
+            } catch (e) { /* non-JSON error body — keep statusText */ }
+            throw new Error(detail);
+        }
+        const disp = r.headers.get('Content-Disposition') || '';
+        const m = disp.match(/filename="([^"]+)"/);
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = m ? m[1] : 'bheembhai-workflows.zip';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    } catch (err) {
+        toast('Export failed: ' + err.message);
+    } finally {
+        updateExportCount();
+    }
+}
+
+function detailText(detail) {
+    // Pydantic auto-422 bodies carry an array of {loc, msg, ...}; the
+    // endpoint's own HTTPExceptions carry a plain string.
+    if (typeof detail === 'string') return detail;
+    if (Array.isArray(detail)) return detail.map(d => d.msg || JSON.stringify(d)).join('; ');
+    return '';
+}
+
+function toast(msg) {
+    const el = document.createElement('div');
+    el.className = 'bb-toast';
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
 }
 
 // ── Create ──

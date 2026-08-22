@@ -179,6 +179,80 @@ class SkillExportRequest(BaseModel):
     names: list[str] = Field(..., min_length=1)
 
 
+# ── Workflow zip export/import ───────────────────────────────────────────────
+
+
+class WorkflowExportRequest(BaseModel):
+    """Workflow ids to zip, optionally scoped to a project (None → platform)."""
+
+    workflow_ids: list[str] = Field(..., min_length=1)
+    project_id: str | None = None
+
+
+class WorkflowImportWorkflowAnalysis(BaseModel):
+    """One workflow row of the import analysis table."""
+
+    name: str
+    slug: str
+    version: int
+    description: str
+    category: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    referenced_skills: list[str] = Field(default_factory=list)
+    policy_names: list[str] = Field(default_factory=list)  # "<name> v<n>"
+    exists: bool = False
+
+
+class WorkflowImportSkillAnalysis(BaseModel):
+    """One skill row of the import analysis table."""
+
+    name: str
+    description: str
+    model: str
+    warnings: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    exists: bool = False
+    platform_exists: bool = False  # project scope: a platform skill shares the name
+
+
+class WorkflowImportPolicyAnalysis(BaseModel):
+    """One policy row of the import analysis table."""
+
+    workflow: str  # the workflow name the policy belongs to
+    name: str
+    version: int
+    warnings: list[str] = Field(default_factory=list)
+    exists: bool = False
+
+
+class WorkflowImportAnalyzeResponse(BaseModel):
+    workflows: list[WorkflowImportWorkflowAnalysis] = Field(default_factory=list)
+    skills: list[WorkflowImportSkillAnalysis] = Field(default_factory=list)
+    policies: list[WorkflowImportPolicyAnalysis] = Field(default_factory=list)
+    missing_skills: list[str] = Field(default_factory=list)
+    invalid_workflows: list[str] = Field(default_factory=list)
+    invalid_skills: list[str] = Field(default_factory=list)
+    orphan_policies: list[str] = Field(default_factory=list)
+    other_entries: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class WorkflowImportResult(BaseModel):
+    kind: str  # workflow | skill | policy
+    name: str  # workflow name, skill name, or "<workflow> :: <policy>"
+    action: str  # import | overwrite | skip
+    status: str  # imported | overwritten | skipped | error
+    message: str | None = None
+    workflow_id: str | None = None
+    skill_id: str | None = None
+    policy_id: str | None = None
+
+
+class WorkflowImportResponse(BaseModel):
+    results: list[WorkflowImportResult] = Field(default_factory=list)
+    summary: dict[str, int] = Field(default_factory=dict)
+
+
 # ── Workflow categories ────────────────────────────────────────────────────
 
 

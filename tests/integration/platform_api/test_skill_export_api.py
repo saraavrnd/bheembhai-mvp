@@ -211,8 +211,10 @@ async def test_export_unsafe_path_422(client, world):
 
 
 async def test_export_per_file_budget_422(client, world, monkeypatch):
-    from platform_api.routers import admin as admin_router
-    monkeypatch.setattr(admin_router, "MAX_SINGLE_FILE_BYTES", 10)
+    # The per-file budget is enforced by the shared export validator
+    # (collect_skill_files) used by both the skill and workflow exporters.
+    from platform_api.routers import _skill_shared
+    monkeypatch.setattr(_skill_shared, "MAX_SINGLE_FILE_BYTES", 10)
     name = f"exp-{world['suffix']}-big"
     await _create_skill(name, {"SKILL.md": f"---\nname: {name}\n---\n# big\n"})
     resp = _export(client, [name])
