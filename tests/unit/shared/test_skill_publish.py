@@ -14,13 +14,13 @@ import tarfile
 import uuid
 
 from bheembhai.models.skill import Skill, SkillFile
+from bheembhai.protocols.storage import StoredHead
 from bheembhai.skill_publish import (
     BUNDLE_CONTENT_TYPE,
     pack_skill,
     publish_skill,
     skill_object_key,
 )
-from bheembhai.protocols.storage import StoredHead
 
 
 def _skill(name="story-design", paths=None) -> Skill:
@@ -79,8 +79,8 @@ def test_pack_is_sorted_by_path_not_insertion_order():
     backward = _skill(paths={"references/context.md": "b", "SKILL.md": "a"})
     assert pack_skill(forward) == pack_skill(backward)
     # and the archive itself lists entries in path order
-    members = [m.name for m in tarfile.open(
-        fileobj=io.BytesIO(pack_skill(forward)), mode="r:*").getmembers()]
+    with tarfile.open(fileobj=io.BytesIO(pack_skill(forward)), mode="r:*") as tf:
+        members = [m.name for m in tf.getmembers()]
     assert members == ["story-design/SKILL.md", "story-design/references/context.md"]
 
 
