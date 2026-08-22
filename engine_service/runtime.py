@@ -24,7 +24,13 @@ import traceback
 from dataclasses import dataclass
 from typing import Protocol
 
-from bheembhai.log_keys import RESULT_FILENAME, log_key, progress_key, result_key
+from bheembhai.log_keys import (
+    RESULT_FILENAME,
+    log_key,
+    progress_key,
+    result_key,
+    turn_outbox_key,
+)
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +67,9 @@ class ExecState:
     RUNNING = "running"
     AWAITING_RESULT = "awaiting_result"
     AWAITING_APPROVAL = "awaiting_approval"
+    # Ad-hoc sessions (ADR-016 §2): the run pauses between turns — a transition
+    # state (like AWAITING_APPROVAL), never a step-row exec_state.
+    AWAITING_INPUT = "awaiting_input"
     RETRYING = "retrying"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -467,6 +476,136 @@ async def reconcile(runtime: Runtime, h: Handle, deadline_s: float,
             await runtime.cleanup(h)
             return {"status": Result.FAILED_TIMEOUT,
                     "reason": f"exceeded {deadline_s}s deadline",
+                    "cost_usd": partial or 0,
+                    "cost_reported": partial is not None,
+                    "cost_partial": partial is not None}
+        await asyncio.sleep(POLL_INTERVAL)
+
+
+def _outbox_reply(reply: dict | None, expected_seq: int) -> dict | None:
+    """The completed-turn dict when an outbox object answers ``expected_seq``.
+
+    Exact seq match — the outbox at one attempt's key is overwritten per turn,
+    and a mismatched seq means the container has not seen this turn yet (keep
+    polling). None = not the turn we are waiting for.
+    """
+    if reply is None or reply.get("seq") != expected_seq:
+        return None
+    cost_usd = float(reply.get("cost_usd") or 0)
+    return {"status": Result.COMPLETED,
+            "response": reply.get("response", ""),
+            "cost_usd": cost_usd,
+            "cost_reported": bool(reply.get("cost_reported", cost_usd > 0)),
+            "cost_partial": bool(reply.get("cost_partial")),
+            "commit": reply.get("commit"),
+            "files": reply.get("files") or []}
+
+
+async def reconcile_turn(runtime: Runtime, h: Handle, expected_seq: int,
+                         deadline_s: float, *, turn_started_at: float | None = None,
+                         cancel_event: asyncio.Event | None = None,
+                         store=None) -> dict:
+    """Poll a LIVE session container until it answers turn ``expected_seq`` (ADR-016 §2).
+
+    The counterpart to reconcile() for ad-hoc session turns. Unlike reconcile(),
+    the happy path does NOT kill the container — the session lives on for the
+    next turn, so the caller must leave the handle valid. Terminal conditions:
+
+      - outbox at ``turns/<run>/<step>/<attempt>/outbox.json`` with
+        ``seq == expected_seq`` → completed with the turn's reply fields;
+      - cancel_event → CANCELLED sentinel (caller owns runtime.stop());
+      - container gone → failed_infra; exited without a matching reply after
+        the grace window → failed_incomplete (the caller cold-starts a fresh
+        incarnation for the next turn);
+      - deadline exceeded → failed_timeout + cleanup (a hung turn is stuck
+        work — the container is removed like any timed-out step).
+
+    ``turn_started_at`` (default: the incarnation's launch time) anchors the
+    deadline math: a long-lived container answering turn N+1 must get a full
+    per-turn deadline, not the remainder of its incarnation's.
+    """
+    exited_at = None
+    polls = 0
+    turn_start = turn_started_at if turn_started_at is not None else h.started_at
+    outbox_key = turn_outbox_key(h.run_id, h.step_id, h.attempt_no)
+    agent_log_key = log_key(h.run_id, h.step_id, h.attempt_no, "agent")
+    log.info("reconcile_turn start: container=%s seq=%s deadline=%ss outbox=%s",
+             h.container_id[:12], expected_seq, deadline_s, outbox_key)
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            log.warning("reconcile_turn aborted — cancel event set (run cancelled)")
+            partial = await _scrape_partial_cost(store, agent_log_key)
+            # The caller's stop() removes the container right after this
+            # returns — this is the last moment its output is readable.
+            await _capture_container_log(store, runtime, h)
+            return {"status": CANCELLED,
+                    "cost_usd": partial or 0,
+                    "cost_reported": partial is not None,
+                    "cost_partial": partial is not None}
+        polls += 1
+        try:
+            st = await runtime.status(h)
+        except Exception:  # noqa: BLE001 — any status() failure classifies as infra failure
+            log.error("status() raised — treating as infra failure:\n%s",
+                      traceback.format_exc())
+            return {"status": Result.FAILED_INFRA, "reason": "runtime status() error"}
+
+        # The outbox on the slow cadence (first poll always reads so a fast
+        # turn is seen; the live container's reply is the only terminal signal).
+        reply = None
+        if polls == 1 or polls % SLOW_POLL_TICKS == 0:
+            reply = await _get_json(store, outbox_key)
+
+        elapsed = time.time() - turn_start
+
+        if polls == 1 or polls % 10 == 0 or st["state"] != "running":
+            log.info("  poll #%d: state=%s exit=%s seq_match=%s elapsed=%.1fs",
+                     polls, st["state"], st.get("exit_code"),
+                     reply is not None and reply.get("seq") == expected_seq, elapsed)
+
+        match = _outbox_reply(reply, expected_seq)
+        if match is not None:
+            log.info("  -> turn %s answered (container stays up)", expected_seq)
+            return match
+
+        if st["state"] == "gone":
+            log.warning("container gone mid-turn -> failed_infra")
+            partial = await _scrape_partial_cost(store, agent_log_key)
+            return {"status": Result.FAILED_INFRA,
+                    "reason": "container vanished (OOM / host lost)",
+                    "cost_usd": partial or 0,
+                    "cost_reported": partial is not None,
+                    "cost_partial": partial is not None}
+
+        if st["state"] == "exited":
+            exited_at = exited_at or time.time()
+            # The agent PUTs the outbox in its exit trap before docker reports
+            # exited — re-read each exited tick during the grace window.
+            if reply is None and store is not None:
+                match = _outbox_reply(await _get_json(store, outbox_key), expected_seq)
+                if match is not None:
+                    log.info("  -> turn %s answered on the exit tick", expected_seq)
+                    return match
+            if time.time() - exited_at < GRACE_SECONDS:
+                await asyncio.sleep(POLL_INTERVAL)
+                continue
+            log.warning("  exited (exit=%s) without answering turn %s -> failed_incomplete",
+                        st.get("exit_code"), expected_seq)
+            partial = await _scrape_partial_cost(store, agent_log_key)
+            return {"status": Result.FAILED_INCOMPLETE,
+                    "reason": f"exited ({st['exit_code']}) without answering turn {expected_seq}",
+                    "cost_usd": partial or 0,
+                    "cost_reported": partial is not None,
+                    "cost_partial": partial is not None}
+
+        if elapsed > deadline_s:
+            log.warning("  turn deadline exceeded (%.1fs > %ss) -> failed_timeout",
+                        elapsed, deadline_s)
+            partial = await _scrape_partial_cost(store, agent_log_key)
+            await _capture_container_log(store, runtime, h)
+            await runtime.cleanup(h)
+            return {"status": Result.FAILED_TIMEOUT,
+                    "reason": f"turn exceeded {deadline_s}s deadline",
                     "cost_usd": partial or 0,
                     "cost_reported": partial is not None,
                     "cost_partial": partial is not None}

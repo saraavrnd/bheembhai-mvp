@@ -50,6 +50,11 @@ RESERVED_NAMES: frozenset[str] = frozenset({
     "BB_SKILL_URL", "BB_SKILL_SHA256",
     "BB_RESULT_PUT_URL", "BB_PROGRESS_PUT_URL", "BB_LOG_PUT_URL",
     "BB_DIAG_PUT_URL",
+    # Ad-hoc session mode + turn channels (ADR-016 §2)
+    "BB_SESSION", "BB_INBOX_GET_URL", "BB_OUTBOX_PUT_URL",
+    # Ad-hoc session identity + transcript channels (ADR-016 §3)
+    "BB_SESSION_ID", "BB_SESSION_RESUME",
+    "BB_TRANSCRIPT_PUT_URL", "BB_TRANSCRIPT_GET_URL",
     # Host debug knobs forwarded by DockerRuntime.env_forward (engine process
     # env overlays the container env AFTER the bundle — a user var of the same
     # name would be silently clobbered, so reject up front)

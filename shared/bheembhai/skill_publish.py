@@ -52,26 +52,28 @@ def pack_skill(skill: Skill) -> bytes:
     """Pack a skill's files into a deterministic tar.gz (entries sorted by
     path, mtimes/owner zeroed in both tar and gzip headers)."""
     buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
-        with tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tar:
-            for f in sorted(skill.files or [], key=lambda f: f.path):
-                name = _entry_name(skill.name, f.path)
-                if name is None:
-                    logger.warning(
-                        "skill bundle: skipping path outside skill dir: %s/%s",
-                        skill.name, f.path,
-                    )
-                    continue
-                info = tarfile.TarInfo(name)
-                info.mtime = 0
-                info.mode = 0o644
-                info.uid = 0
-                info.gid = 0
-                info.uname = ""
-                info.gname = ""
-                data = f.content.encode("utf-8")
-                info.size = len(data)
-                tar.addfile(info, io.BytesIO(data))
+    with (
+        gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz,
+        tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tar,
+    ):
+        for f in sorted(skill.files or [], key=lambda f: f.path):
+            name = _entry_name(skill.name, f.path)
+            if name is None:
+                logger.warning(
+                    "skill bundle: skipping path outside skill dir: %s/%s",
+                    skill.name, f.path,
+                )
+                continue
+            info = tarfile.TarInfo(name)
+            info.mtime = 0
+            info.mode = 0o644
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            data = f.content.encode("utf-8")
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
     return buf.getvalue()
 
 

@@ -20,9 +20,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from platform_api.agent_log import LogBlock, parse_agent_log
 from platform_api.dependencies import get_current_enabled_user
 from platform_api.github_content import build_chain, git_fetch_content, resolve_step_sha
 from platform_api.routers._integration_shared import AI_VENDOR_TYPES
+from platform_api.routers._workflow_shared import (
+    _parse_workflow_yaml,
+    clone_referenced_skills,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,19 +48,29 @@ class RunCreateRequest(BaseModel):
     project_id: str = Field(..., min_length=1)
     workflow_id: str = Field(..., min_length=1)
     policy_id: str | None = None
-    story_id: str = Field(..., min_length=1)
+    # Required for workflow runs; ignored for ad-hoc sessions.
+    story_id: str | None = Field(None, min_length=1)
     github_integration_id: str = Field(..., min_length=1)
     jira_integration_id: str | None = None
     ai_vendor_integration_id: str = Field(..., min_length=1)
     # Per-run override for the branch the engine cuts the run branch OFF
     # (defaults to the GitHub integration's base_branch — ADR-013 deferred item).
+    # For ad-hoc runs this is the REQUIRED user-named branch to work on directly.
     source_branch: str | None = Field(None, max_length=200)
+    # Ad-hoc sessions (ADR-016): "adhoc" runs the user's query verbatim on
+    # their branch; the default "workflow" is the governed pipeline.
+    run_kind: str = Field("workflow", pattern="^(workflow|adhoc)$")
+    query: str | None = Field(None, description="User query (required for ad-hoc runs)")
 
 
 class DecisionRequest(BaseModel):
     action: str = Field(..., description="'approve' or 'send_back'")
     send_back_to: str | None = Field(None, description="Step ID to revert to (required for send_back)")
     comment: str | None = Field(None, description="Reviewer comment")
+
+
+class TurnRequest(BaseModel):
+    query: str = Field(..., description="The user's next message to the session")
 
 
 _BRANCH_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
@@ -103,7 +118,13 @@ def _run_summary(run: Run, started_by: User | None = None) -> dict:
         "workflow_id": str(run.workflow_id),
         "policy_id": str(run.policy_id),
         "story_id": run.story_id,
+        "run_kind": run.run_kind,
+        "user_query": run.user_query,
         "state": run.state,
+        # Ad-hoc sessions (ADR-016 §2): the reaper's lifecycle clock.
+        "session_phase": run.session_phase,
+        "session_last_activity_at": run.session_last_activity_at.isoformat()
+        if run.session_last_activity_at else None,
         "current_step": run.current_step,
         "cost_usd": float(run.cost_usd),
         "created_at": run.created_at.isoformat() if run.created_at else "",
@@ -605,6 +626,36 @@ async def _run_timeline(db, run: Run, workflow_def: list[dict],
     return _build_timeline(rows, workflow_def, gates, run.state, log_rows)
 
 
+async def _session_turns(db, run: Run) -> list[dict]:
+    """Ad-hoc session turn history (ADR-016 §2) — the chat transcript, rebuilt
+    from the Transition stream: durable, auditable, independent of object
+    storage. One entry per COMPLETED or failed turn (kind=="turn" completion
+    rows), newest last. A turn in flight shows as run.state == "running" and
+    has no entry yet."""
+    rows = (await db.execute(
+        select(Transition)
+        .where(Transition.run_id == run.id)
+        .order_by(Transition.id)
+    )).scalars().all()
+    turns = []
+    for t in rows:
+        p = t.payload or {}
+        if p.get("kind") != "turn":
+            continue
+        turns.append({
+            "seq": p.get("seq"),
+            "query": p.get("query", ""),
+            "response": p.get("response", ""),
+            "result_status": p.get("result_status"),
+            "commit": p.get("commit"),
+            "files": p.get("files") or [],
+            "cost_usd": p.get("cost_usd"),
+            "cost_reported": bool(p.get("cost_reported")),
+            "ts": float(t.ts) if t.ts else None,
+        })
+    return turns
+
+
 async def _build_run_detail(db, run: Run, started_by: User | None = None) -> dict:
     """Full run detail with steps, workflow definition, and gate map."""
     workflow_def = _parse_workflow_steps(run.workflow) if run.workflow else []
@@ -684,10 +735,12 @@ async def _build_run_detail(db, run: Run, started_by: User | None = None) -> dic
 
     # Build the full detail response
     timeline = await _run_timeline(db, run, workflow_def, gates)
+    turns = await _session_turns(db, run) if run.run_kind == "adhoc" else []
     return {
-        **{k: _run_summary(run, started_by)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "state", "current_step", "cost_usd", "created_at", "started_by", "github_integration_id", "jira_integration_id", "ai_vendor_integration_id"]},
+        **{k: _run_summary(run, started_by)[k] for k in ["id", "project_id", "workflow_id", "policy_id", "story_id", "run_kind", "user_query", "state", "current_step", "cost_usd", "created_at", "started_by", "github_integration_id", "jira_integration_id", "ai_vendor_integration_id", "session_phase", "session_last_activity_at"]},
         "source_branch": run.source_branch,
         "run_branch": run.run_branch,
+        "turns": turns,
         "workflow_name": run.workflow.name if run.workflow else "",
         "policy_name": run.policy.name if run.policy else "",
         "stages": stages,
@@ -1045,16 +1098,88 @@ async def create_run(
     workflow = await db.get(Workflow, body.workflow_id)
     if workflow is None:
         raise HTTPException(404, f"Workflow {body.workflow_id} not found")
+
+    is_adhoc = body.run_kind == "adhoc"
+    if is_adhoc:
+        # The query is the task and the branch is where it happens — both are
+        # the whole point of the session, so missing ones fail here (422),
+        # before the engine spends anything.
+        if not body.query or not body.query.strip():
+            raise HTTPException(422, "Ad-hoc runs require a query")
+        if not body.source_branch:
+            raise HTTPException(
+                422, "Ad-hoc runs require a branch to work on (source_branch)")
+        # The ad-hoc workflow is the single-step carrier for the query; anything
+        # else would execute the query once per pipeline step.
+        parsed_wf = _parse_workflow_yaml(workflow.yaml_content)
+        if parsed_wf is None or len(parsed_wf.steps) != 1:
+            raise HTTPException(
+                400, "Ad-hoc runs require the 1-step 'adhoc' workflow "
+                     "(this workflow has a different shape)")
+    elif not body.story_id:
+        raise HTTPException(422, "story_id is required for workflow runs")
+
     # Runs are project-scoped: platform templates (project_id IS NULL) must be
-    # copied into the project first — they cannot back a run directly.
+    # copied into the project first — they cannot back a run directly. The one
+    # exception is the ad-hoc template, which is auto-provisioned into the
+    # project on first use (ADR-016 "wide open": starting a session is the
+    # same permission as starting a run).
+    workflow_id = body.workflow_id
     if workflow.project_id is None or str(workflow.project_id) != body.project_id:
-        raise HTTPException(400, "Workflow does not belong to this project")
+        if not (is_adhoc and workflow.project_id is None and workflow.name == "adhoc"):
+            raise HTTPException(400, "Workflow does not belong to this project")
+        # Auto-copy the platform ad-hoc template (workflow + policy + skills),
+        # or reuse the project's existing copy so repeated submits are idempotent.
+        project_wf = (
+            await db.execute(
+                select(Workflow).where(
+                    Workflow.project_id == body.project_id,
+                    Workflow.name == "adhoc",
+                    Workflow.version == workflow.version,
+                )
+            )
+        ).scalar_one_or_none()
+        if project_wf is not None:
+            workflow_id = str(project_wf.id)
+        else:
+            clone = Workflow(
+                project_id=body.project_id,
+                name=workflow.name,
+                description=workflow.description,
+                version=workflow.version,
+                yaml_content=workflow.yaml_content,
+                is_active=True,
+                workflow_category_id=workflow.workflow_category_id,
+            )
+            db.add(clone)
+            await db.flush()
+            policies_result = await db.execute(
+                select(Policy).where(Policy.workflow_id == workflow.id)
+            )
+            for pol in policies_result.scalars().all():
+                db.add(Policy(
+                    project_id=body.project_id,
+                    workflow_id=clone.id,
+                    name=pol.name,
+                    version=pol.version,
+                    yaml_content=pol.yaml_content,
+                    is_active=pol.is_active,
+                ))
+            await clone_referenced_skills(
+                db, workflow, body.project_id,
+                store=getattr(request.app.state, "object_store", None),
+            )
+            workflow_id = str(clone.id)
+            logger.info(
+                "Ad-hoc template auto-provisioned: platform workflow %s → project %s clone %s",
+                workflow.id, body.project_id, clone.id,
+            )
 
     policy_id = body.policy_id
     if not policy_id:
         policies_result = await db.execute(
             select(Policy)
-            .where(Policy.workflow_id == body.workflow_id, Policy.is_active == True)
+            .where(Policy.workflow_id == workflow_id, Policy.is_active == True)
             .order_by(Policy.created_at.desc())
             .limit(1)
         )
@@ -1066,7 +1191,7 @@ async def create_run(
         policy = await db.get(Policy, policy_id)
         if policy is None:
             raise HTTPException(404, f"Policy {policy_id} not found")
-        if str(policy.workflow_id) != body.workflow_id:
+        if str(policy.workflow_id) != workflow_id:
             raise HTTPException(400, "Policy does not belong to the selected workflow")
 
     # ── Integrations: capture the user's verified selections ────────────────
@@ -1094,9 +1219,11 @@ async def create_run(
 
     run = Run(
         project_id=_uuid.UUID(body.project_id),
-        workflow_id=_uuid.UUID(body.workflow_id),
+        workflow_id=_uuid.UUID(workflow_id),
         policy_id=_uuid.UUID(policy_id),
-        story_id=body.story_id,
+        # Ad-hoc sessions carry no story — the query is the task. The branch
+        # still rides source_branch (the engine verifies + adopts it at init).
+        story_id=body.story_id if not is_adhoc else None,
         source_branch=source_branch,
         run_branch=None,
         github_integration_id=github.id,
@@ -1104,6 +1231,8 @@ async def create_run(
         ai_vendor_integration_id=ai_vendor.id,
         started_by_user_id=current_user.id,
         state="pending",
+        run_kind=body.run_kind,
+        user_query=body.query.strip() if is_adhoc else None,
     )
     db.add(run)
     await db.flush()
@@ -1119,8 +1248,9 @@ async def create_run(
     await db.refresh(run)
 
     logger.info(
-        "Run created: %s project=%s story=%s github=%s ai=%s by=%s",
-        run.id, body.project_id, body.story_id, github.id, ai_vendor.id, current_user.id,
+        "Run created: %s project=%s kind=%s story=%s branch=%s github=%s ai=%s by=%s",
+        run.id, body.project_id, run.run_kind, run.story_id, run.source_branch,
+        github.id, ai_vendor.id, current_user.id,
     )
     return _run_summary(run)
 
@@ -1208,12 +1338,49 @@ async def get_run_file(
 _LOG_FULL_MAX = 20 * 1024 * 1024    # cap on a full log served in one response
 _LOG_TAIL_BYTES = 256 * 1024        # tail mode reads the last 256 KB, then keeps N lines
 _LOG_TAIL_LINES_MAX = 2000
+_LOG_RENDER_FULL_MAX = 2 * 1024 * 1024   # rendered full mode parses at most the last 2 MB
+
+_RENDER_NOTICE = ("… earlier portion of the log omitted — the transcript "
+                  "shows only the most recent portion")
 
 
 def _decode_log(data: bytes) -> str:
     """Logs are UTF-8 text by convention — decode defensively (control
     characters from progress spinners must not kill the response)."""
     return data.decode("utf-8", "replace")
+
+
+def _rendered_log_response(kind: str, mode: str, size: int,
+                           window_cut: bool, parsed) -> dict:
+    """Rendered agent-log response: typed blocks the UI renders as a
+    transcript. A notice block leads when the view shows only a recent
+    portion — the byte window / line limit cut the beginning, or the parser's
+    block cap dropped it."""
+    blocks = parsed.blocks
+    truncated_render = window_cut or parsed.truncated
+    if truncated_render:
+        blocks = [LogBlock(kind="truncated_notice", text=_RENDER_NOTICE)] + blocks
+    return {"kind": kind, "mode": mode, "size": size, "render": "agent",
+            "truncated_render": truncated_render,
+            "blocks": [b.to_dict() for b in blocks]}
+
+
+def _raw_log_response(kind: str, mode: str, size: int,
+                      window_cut: bool, text: str) -> dict:
+    """Raw agent-log response: the served window exactly as the container
+    wrote it (UTF-8 text, one event per line). The session page renders each
+    line as a collapsed accordion row — no server-side parsing, no markdown,
+    the transcript as it happened in the container."""
+    return {"kind": kind, "mode": mode, "size": size, "render": "raw",
+            "truncated_render": window_cut, "text": text}
+
+
+def _pending_log_response(kind: str, mode: str) -> dict:
+    """A launch-registered log whose first upload hasn't landed yet — the
+    reference row exists (size 0) but the object does not. The live-tail UI
+    treats this as "waiting", not an error, and keeps polling."""
+    return {"kind": kind, "mode": mode, "size": 0, "pending": True,
+            "content": "", "blocks": []}
 
 
 @router.get("/{run_id}/logs")
@@ -1224,6 +1391,7 @@ async def get_run_logs(
     kind: str = Query(..., description="agent | container | diagnostics"),
     mode: str = Query("tail", pattern="^(tail|full)$"),
     lines: int = Query(200, ge=1, le=_LOG_TAIL_LINES_MAX),
+    render: str | None = Query(None, pattern="^(agent|raw)$"),
     db: AsyncSession = Depends(get_session),
     enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
     request: Request = None,
@@ -1235,11 +1403,20 @@ async def get_run_logs(
     returns the whole content up to a 20 MB cap (newest end kept when
     truncated). The object key ALWAYS comes from the run_logs reference — the
     store is never scanned and callers can never address arbitrary keys.
+
+    ``render=agent`` (agent kind only) parses the served window into typed
+    transcript blocks instead of raw text — assistant replies, tool calls,
+    and the terminal result — capped at the last 2 MB so a 20 MB full log
+    never turns one click into a megabyte parse. ``render=raw`` (agent kind
+    only) returns the same window as plain text under ``text``, unparsed —
+    the session page renders it line-by-line as collapsed event rows.
     """
     if enabled is None:
         raise HTTPException(401, "Authentication required")
     if kind not in KINDS:
         raise HTTPException(400, f"unknown log kind {kind!r} (valid: {', '.join(KINDS)})")
+    if render is not None and kind != "agent":
+        raise HTTPException(400, "render= applies only to the agent log")
     run = await db.get(Run, run_id)
     if run is None:
         raise HTTPException(404, f"Run {run_id} not found")
@@ -1259,20 +1436,47 @@ async def get_run_logs(
     if mode == "full":
         obj = await store.get(row.object_key)
         if obj is None:
+            if row.size_bytes == 0:
+                return _pending_log_response(kind, "full")
             raise HTTPException(404, "log artifact missing from storage (stale reference)")
         data = obj.data
         truncated = len(data) > _LOG_FULL_MAX
         if truncated:
             data = data[len(data) - _LOG_FULL_MAX:]    # keep the END — newest events
+        if render is not None:
+            text = _decode_log(data)
+            window_cut = truncated or len(text) > _LOG_RENDER_FULL_MAX
+            if len(text) > _LOG_RENDER_FULL_MAX:
+                text = text[len(text) - _LOG_RENDER_FULL_MAX:]
+            if render == "raw":
+                return _raw_log_response(kind, "full", len(data),
+                                         window_cut, text)
+            return _rendered_log_response(kind, "full", len(data),
+                                          window_cut, parse_agent_log(text))
         return {"kind": kind, "mode": "full", "size": len(data),
                 "truncated": truncated, "content": _decode_log(data)}
 
     head = await store.head(row.object_key)
     if head is None:
+        if row.size_bytes == 0:
+            # Launch-registered row whose first upload hasn't landed yet
+            # (agent.log heartbeats arrive every ~5 s) — pending, not a 404,
+            # so the live-tail UI keeps polling instead of erroring.
+            return _pending_log_response(kind, "tail")
         raise HTTPException(404, "log artifact missing from storage (stale reference)")
     start = max(0, head.size - _LOG_TAIL_BYTES)
     data = await store.get_range(row.object_key, start, head.size - 1)
-    content = "\n".join(_decode_log(data).splitlines()[-lines:])
+    text = _decode_log(data)
+    content = "\n".join(text.splitlines()[-lines:])
+    if render is not None:
+        # The byte window or the line limit may have cut the beginning —
+        # either way the transcript starts partway in and says so.
+        window_cut = head.size > _LOG_TAIL_BYTES or len(text.splitlines()) > lines
+        if render == "raw":
+            return _raw_log_response(kind, "tail", head.size,
+                                     window_cut, content)
+        return _rendered_log_response(kind, "tail", head.size,
+                                      window_cut, parse_agent_log(content))
     return {"kind": kind, "mode": "tail", "size": head.size, "lines": lines,
             "content": content}
 
@@ -1338,6 +1542,16 @@ async def submit_decision(
             409,
             f"Run {run_id} is in state '{run.state}', not paused — "
             "there is no open gate to decide",
+        )
+
+    # R5: an ad-hoc session's `paused` is awaiting_input, never an approval
+    # gate — there is no gate card to decide. Turns and End session are the
+    # only actions (POST /api/runs/{id}/turn, /end).
+    if run.run_kind == "adhoc":
+        raise HTTPException(
+            409,
+            "Ad-hoc sessions have no approval gates — use POST "
+            f"/api/runs/{run_id}/turn to send a message or /end to finish",
         )
 
     actor = current_user.email or str(current_user.id)
@@ -1406,3 +1620,102 @@ async def cancel_run(
 
     logger.info("Run %s stop requested by %s", run_id, actor)
     return {"id": run_id, "message": "Stop queued — the engine will cancel the run."}
+
+
+async def _session_dispatch_guard(run: Run, db: AsyncSession, what: str) -> None:
+    """Shared turn/end preconditions (ADR-016 §2): the session must be ad-hoc,
+    non-terminal, awaiting input, and not mid-reap — and must have no queued
+    dispatch (one dispatch = one turn = one pause; a second would just be
+    superseded by the engine)."""
+    if run.run_kind != "adhoc":
+        raise HTTPException(400, f"{what} applies to ad-hoc sessions only")
+    if run.state in TERMINAL_RUN_STATES:
+        raise HTTPException(409, f"Session {run.id} already finished ({run.state})")
+    if run.state != "paused":
+        raise HTTPException(
+            409,
+            f"Session {run.id} is in state '{run.state}' — wait for the "
+            "current turn to finish first",
+        )
+    if run.session_phase == "reaping":
+        raise HTTPException(
+            409,
+            "The session is ending after idle — retry in a moment (a fresh "
+            "container will start for the next turn)",
+        )
+    pending = await db.scalar(
+        select(WorkQueueItem.id)
+        .where(WorkQueueItem.run_id == run.id,
+               WorkQueueItem.state.in_(("pending", "claimed")))
+        .limit(1))
+    if pending is not None:
+        raise HTTPException(409, "A dispatch is already queued for this session")
+
+
+@router.post("/{run_id}/turn")
+async def submit_turn(
+    run_id: str,
+    body: TurnRequest,
+    db: AsyncSession = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+) -> dict:
+    """Queue the next session turn (bookkeeper, ADR-016 §2).
+
+    One turn = one dispatch = one pause: the platform validates the session is
+    awaiting input, then enqueues a `continue` item carrying the query. The
+    engine claims it, writes the turn inbox, runs it in the live session
+    container, and pauses the run again (awaiting_input) when the outbox
+    answers. The platform never mutates run state here.
+    """
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+    current_user, _ = enabled
+
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+    await _session_dispatch_guard(run, db, "Turns")
+
+    query = (body.query or "").strip()
+    if not query:
+        raise HTTPException(400, "query is required")
+
+    actor = current_user.email or str(current_user.id)
+    db.add(WorkQueueItem(run_id=run.id, action="continue",
+                         payload={"action": "turn", "query": query, "actor": actor}))
+    await db.commit()
+
+    logger.info("Run %s turn queued by %s (query: %s)", run_id, actor, query[:80])
+    return {"id": run_id, "message": "Turn queued — the engine will run it."}
+
+
+@router.post("/{run_id}/end")
+async def end_session(
+    run_id: str,
+    db: AsyncSession = Depends(get_session),
+    enabled: tuple[User, Identity] | None = Depends(get_current_enabled_user),
+) -> dict:
+    """Queue End session (bookkeeper, ADR-016 §2).
+
+    The engine writes the end sentinel and waits for the container to
+    commit+push+exit on its own (hard-kill fallback after the grace window),
+    then completes the run. A session that was already reaped — no live
+    container — completes directly: every turn committed as it happened, so
+    nothing is lost.
+    """
+    if enabled is None:
+        raise HTTPException(401, "Authentication required")
+    current_user, _ = enabled
+
+    run = await db.get(Run, run_id)
+    if run is None:
+        raise HTTPException(404, f"Run {run_id} not found")
+    await _session_dispatch_guard(run, db, "End session")
+
+    actor = current_user.email or str(current_user.id)
+    db.add(WorkQueueItem(run_id=run.id, action="continue",
+                         payload={"action": "end", "actor": actor}))
+    await db.commit()
+
+    logger.info("Run %s end session queued by %s", run_id, actor)
+    return {"id": run_id, "message": "End queued — the engine will close the session."}

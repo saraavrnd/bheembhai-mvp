@@ -1,0 +1,13 @@
+workflow: adhoc
+version: 1
+category: Ad-hoc
+description: Free-form session — run one user query on a user-named branch, like a terminal Claude Code session.
+start: adhoc
+steps:
+  - id: adhoc
+    skill: adhoc
+    model: high   # per-step model (backend-enforced)
+    label: Run the query
+    deadline: 3600
+    "on":
+      completed: DONE

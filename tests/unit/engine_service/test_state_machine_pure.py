@@ -2,13 +2,21 @@
 
 from types import SimpleNamespace
 
-from bheembhai.log_keys import log_key, progress_key, result_key
+from bheembhai.log_keys import (
+    log_key,
+    progress_key,
+    result_key,
+    session_transcript_key,
+    turn_inbox_key,
+    turn_outbox_key,
+)
 from bheembhai.providers.local_storage import LocalStorage
 
 from engine_service.state_machine import (
     _clear_attempt_channels,
     _env_int,
     _gate_card,
+    _launch_turn_contract,
     route_next,
     steps_after,
 )
@@ -119,6 +127,61 @@ async def test_clear_attempt_channels_survives_delete_failure(tmp_path):
             raise OSError("boom")
 
     await _clear_attempt_channels(FlakyStore(), "r1", "story-design", 1)  # no raise
+
+
+# ── Session launch contract (ADR-016 §2-3) ─────────────────────────────
+
+class _RecordingStore:
+    """Fake store that presigns everything and records (method, key) calls, so
+    the contract test asserts WHICH keys each launch presigns."""
+
+    def __init__(self):
+        self.gets: list[str] = []
+        self.puts: list[str] = []
+
+    async def presigned_get_url(self, key, *, expires_in):
+        self.gets.append(key)
+        return SimpleNamespace(url=f"get://{key}")
+
+    async def presigned_put_url(self, key, *, expires_in):
+        self.puts.append(key)
+        return SimpleNamespace(url=f"put://{key}")
+
+
+async def test_turn_contract_fresh_launch_omits_transcript_get():
+    """A fresh (non-resume) incarnation gets the turn channels + a transcript
+    PUT (upload on graceful exit) but NO GET — nothing to restore (ADR-016 §3)."""
+    store = _RecordingStore()
+    sid = "11111111-2222-3333-4444-555555555555"
+    env = await _launch_turn_contract(store, "r1", "adhoc", 1, session_id=sid)
+    assert env["BB_INBOX_GET_URL"] == f"get://{turn_inbox_key('r1', 'adhoc', 1)}"
+    assert env["BB_OUTBOX_PUT_URL"] == f"put://{turn_outbox_key('r1', 'adhoc', 1)}"
+    assert env["BB_TRANSCRIPT_PUT_URL"] == f"put://{session_transcript_key('r1', sid)}"
+    assert "BB_TRANSCRIPT_GET_URL" not in env
+    assert session_transcript_key("r1", sid) not in store.gets
+
+
+async def test_turn_contract_resume_presigns_transcript_get():
+    """A resume incarnation (the reaper's cold-start) also gets the transcript
+    GET so the container can restore + --resume the session."""
+    store = _RecordingStore()
+    sid = "11111111-2222-3333-4444-555555555555"
+    env = await _launch_turn_contract(store, "r1", "adhoc", 2,
+                                      session_id=sid, resume=True)
+    assert env["BB_TRANSCRIPT_GET_URL"] == \
+        f"get://{session_transcript_key('r1', sid)}"
+    assert session_transcript_key("r1", sid) in store.gets
+    assert session_transcript_key("r1", sid) in store.puts
+
+
+async def test_turn_contract_without_session_id_has_no_transcript_channels():
+    """A legacy run row without a session id still gets its turn channels —
+    the transcript contract is simply absent (ADR-016 §3 mint-at-init)."""
+    store = _RecordingStore()
+    env = await _launch_turn_contract(store, "r1", "adhoc", 1)
+    assert "BB_INBOX_GET_URL" in env and "BB_OUTBOX_PUT_URL" in env
+    assert "BB_TRANSCRIPT_PUT_URL" not in env
+    assert "BB_TRANSCRIPT_GET_URL" not in env
 
 
 # ── _env_int: guardrail knob reads from the run's resolved env vars ─────────

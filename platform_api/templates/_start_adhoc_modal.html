@@ -1,0 +1,186 @@
+<!-- Ad-hoc session modal (ADR-016) — included by _workflow_catalog.html.
+     Unlike the pipeline start-run modal there is no story, workflow picker
+     or policy picker: the platform resolves the "adhoc" workflow template
+     server-side (auto-copying it into the project on first use), the policy
+     is the template's wide-open one, and the only inputs that matter are
+     the query and the existing branch to work on. -->
+
+<div class="modal-backdrop" id="adhoc-modal" style="display:none;">
+    <div class="modal-dialog" style="width:560px;" role="dialog" aria-modal="true" aria-labelledby="adhoc-modal-title">
+        <h5 id="adhoc-modal-title"><i class="fa fa-comment-dots text-info me-5"></i>Ad-hoc session</h5>
+        <p>Run Claude Code against an <b>existing branch</b> of your GitHub integration, like a terminal session: it checks the branch out, does what you ask, commits + pushes, and streams the transcript back. No story, no pipeline, no gates.</p>
+        <div class="form-group">
+            <label class="form-label">What should it do? <span class="text-danger">*</span></label>
+            <textarea class="form-control" id="adhoc-query" rows="5"
+                placeholder="e.g. Fix the flaky login test and run the full suite"></textarea>
+        </div>
+        <div class="form-group">
+            <label class="form-label">Branch <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" id="adhoc-branch" placeholder="main">
+            <small class="text-muted">An existing branch on the selected GitHub integration — the session works directly on it (it must already exist).</small>
+        </div>
+        <div class="form-group">
+            <label class="form-label">GitHub Integration <span class="text-danger">*</span></label>
+            <select class="form-select" id="adhoc-github"></select>
+        </div>
+        <div class="form-group">
+            <label class="form-label">AI Vendor <span class="text-danger">*</span></label>
+            <select class="form-select" id="adhoc-ai"></select>
+            <small class="text-muted">Only integrations that passed "Test connection" are listed.</small>
+        </div>
+        <div id="adhoc-create-error" class="text-danger mt-2" style="display:none;"></div>
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="closeAdhocModal()">Cancel</button>
+            <button class="btn-send" id="btn-adhoc-start" onclick="submitAdhocSession()"><i class="fa fa-rocket"></i> Start session</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// The workflow id to POST: the project's own copy of the ad-hoc template if
+// one exists (idempotent repeat submits), else the platform template —
+// create_run auto-copies it into the project on first use.
+let adhocWorkflowId = null;
+
+function openAdhocModal() {
+    const modal = document.getElementById('adhoc-modal');
+    modal.style.display = '';
+    document.getElementById('adhoc-create-error').style.display = 'none';
+    const btn = document.getElementById('btn-adhoc-start');
+    btn.disabled = true;
+    adhocWorkflowId = null;
+    const pid = window.BB_PROJECT_ID;
+
+    fetch('/api/workflows?project_id=' + pid, { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            const projectCopy = (data || []).find(w => w.name === 'adhoc' && w.project_id === pid);
+            const template = (data || []).find(w => w.name === 'adhoc' && w.project_id === null);
+            adhocWorkflowId = (projectCopy || template || {}).id || null;
+            if (!adhocWorkflowId) {
+                const errEl = document.getElementById('adhoc-create-error');
+                errEl.textContent = 'The ad-hoc workflow template is not seeded on this instance — seed skills and workflows first.';
+                errEl.style.display = '';
+                return;
+            }
+            btn.disabled = false;
+            document.getElementById('adhoc-query').focus();
+        })
+        .catch(() => {
+            const errEl = document.getElementById('adhoc-create-error');
+            errEl.textContent = 'Failed to load workflows.';
+            errEl.style.display = '';
+        });
+    loadAdhocIntegrations(pid);
+}
+
+function loadAdhocIntegrations(pid) {
+    // Verified-only, same rule as the pipeline start-run modal.
+    fetch('/api/projects/' + pid + '/integrations', { headers: authHeaders() })
+        .then(r => r.json())
+        .then(data => {
+            const verified = (data || []).filter(i => i.verified_at);
+            const byType = {};
+            verified.forEach(i => { (byType[i.type] = byType[i.type] || []).push(i); });
+            const aiVendors = ['openai', 'claude', 'deepseek', 'kimi'].flatMap(t => byType[t] || []);
+            const opts = (items, fmt) => items.map(i => `<option value="${i.id}">${fmt(i)}</option>`).join('');
+            const cfg = i => i.config || {};
+
+            document.getElementById('adhoc-github').innerHTML = opts(byType.github || [], i =>
+                `${esc(i.label || 'GitHub')} — ${esc(cfg(i).base_branch || 'main')}`);
+            // Pre-fill the branch from the selected integration's base branch;
+            // keep in sync as the selection changes (user edits win).
+            const ghSel = document.getElementById('adhoc-github');
+            const branchInput = document.getElementById('adhoc-branch');
+            const baseOf = () => {
+                const sel = ghSel.options[ghSel.selectedIndex];
+                const id = sel ? sel.value : null;
+                const int = (byType.github || []).find(i => i.id === id);
+                return int ? (cfg(int).base_branch || 'main') : 'main';
+            };
+            if (!branchInput.value) branchInput.value = baseOf();
+            ghSel.onchange = function() { branchInput.value = baseOf(); };
+            document.getElementById('adhoc-ai').innerHTML = opts(aiVendors, i =>
+                `${esc(i.label || i.type)} — H:${esc(cfg(i).model_high || '?')} M:${esc(cfg(i).model_medium || '?')} L:${esc(cfg(i).model_low || '?')}`);
+
+            if (!(byType.github || []).length || !aiVendors.length) {
+                const errEl = document.getElementById('adhoc-create-error');
+                errEl.textContent = 'No verified GitHub or AI-vendor integration — verify them in the Configuration tab first.';
+                errEl.style.display = '';
+            }
+        })
+        .catch(() => {});
+}
+
+function closeAdhocModal() {
+    document.getElementById('adhoc-modal').style.display = 'none';
+}
+
+// Click on the backdrop (outside the dialog) closes the modal; Esc too
+document.getElementById('adhoc-modal').addEventListener('click', function(e) {
+    if (!e.target.closest('.modal-dialog')) closeAdhocModal();
+});
+
+function submitAdhocSession() {
+    const query = document.getElementById('adhoc-query').value.trim();
+    const branch = document.getElementById('adhoc-branch').value.trim();
+    const githubId = document.getElementById('adhoc-github').value;
+    const aiId = document.getElementById('adhoc-ai').value;
+    const errEl = document.getElementById('adhoc-create-error');
+
+    if (!query) {
+        errEl.textContent = 'Please describe what the session should do.';
+        errEl.style.display = ''; return;
+    }
+    if (!branch) {
+        errEl.textContent = 'Please name the branch to work on.';
+        errEl.style.display = ''; return;
+    }
+    if (!adhocWorkflowId) {
+        errEl.textContent = 'The ad-hoc workflow template could not be resolved.';
+        errEl.style.display = ''; return;
+    }
+    if (!githubId) {
+        errEl.textContent = 'Please select a verified GitHub integration.';
+        errEl.style.display = ''; return;
+    }
+    if (!aiId) {
+        errEl.textContent = 'Please select a verified AI vendor.';
+        errEl.style.display = ''; return;
+    }
+
+    errEl.style.display = 'none';
+    const btn = document.getElementById('btn-adhoc-start');
+    btn.disabled = true;
+    fetch('/api/runs', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({
+            project_id: window.BB_PROJECT_ID,
+            workflow_id: adhocWorkflowId,
+            policy_id: null,
+            run_kind: 'adhoc',
+            query: query,
+            github_integration_id: githubId,
+            jira_integration_id: null,
+            ai_vendor_integration_id: aiId,
+            source_branch: branch,
+        })
+    })
+    .then(r => {
+        if (!r.ok) return r.json().then(d => { throw new Error(d.message || d.detail || 'Failed'); });
+        return r.json();
+    })
+    .then(run => {
+        document.getElementById('adhoc-modal').style.display = 'none';
+        document.getElementById('adhoc-query').value = '';
+        document.getElementById('adhoc-branch').value = '';
+        window.location.href = '/projects/' + window.BB_PROJECT_ID + '/sessions/' + run.id;
+    })
+    .catch(err => {
+        btn.disabled = false;
+        errEl.textContent = err.message;
+        errEl.style.display = '';
+    });
+}
+</script>

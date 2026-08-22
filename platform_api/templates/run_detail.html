@@ -13,6 +13,8 @@
 {% block head %}
 <!-- Vendored markdown renderer (no CDN dependency at runtime) -->
 <script src="/static/vendor/marked/marked.min.js?v=1"></script>
+<!-- Shared raw-event accordion renderer for agent logs (BB_AGENT_EVENTS) -->
+<script src="/static/bb_agent_events.js?v=1"></script>
 <style>
     :root {
         --sage: #5a9e6f;
@@ -492,6 +494,44 @@
     }
     .log-note { margin: 8px 24px 14px; font-size: 12px; color: #a06a3a; }
 
+    /* ── Agent events view (raw stream-json lines → accordion) ──
+       Same pattern as the ad-hoc session agent view: one collapsed row per
+       transcript event, consecutive thinking events summed into one node.
+       No markdown here — the machinery, not the conversation. The raw view
+       stays dark mono for plain-text inspection. */
+    .log-rendered {
+        flex: 1; min-height: 0; overflow-y: auto;
+        margin: 0 24px; padding: 12px 14px; background: #fff;
+        border-radius: 8px; font-size: 13.5px;
+    }
+    .log-tools .log-refresh.active { background: #2f579a; color: #fff; }
+    .log-tools .log-refresh:disabled { opacity: 0.45; cursor: not-allowed; }
+    .raw-event { margin: 2px 0; border: 1px solid #efe9dc; border-radius: 4px; background: #fff; }
+    .raw-event summary {
+        cursor: pointer; padding: 4px 8px;
+        font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 11.5px;
+        color: #4a4a5e; background: #faf7f0;
+        overflow-wrap: anywhere;
+    }
+    .raw-event[open] summary { border-bottom: 1px solid #efe9dc; }
+    .raw-event.raw-think summary { background: #f6f1e6; color: #6b5a3e; }
+    .raw-event pre {
+        margin: 0; padding: 8px 10px; background: #fffdf8;
+        font-family: 'JetBrains Mono', 'Courier New', monospace; font-size: 11px;
+        line-height: 1.5; color: #4a4a5e;
+        white-space: pre-wrap; word-break: break-word;
+        max-height: 340px; overflow-y: auto;
+    }
+    .tool-ok { color: #2f7d4f; }
+    .tool-err { color: #b3341f; }
+    .tool-unk { color: #a06a3a; }
+    .tool-think { color: #b08968; }
+    .log-plain {
+        font-family: 'JetBrains Mono', 'Courier New', monospace;
+        font-size: 12px; color: #8a8a96;
+        margin: 4px 0; white-space: pre-wrap; word-break: break-word;
+    }
+
     /* Responsive — small screens fall back to normal document flow
        (fitRunLayout releases the pinned height below 768px too). */
     @media (max-width: 768px) {
@@ -555,9 +595,17 @@
                  while the Logs button is active. -->
             <div id="log-view" style="display:none;">
                 <div class="log-tools">
-                    <select id="log-kind" onchange="loadStageLog('tail')" title="Which log to view"></select>
+                    <select id="log-kind" onchange="logKindChanged()" title="Which log to view"></select>
                     <span class="log-size" id="log-size"></span>
                     <span style="flex:1;"></span>
+                    <button class="log-refresh" id="btn-log-events" onclick="setLogRenderMode('events')"
+                            title="Event view — one accordion row per transcript event, thinking grouped">
+                        Events
+                    </button>
+                    <button class="log-refresh" id="btn-log-raw" onclick="setLogRenderMode('raw')"
+                            title="Raw output as captured">
+                        Raw
+                    </button>
                     <button class="log-refresh" onclick="loadStageLog('tail')" title="Re-read the tail">
                         <i class="fa fa-refresh"></i> Tail
                     </button>
@@ -566,6 +614,7 @@
                     </button>
                 </div>
                 <pre class="log-body" id="log-content">Loading…</pre>
+                <div class="viewer-body markdown log-rendered" id="log-rendered" style="display:none;"></div>
                 <div class="log-note" id="log-note" style="display:none;"></div>
             </div>
         </div>
@@ -624,6 +673,11 @@ let lastRenderOk = false;
 // visit's logs instead of the file/summary viewer. The 3s poll must not
 // yank it — logs at an attempt are immutable.
 let logsViewActive = false;
+// The agent log is Claude Code's stream-json (JSONL) output — the readable
+// default has the server parse it into transcript blocks; Raw shows the
+// captured bytes as-is. The other kinds have no structure to parse.
+let logRenderMode = 'events';
+let lastLogMode = 'tail';
 let decisionSubmitted = false;
 let userPickedStage = false;   // set once the user clicks a stage themselves
 
@@ -694,6 +748,12 @@ function loadRunDetail() {
         .then(r => { if (!r.ok) throw new Error('Run not found'); return r.json(); })
         .then(run => {
             runData = run;
+            // Ad-hoc sessions (ADR-016) have their own page — bounce over
+            // instead of rendering them through the pipeline viewer.
+            if (run.run_kind === 'adhoc') {
+                window.location.replace('/projects/' + window.BB_PROJECT_ID + '/sessions/' + run.id);
+                return;
+            }
             renderStageRail(run);
             // Header shows the story plus the unique run id — story ids can
             // repeat across runs (retries, re-runs), the run id never does.
@@ -997,9 +1057,14 @@ function selectStage(idx, fromUser) {
             if (hasSummary) selectSummary();
             else selectFile(0);
         } else if (logsViewActive) {
-            // Live-poll refresh while the inline log view is up: the attempt's
-            // logs are immutable, so leave the view alone — just re-apply the
-            // pill highlight (the pills were rebuilt above).
+            // Live-poll refresh while the inline log view is up: a RUNNING
+            // step's logs grow (agent.log heartbeats every ~5 s), so silently
+            // re-tail them; a finished attempt's logs are immutable — leave
+            // the view alone and just re-apply the pill highlight (the pills
+            // were rebuilt above).
+            if (node.exec_state === 'running' && lastLogMode === 'tail') {
+                loadStageLog('tail', true);
+            }
             const chosen = files.findIndex(f => f.path === selectedFilePath);
             document.querySelectorAll('.file-pill').forEach(el => {
                 const active = selectedFilePath === null
@@ -1543,30 +1608,71 @@ function openStageLog() {
     }
     document.getElementById('log-kind').innerHTML =
         node.log_kinds.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join('');
+    // Re-entry defaults to the events view for agent logs, raw for the rest.
+    logRenderMode = node.log_kinds.includes('agent') ? 'events' : 'raw';
     logsViewActive = true;
     setLogsButton(true);
     document.getElementById('viewer-content').style.display = 'none';
     document.getElementById('viewer-source').style.display = 'none';
     document.getElementById('log-view').style.display = 'flex';
+    updateLogRenderButtons();
     loadStageLog('tail');
 }
 
-function loadStageLog(mode) {
+function updateLogRenderButtons() {
+    const kind = document.getElementById('log-kind').value;
+    const eventsAvailable = kind === 'agent';
+    const eventsBtn = document.getElementById('btn-log-events');
+    const rawBtn = document.getElementById('btn-log-raw');
+    eventsBtn.disabled = !eventsAvailable;
+    eventsBtn.classList.toggle('active', eventsAvailable && logRenderMode === 'events');
+    rawBtn.classList.toggle('active', !eventsAvailable || logRenderMode === 'raw');
+}
+
+function setLogRenderMode(m) {
+    if (logRenderMode === m) return;
+    logRenderMode = m;
+    updateLogRenderButtons();
+    loadStageLog(lastLogMode);
+}
+
+function logKindChanged() {
+    logRenderMode = document.getElementById('log-kind').value === 'agent'
+        ? 'events' : 'raw';
+    updateLogRenderButtons();
+    loadStageLog('tail');
+}
+
+// The agent events view is shared with the ad-hoc session page:
+// window.BB_AGENT_EVENTS.render(text) (static/bb_agent_events.js).
+
+function loadStageLog(mode, silent) {
     const node = logNode();
     if (!node) return;
+    lastLogMode = mode;
     const kind = document.getElementById('log-kind').value;
+    const useEvents = logRenderMode === 'events' && kind === 'agent';
     const params = new URLSearchParams({
         step_id: node.step_id,
         attempt_no: node.attempt_no,
         kind: kind,
         mode: mode,
     });
+    if (useEvents) params.set('render', 'raw');
     const box = document.getElementById('log-content');
+    const renderedBox = document.getElementById('log-rendered');
     const sizeEl = document.getElementById('log-size');
     const noteEl = document.getElementById('log-note');
-    box.textContent = 'Loading…';
-    sizeEl.textContent = '';
-    noteEl.style.display = 'none';
+    // Silent refreshes (the live-tail poll while the step runs) keep the
+    // current content on screen until the new window arrives — no flash.
+    if (!silent) {
+        box.textContent = 'Loading…';
+        renderedBox.innerHTML = '';
+        sizeEl.textContent = '';
+        noteEl.style.display = 'none';
+    }
+    box.style.display = useEvents ? 'none' : '';
+    renderedBox.style.display = useEvents ? '' : 'none';
     fetch('/api/runs/' + window.BB_RUN_ID + '/logs?' + params.toString(),
           { headers: authHeaders() })
         .then(r => {
@@ -1580,18 +1686,44 @@ function loadStageLog(mode) {
             return r.json();
         })
         .then(d => {
+            if (d.pending) {
+                // Launch-registered log whose first upload hasn't landed —
+                // keep the view in "waiting" mode and poll on.
+                sizeEl.textContent = 'waiting…';
+                if (useEvents) {
+                    renderedBox.innerHTML =
+                        '<div class="log-plain">(waiting for the agent to start writing its log…)</div>';
+                } else {
+                    box.textContent = '(waiting for the log upload — arrives every ~5s while the step runs)';
+                }
+                return;
+            }
             sizeEl.textContent = (d.size || 0) > 0
                 ? formatLogSize(d.size) + (d.mode === 'full' ? ' (full)' : ' (tail)')
                 : 'empty';
-            box.textContent = d.content || '(empty log)';
-            if (d.truncated) {
-                noteEl.style.display = '';
-                noteEl.textContent =
-                    'Log exceeds the 20 MB serving cap — showing the most recent portion.';
+            if (useEvents) {
+                renderedBox.innerHTML = window.BB_AGENT_EVENTS.render(d.text || '');
+                if (d.truncated_render) {
+                    noteEl.style.display = '';
+                    noteEl.textContent =
+                        'Showing only the most recent portion of the transcript (events view).';
+                }
+            } else {
+                box.textContent = d.content || '(empty log)';
+                if (d.truncated) {
+                    noteEl.style.display = '';
+                    noteEl.textContent =
+                        'Log exceeds the 20 MB serving cap — showing the most recent portion.';
+                }
             }
         })
         .catch(err => {
-            box.textContent = 'Failed to load log: ' + err.message;
+            if (useEvents) {
+                renderedBox.innerHTML =
+                    '<div class="log-plain">Failed to load log: ' + esc(err.message) + '</div>';
+            } else {
+                box.textContent = 'Failed to load log: ' + err.message;
+            }
         });
 }
 

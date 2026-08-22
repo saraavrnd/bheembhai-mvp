@@ -177,6 +177,15 @@ async def run_detail_page(project_id: str, run_id: str, request: Request):
     )
 
 
+@app.get("/projects/{project_id}/sessions/{run_id}", include_in_schema=False)
+async def adhoc_session_page(project_id: str, run_id: str, request: Request):
+    """Ad-hoc session (ADR-016) — user query + live rendered transcript."""
+    return templates.TemplateResponse(
+        request, "adhoc_session.html",
+        {"request": request, "project_id": project_id, "run_id": run_id},
+    )
+
+
 @app.get("/projects/{project_id}/workflows/{workflow_id}", include_in_schema=False)
 async def workflow_home_page(project_id: str, workflow_id: str, request: Request):
     """Workflow home — definition strip, 30-day stats, scoped run list.

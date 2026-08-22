@@ -1,5 +1,7 @@
 """Unit tests — workflow/policy YAML parsing, validation, and tier resolution."""
 
+from pathlib import Path
+
 import pytest
 
 from engine_service.workflow import (
@@ -13,6 +15,9 @@ from engine_service.workflow import (
     validate_pairing,
     validate_workflow,
 )
+from platform_api.routers._workflow_shared import _parse_workflow_yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 WF_YAML = """
 workflow: story-delivery
@@ -196,3 +201,32 @@ def test_allowed_models_is_the_three_resolved_ids():
     assert allowed_models(VENDOR_CONFIG) == [
         "deepseek-v4-pro", "deepseek-v4-mid", "deepseek-v4-flash"]
     assert allowed_models({"model_high": "only"}) == ["only"]
+
+
+# ── Seeded ad-hoc workflow/policy (ADR-016) — guard the seed files themselves ──
+
+
+def test_seeded_adhoc_workflow_parses_and_routes_to_done():
+    """The ad-hoc template must stay a 1-step workflow that terminates — the
+    engine's `_loop` already handles `DONE`, so no state-machine change."""
+    yaml_text = (REPO_ROOT / "config" / "workflow-adhoc.yaml").read_text()
+    wf = WorkflowSpec.load_yaml(yaml_text)
+    assert wf.name == "adhoc"
+    assert wf.start == "adhoc"
+    assert list(wf.steps) == ["adhoc"]
+    assert wf.route_for("adhoc", "completed") == "DONE"
+    # The platform's 1-step guard for ad-hoc submits parses the same file.
+    parsed = _parse_workflow_yaml(yaml_text)
+    assert parsed is not None and len(parsed.steps) == 1
+    assert parsed.steps[0].id == "adhoc"
+
+
+def test_seeded_adhoc_policy_is_gate_free_and_pairs():
+    """Wide-open by design: zero gates, and the workflow/policy pairing
+    validates so run submit never 422s on the template itself."""
+    policy = PolicySpec.load_yaml(
+        (REPO_ROOT / "config" / "policy-adhoc.yaml").read_text())
+    assert policy.gates == {}
+    wf = WorkflowSpec.load_yaml(
+        (REPO_ROOT / "config" / "workflow-adhoc.yaml").read_text())
+    assert validate_pairing(wf, policy) is True

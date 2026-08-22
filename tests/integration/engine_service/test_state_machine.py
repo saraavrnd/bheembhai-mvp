@@ -201,7 +201,8 @@ async def make_world(session, created, secure_storage, *,
                      wf_yaml=WF_GATED, pol_yaml=POLICY_GATE_FIRST,
                      state="pending", current_step=None,
                      step_overrides=None, run_branch=_PRESET_BRANCH,
-                     stamp_bundles=True):
+                     stamp_bundles=True, run_kind="workflow",
+                     user_query=None):
     """Insert a complete run world (user/project/integrations/workflow/policy/
     skills/run/step rows) with credentials resolvable from SecureStorage.
 
@@ -211,6 +212,9 @@ async def make_world(session, created, secure_storage, *,
 
     `stamp_bundles` (Phase 1): skill + step rows carry S3 bundle pins by
     default. Disable it to exercise the engine's self-heal publish.
+
+    `run_kind`/`user_query` (ADR-016): pass run_kind="adhoc" for a session
+    world (the opening query becomes the first turn's prompt).
     """
     suffix = uuid.uuid4().hex[:8]
     user = User(external_id=f"ext-{suffix}", auth_provider="test",
@@ -285,7 +289,8 @@ async def make_world(session, created, secure_storage, *,
               run_branch=rb,
               github_integration_id=gh.id, jira_integration_id=jira.id,
               ai_vendor_integration_id=vendor.id, state=state,
-              current_step=current_step, started_by_user_id=user.id)
+              current_step=current_step, started_by_user_id=user.id,
+              run_kind=run_kind, user_query=user_query)
     session.add(run)
     await session.flush()
     created.append((Run, run.id))

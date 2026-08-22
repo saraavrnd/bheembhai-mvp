@@ -29,11 +29,12 @@ gates:
 """
 
 
-def build(step_id, *, handoff=None, reviewer_feedback=""):
+def build(step_id, *, handoff=None, reviewer_feedback="", user_query=""):
     wf = WorkflowSpec.load_yaml(WF_YAML)
     pol = PolicySpec.load_yaml(POLICY_YAML)
     return build_step_context("r1", step_id, step_id, "STORY-1", wf, pol,
-                              reviewer_feedback=reviewer_feedback, handoff=handoff)
+                              reviewer_feedback=reviewer_feedback, handoff=handoff,
+                              user_query=user_query)
 
 
 def test_context_never_leaks_routing_targets():
@@ -85,3 +86,18 @@ def test_reviewer_feedback_passed_through():
     sd = build("story-design", reviewer_feedback="please tighten the acceptance criteria")
     assert sd["reviewer_feedback"] == "please tighten the acceptance criteria"
     assert build("test-creator")["reviewer_feedback"] == ""
+
+
+def test_user_query_carried_verbatim():
+    """ADR-016: the ad-hoc query rides the BB_CONTEXT channel unchanged — the
+    runner turns it into the prompt."""
+    query = "fix the flaky login test and run the full suite"
+    sd = build("story-design", user_query=query)
+    assert sd["user_query"] == query
+
+
+def test_user_query_defaults_to_empty_for_pipeline_steps():
+    """Pipeline steps never carry a query — empty string, not None, so the
+    runner's jq extraction (`.user_query // ""`) behaves identically."""
+    assert build("story-design")["user_query"] == ""
+    assert json.dumps(build("story-design")) is not None

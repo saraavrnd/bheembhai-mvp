@@ -165,6 +165,31 @@ branch — no concurrent writers, no merge handling needed. The agent clones the
 
 Copy mode (`BB_GIT_MODE=0`): uses `BB_SEED_REPO` as a local dir copy, never pushes. For demos without a remote.
 
+## Ad-hoc interactive sessions (ADR-016)
+
+`run_kind="adhoc"` turns a run into a multi-turn session on an **existing** branch: the engine
+verifies the user-named ref via GitHub REST (404 → `InitFailure("failed_execution")`) and works
+directly on it — never derives or creates. A live container serves turns through object-storage
+channels (`turns/<run>/<slug step>/<attempt>/inbox.json` engine→container, `outbox.json`
+container→engine, monotonic `seq`); one dispatch = one turn = one pause at **`awaiting_input`**
+(a Transition to_state, never a gate — `submit_decision` 409s on ad-hoc runs; turns and End
+session are the only actions). `Step.attempt_no` numbers container incarnations, `Step.turn_no`
+numbers turns; `exec_state` stays `running` for the whole session (`pending` = never launched,
+the cold-start discriminator). Each completed turn is a Transition row `{kind:"turn", seq,
+query, response, commit, files, cost}` — durable audit independent of object storage. Reuse:
+a real `adhoc` skill row + 1-step workflow (`on: {completed: DONE}`) + `gates: {}` policy.
+
+The engine mints `claude_session_id` at `_init_run`; the agent runs `--resume <id>
+--exclude-dynamic-system-prompt-sections` on cold-starts and uploads its transcript to
+`transcripts/<run>/<session_id>.jsonl` on graceful exit (`BB_TRANSCRIPT_PUT_URL`/`GET_URL`;
+a missing URL skips the upload). **`CLAUDE_VERSION` is pinned in the agent image** — the
+transcript JSONL is version-internal. Sessions end via explicit **End session**
+(`POST /api/runs/{id}/end` → end sentinel `{seq: turn_no+1, kind:"end"}` — seq derived but
+never persisted, `turn_no` numbers turns only → commit+push+exit → run completed) or the
+**idle reaper** (paused ad-hoc idle past `BB_ADHOC_IDLE_SECONDS`, default 600; atomic
+active→reaping flip; never `docker rm -f`; hung past `BB_ADHOC_END_GRACE_SECONDS`, default 60
+→ hard-kill; the run stays paused and the next turn cold-starts a fresh incarnation).
+
 ## Environment variables
 
 **Per-run, user-configured env vars exported into every step container** (ADR-015) — managed on the project config **Env Vars** tab and the Admin-area page:
@@ -172,7 +197,7 @@ Copy mode (`BB_GIT_MODE=0`): uses `BB_SEED_REPO` as a local dir copy, never push
 - **Table `environment_variables`** — every row is `plain` (value stored in the DB) or `secret` (raw value written to SecureStorage under `/bheembhai/env/{project_id|platform}/{name}`; the DB holds only the opaque ref). `value_type` is immutable on PATCH (convert = delete + re-create).
 - **Scopes + override** — `platform` rows (project_id NULL, admin-managed) apply to every run; `project` rows apply to one project. A project row sharing a platform row's name **overrides** it (platform-first merge in `shared/bheembhai/env_vars.py`).
 - **Resolution** — the engine queries platform + project rows at `_init_run`, resolves secret refs (missing secret → `InitFailure("failed_execution")`, zero containers), and the merged dict rides `InitContext.env_vars`. Injection uses `env.setdefault` — engine-owned keys always win. Values are never logged (names only).
-- **Reserved names** — engine/agent-owned keys (`GH_TOKEN`, `RUN_ID`/`STEP_ID`/`ATTEMPT_NO`/`SKILL`/`RESULT_DIR`/`STORY_ID`, `GIT_*`/`RUN_BRANCH`/`BB_GIT_MODE`, `BB_MODEL`/`BB_ALLOWED_MODELS`, `ANTHROPIC_*`/`JIRA_*`, `BB_CONTEXT`/`CONTEXT_FILE`, launch-channel `BB_*_URL` presigns, `env_forward` knobs `BB_MOCK*`/`CLAUDE_CODE_*`) are rejected at save time (400). **Exception (tunables):** `BB_MAX_STEP_VISITS` / `BB_MAX_ATTEMPTS` — user-settable, validated int ≥ 1, exported to the container AND consumed engine-side per run (garbage falls back to the engine default). Step `deadline` stays workflow-owned — not tunable.
+- **Reserved names** — engine/agent-owned keys (`GH_TOKEN`, `RUN_ID`/`STEP_ID`/`ATTEMPT_NO`/`SKILL`/`RESULT_DIR`/`STORY_ID`, `GIT_*`/`RUN_BRANCH`/`BB_GIT_MODE`, `BB_MODEL`/`BB_ALLOWED_MODELS`, `BB_SESSION`/`BB_SESSION_ID`/`BB_SESSION_RESUME`, `ANTHROPIC_*`/`JIRA_*`, `BB_CONTEXT`/`CONTEXT_FILE`, launch-channel `BB_*_URL` presigns, `env_forward` knobs `BB_MOCK*`/`CLAUDE_CODE_*`) are rejected at save time (400). **Exception (tunables):** `BB_MAX_STEP_VISITS` / `BB_MAX_ATTEMPTS` — user-settable, validated int ≥ 1, exported to the container AND consumed engine-side per run (garbage falls back to the engine default). Step `deadline` stays workflow-owned — not tunable.
 
 ## Guardrails
 
@@ -182,6 +207,7 @@ Copy mode (`BB_GIT_MODE=0`): uses `BB_SEED_REPO` as a local dir copy, never push
 - **Push-lands-or-retry**: failures retry from last good state.
 - **Fail-fast init**: bad git credentials, missing integrations, unknown skills, or missing tier mappings surface at `_init_run` as classified run failures (failed_execution/failed_infra) — before any container minutes are spent.
 - **Crash recovery (ADR-003, 2 steps)**: (1) stale `claimed` queue items reset to `pending` (idempotent `_init_run` makes re-claiming a `start` safe); (2) runs in `(running, paused)` with no pending/claimed item get a `continue{action: resume}` item — the dispatch resumes from persisted state and re-attaches via the runtime handle in `steps.fargate_task_arn` (alive → keep polling with the remaining deadline; gone → relaunch the same `attempt_no`).
+- **Idle-session reaper (ADR-016)**: the worker sweeps every loop iteration and ends paused ad-hoc sessions idle past `BB_ADHOC_IDLE_SECONDS` — sentinel → exit wait (never `docker rm -f`; hard-kill only after `BB_ADHOC_END_GRACE_SECONDS`); the run stays paused and the next turn cold-starts with `--resume`. The reaper is load-bearing: it is the only bound on a session container's lifetime.
 
 ## API endpoints
 
@@ -193,6 +219,8 @@ Production surface (platform API on host :9000, engine on host :9001, Postgres o
 | POST | `/api/runs` | Start a run — body: `{project_id, workflow_id, policy_id, story_id, github_integration_id, jira_integration_id?, ai_vendor_integration_id}` (ADR-013 §1). Validates + creates the run row + enqueues a `start` work item |
 | POST | `/api/runs/{id}/decision` | Queue a gate decision (409 unless `run.state == "paused"`): body `{action: approve \| send_back, send_back_to?, comment?}` → INSERTs a `continue` work item, **no state mutation** |
 | POST | `/api/runs/{id}/cancel` | Stop a run (404 unknown, 409 already terminal): enqueues a `cancel` work_queue token, **no state mutation**. The engine claims it outside the per-run lock, signals the in-flight dispatch (in-memory event → reconciler aborts within one poll tick, container force-removed), voids queued siblings, closes any open gate, and records `runs.state = "cancelled"` |
+| POST | `/api/runs/{id}/turn` | Queue an ad-hoc session turn (ADR-016): body `{query}` (409 unless the run is a paused ad-hoc session) → `continue` item `{action: turn, query}` — **no state mutation** |
+| POST | `/api/runs/{id}/end` | Queue End session (ADR-016): `continue` item `{action: end}` — the engine signals the live container to commit+push+exit and completes the run |
 | GET | `/api/runs/{id}` | Run state |
 | GET | `/api/runs/{id}/file?path=` | Read an artifact from git at the step's recorded commit SHA, falling back to demo stubs (2 MB cap, text-only) |
 | GET/POST/PATCH/DELETE | `/api/projects/{id}/environment-variables` | Env-var CRUD (member GET, manager writes): merged platform+project view with override flags; secret values via SecureStorage, never returned |

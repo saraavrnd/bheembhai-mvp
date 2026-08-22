@@ -48,15 +48,19 @@ STATUS_MEANINGS = {
 def build_step_context(run_id: str, step_id: str, skill: str, story_id: str | None,
                        workflow_spec, policy_spec, *,
                        reviewer_feedback: str = "",
-                       handoff: dict | None = None) -> dict:
+                       handoff: dict | None = None,
+                       user_query: str = "") -> dict:
     """Compose the context injected into a step container. Pure — no DB, no routing
-    targets. `handoff` is the prior step's non-happy verdict report (if any)."""
+    targets. `handoff` is the prior step's non-happy verdict report (if any).
+    `user_query` is the ad-hoc session's query (ADR-016) — carried on the same
+    BB_CONTEXT channel as everything else; empty for pipeline steps."""
     allowed = workflow_spec.allowed_statuses(step_id)
     gates = policy_spec.gates
     gated = step_id in gates
     return {
         "run_id": run_id, "step_id": step_id, "skill": skill,
         "story_id": story_id,
+        "user_query": user_query or "",
         "reviewer_feedback": reviewer_feedback or "",
         # If this step was reached by another step's non-happy verdict, tell it why
         # and where the detail lives (e.g. test-verify's verification.md on a BLOCK).
@@ -92,6 +96,10 @@ def build_env_bundle(ctx: "InitContext", *, step_id: str, attempt_no: int,
     env: dict[str, str] = {
         # Engine group
         "RUN_ID": str(ctx.run.id),
+        # Ad-hoc sessions (ADR-016) switch the runner's prompt contract: the
+        # user query IS the prompt (no BB_OUTCOME vocabulary); pipeline steps
+        # keep the default workflow mode.
+        "BB_MODE": "adhoc" if ctx.run.run_kind == "adhoc" else "workflow",
         "STEP_ID": step_id,
         "ATTEMPT_NO": str(attempt_no),
         "SKILL": skill,

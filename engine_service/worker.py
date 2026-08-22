@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 
 from bheembhai.config import AppConfig
 from bheembhai.database import get_sessionmaker
-from bheembhai.models.run import Run
+from bheembhai.models.run import Run, Step
 from bheembhai.models.work_queue import WorkQueueItem
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +40,7 @@ from engine_service.state_machine import (
     TERMINAL_STATES,
     _last_gate_transition,
     drive_run,
+    reap_idle_session,
 )
 from engine_service.workflow import ExecState, Result
 
@@ -55,6 +56,9 @@ _store = None
 
 _run_locks: dict[uuid.UUID, asyncio.Lock] = {}
 _dispatches: set[asyncio.Task] = set()
+# Live session-reap tasks (ADR-016 §2): spawned per reaped run, tracked so the
+# loop never loses them (and for observability). They run OUTSIDE any dispatch.
+_reap_tasks: set[asyncio.Task] = set()
 # Live dispatch registry (stop-run): run_id -> {"event": cancel signal, "task": the
 # dispatch task}. Registered synchronously inside _process_item — before the worker
 # loop can claim the NEXT item — so a `cancel` item always finds the dispatch it
@@ -124,6 +128,7 @@ async def worker_loop(config: AppConfig) -> None:
             try:
                 async with sessionmaker() as session:
                     await _reap_stale_claims(session, config)
+                    await _reap_idle_adhoc_sessions(session, config)
                     claimed = await _claim_next_item(session, config)
                     if claimed:
                         await _process_item(session, claimed, config)
@@ -165,6 +170,63 @@ async def _reap_stale_claims(session: AsyncSession, config: AppConfig) -> int:
                        "re-queued for dispatch", item_id)
     METRICS.orphaned_items = max(0, METRICS.orphaned_items - len(stale))
     return len(stale)
+
+
+async def _reap_idle_adhoc_sessions(session: AsyncSession, config: AppConfig) -> int:
+    """Find ad-hoc sessions idle past BB_ADHOC_IDLE_SECONDS and hand each to a
+    reap task (ADR-016 §2).
+
+    The 'active'/'reaping' → 'reaping' phase flip commits HERE, atomically per
+    run (rowcount guard): the reap task itself can run for minutes (graceful
+    exit wait), and the marker is the double-fire guard — another loop
+    iteration (or engine process) only reaps rows still claiming the same
+    phase. The reap task bumps session_last_activity_at FIRST, so a live reap
+    never looks stale; one that crashed mid-flight becomes re-eligible after
+    the idle threshold again (the whole flow is idempotent: a re-sent sentinel
+    and duplicated bookkeeping are noise, never corruption).
+
+    Only paused sessions with no pending/claimed work item are eligible — a
+    queued turn/end is about to flip activity itself, and a running run's turn
+    is in flight and owns the container.
+    """
+    idle_since = datetime.now(timezone.utc) - timedelta(
+        seconds=config.engine.ad_hoc_idle_seconds)
+    busy_item = (
+        select(WorkQueueItem.id)
+        .where(WorkQueueItem.run_id == Run.id,
+               WorkQueueItem.state.in_(("pending", "claimed")))
+        .limit(1)
+    )
+    candidates = (await session.execute(
+        select(Run.id).where(
+            Run.run_kind == "adhoc",
+            Run.state == "paused",
+            Run.session_phase.in_(("active", "reaping")),
+            Run.session_last_activity_at.is_not(None),
+            Run.session_last_activity_at < idle_since,
+            ~busy_item.exists(),
+        )
+    )).scalars().all()
+    claimed = []
+    for run_id in candidates:
+        flipped = await session.execute(
+            update(Run)
+            .where(Run.id == run_id,
+                   Run.session_phase.in_(("active", "reaping")),
+                   Run.session_last_activity_at < idle_since)
+            .values(session_phase="reaping"))
+        if flipped.rowcount:
+            claimed.append(run_id)
+    await session.commit()
+
+    for run_id in claimed:
+        logger.info("reaping idle ad-hoc session run=%s", run_id)
+        task = asyncio.create_task(reap_idle_session(
+            config, _runtime, sessionmaker=get_sessionmaker(),
+            run_id=run_id, publish=_publish, store=_store))
+        _reap_tasks.add(task)
+        task.add_done_callback(_reap_tasks.discard)
+    return len(claimed)
 
 
 async def _claim_next_item(
@@ -380,6 +442,30 @@ async def _cancel_guarded(config: AppConfig, item_id) -> None:
                         attempt_no=gate_row.attempt_no, actor=actor,
                         result_status=gate_row.result_status,
                         reason=f"gate closed — run cancelled by {actor}")
+                # Ad-hoc sessions (ADR-016 §2): a paused ad-hoc run still has a
+                # LIVE session container (or one in graceful exit — the reaper
+                # task observes the stop and finishes its bookkeeping). Cancel
+                # is explicit user intent — stop it now. Its work is safe:
+                # every turn commits + pushes before the container answers.
+                if run.run_kind == "adhoc":
+                    row = (await session.execute(
+                        select(Step).where(Step.run_id == run.id,
+                                           Step.step_id == run.current_step)
+                    )).scalar_one_or_none()
+                    if row is not None and row.fargate_task_arn:
+                        started = row.started_at.timestamp() if row.started_at else 0.0
+                        try:
+                            h = await _runtime.make_handle(
+                                str(run.id), row.step_id, row.attempt_no,
+                                row.fargate_task_arn, started)
+                            await _runtime.stop(h)
+                            logger.info("cancel run=%s: stopped live session container",
+                                        item.run_id)
+                        except Exception:
+                            logger.warning("cancel run=%s: session container stop failed",
+                                           item.run_id, exc_info=True)
+                        row.fargate_task_arn = None
+                    run.session_phase = "ended"
             prev = run.state
             run.state = "cancelled"
             record_transition(session, run.id, prev, "cancelled",

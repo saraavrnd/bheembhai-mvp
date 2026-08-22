@@ -16,7 +16,7 @@ from bheembhai.providers.local_storage import LocalStorage
 
 import engine_service.runtime as rt
 from conftest import FakeRuntime
-from engine_service.log_upload import upload_step_logs
+from engine_service.log_upload import register_logs_at_launch, upload_step_logs
 
 
 @pytest.fixture(autouse=True)
@@ -154,17 +154,18 @@ def _stmt_kind(stmt):
 
 class _Session:
     """Duck-typed async session: scalar() resolves the RunLog lookup against
-    .existing_kinds (None when absent, like the real DB); add() records."""
+    .existing_kinds (None when absent, like the real DB); add() records.
+    Existing rows carry a mutable size_bytes (like a mapped row) so tests can
+    assert the size-finalization update."""
 
     def __init__(self, existing_kinds=()):
-        self.existing_kinds = set(existing_kinds)
+        self.existing = {kind: SimpleNamespace(kind=kind, size_bytes=0)
+                         for kind in existing_kinds}
         self.added = []
 
     async def scalar(self, stmt):
         kind = _stmt_kind(stmt)
-        if kind in self.existing_kinds:
-            return SimpleNamespace(kind=kind)
-        return None
+        return self.existing.get(kind)
 
     def add(self, obj):
         self.added.append(obj)
@@ -243,7 +244,7 @@ async def test_upload_head_failure_skips_kind_and_keeps_going():
 
 async def test_upload_does_not_duplicate_existing_row():
     """Crash re-entry: the reference row already exists — the re-registration
-    is idempotent and no second row is added."""
+    is idempotent (no second row) and finalizes the existing row's size."""
     store = _attempt_with_logs({
         "agent": b"a",
         "container": b"c",
@@ -253,3 +254,44 @@ async def test_upload_does_not_duplicate_existing_row():
     added = await upload_step_logs(session, _Run(), "design", 1, store)
     assert added == 3                       # all three ensured...
     assert [row.kind for row in session.added] == ["agent", "diagnostics"]
+    # The pre-existing row (e.g. the size-0 row registered at launch) is not
+    # duplicated — its size is finalized to the current head size.
+    assert session.existing["container"].size_bytes == len(b"c")
+
+
+async def test_register_logs_at_launch_inserts_optimistic_rows():
+    """Launch registration: agent + container rows land BEFORE any object
+    exists (size 0 = "waiting for first upload" marker for the platform).
+    No store probe is needed — the objects don't exist yet by design."""
+    store = _attempt_with_logs({})
+    session = _Session()
+    added = await register_logs_at_launch(session, _Run(), "design", 1, store)
+    assert added == 2
+    by_kind = {row.kind: row for row in session.added}
+    assert set(by_kind) == {"agent", "container"}
+    for kind, row in by_kind.items():
+        assert row.object_key == f"logs/{RUN_ID}/design/1/{kind}.log"
+        assert row.size_bytes == 0
+        assert row.run_id == RUN_ID
+        assert row.step_id == "design"
+        assert row.attempt_no == 1
+
+
+async def test_register_logs_at_launch_resets_existing_rows_and_is_idempotent():
+    """Re-launch of the same attempt (crash re-attach, retry): existing rows
+    are reset to 0 — their objects were just cleared — and no duplicate is
+    inserted."""
+    store = _attempt_with_logs({
+        "agent": b"stale object from the previous launch",
+    })
+    session = _Session(existing_kinds={"agent", "container"})
+    session.existing["agent"].size_bytes = 999
+    added = await register_logs_at_launch(session, _Run(), "design", 1, store)
+    assert added == 2
+    assert session.added == []              # nothing new — both rows existed
+    assert session.existing["agent"].size_bytes == 0
+    assert session.existing["container"].size_bytes == 0
+
+
+async def test_register_logs_at_launch_none_store_returns_zero():
+    assert await register_logs_at_launch(_Session(), _Run(), "design", 1, None) == 0

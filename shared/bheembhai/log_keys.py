@@ -4,6 +4,8 @@ Two deterministic, hierarchical namespaces:
 
     results/<run_id>/<step_id>/<attempt_no>/<channel-file>   — live step channels
     logs/<run_id>/<step_id>/<attempt_no>/<kind-file>         — attempt logs
+    turns/<run_id>/<step_id>/<attempt_no>/<turn-file>        — session turn channels (ADR-016)
+    transcripts/<run_id>/<session_id>.jsonl                  — session transcript (ADR-016 §3)
 
 Built by a SINGLE function per key so the writer and the reader can never
 drift. The agent uploads into these keys via presigned PUT URLs (ADR-014);
@@ -69,3 +71,43 @@ def log_key(run_id: str, step_id: str, attempt_no: int, kind: str) -> str:
     if kind not in KIND_FILES:
         raise ValueError(f"unknown log kind {kind!r} (expected one of {KINDS})")
     return f"logs/{run_id}/{_slug(step_id)}/{int(attempt_no)}/{KIND_FILES[kind]}"
+
+
+# ── Session turn channels (ADR-016) ──────────────────────────────────────
+#
+# An ad-hoc session container outlives one step dispatch: the engine writes
+# each turn into the inbox (one stable key, overwritten per turn, monotonic
+# `seq` — the container detects a new turn by seq change) and the container
+# answers into the outbox (seq-matched). One presigned GET covers the
+# container's whole life; the outbox is the reconcile_turn() terminal signal.
+
+INBOX_FILENAME = "inbox.json"
+OUTBOX_FILENAME = "outbox.json"
+
+
+def turn_key_base(run_id: str, step_id: str, attempt_no: int) -> str:
+    """Base key for one attempt's turn channels (engine→container inbox,
+    container→engine outbox). Same (run, step, attempt) derivation as the
+    live channels, so a rebuilt Handle addresses the same session."""
+    return f"turns/{run_id}/{_slug(step_id)}/{int(attempt_no)}"
+
+
+def turn_inbox_key(run_id: str, step_id: str, attempt_no: int) -> str:
+    """The object-store key the engine writes each turn into (ADR-016)."""
+    return f"{turn_key_base(run_id, step_id, attempt_no)}/{INBOX_FILENAME}"
+
+
+def turn_outbox_key(run_id: str, step_id: str, attempt_no: int) -> str:
+    """The object-store key the container writes its turn reply into."""
+    return f"{turn_key_base(run_id, step_id, attempt_no)}/{OUTBOX_FILENAME}"
+
+
+def session_transcript_key(run_id: str, session_id: str) -> str:
+    """The object-store key for a session's Claude Code transcript (ADR-016 §3).
+
+    Session-scoped — deliberately NOT per-attempt: the transcript must survive
+    incarnations so a cold-start container can restore it to
+    ~/.claude/projects/<munged-cwd>/<session-id>.jsonl and `--resume` the
+    conversation. One engine-minted session id per run, so the run id alone
+    scopes the key."""
+    return f"transcripts/{run_id}/{session_id}.jsonl"

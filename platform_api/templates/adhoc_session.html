@@ -1,0 +1,754 @@
+{% extends "user_base.html" %}
+
+{% block title %}Ad-hoc Session — BheemBhai{% endblock %}
+
+{% block page_title %}<span id="run-title">Ad-hoc Session</span>{% endblock %}
+
+{% block breadcrumb %}
+<li class="breadcrumb-item"><a href="/dashboard"><i class="mdi mdi-home-outline"></i></a></li>
+<li class="breadcrumb-item"><a id="bc-project" href="#">Project</a></li>
+<li class="breadcrumb-item active" aria-current="page" id="bc-run">Session</li>
+{% endblock %}
+
+{% block head %}
+<!-- Vendored markdown renderer (no CDN dependency at runtime) -->
+<script src="/static/vendor/marked/marked.min.js?v=1"></script>
+<!-- Shared raw-event accordion renderer for the agent view -->
+<script src="/static/bb_agent_events.js?v=1"></script>
+<style>
+    :root {
+        --sage: #5a9e6f;
+        --sage-bg: #e8f5e9;
+        --terracotta: #e07b5a;
+        --terracotta-bg: #fef0eb;
+        --deep-brown: #8b3a2a;
+        --grey-stage: #7a7a8e;
+        --grey-bg: #eaeaef;
+        --sand: #f5f0e8;
+        --cream: #fefcf7;
+    }
+
+    /* Full-width app shell: the top bar (meta strip) is one row; below it,
+       the main row carries the chat (fills the screen) and, when open, the
+       agent view as a second column. The wrap is a viewport-height flex
+       column: the composer is pinned at the bottom, always visible, and
+       only the message body scrolls. */
+    .session-wrap {
+        margin: 0 auto; padding: 0 16px 16px;
+        display: flex; flex-direction: column;
+        height: calc(100vh - 190px);   /* navbar + page title + breadcrumb */
+        min-height: 460px;
+    }
+    .session-main {
+        flex: 1 1 auto; min-height: 0;
+        display: flex; align-items: stretch; gap: 14px;
+    }
+    .session-main .session-chat {
+        flex: 1 1 auto; min-width: 0; min-height: 0;
+    }
+
+    /* ── Meta strip ── */
+    .session-meta {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+        background: #fff; border: 1px solid #eee5d8; border-radius: 8px;
+        padding: 12px 16px; margin-bottom: 14px;
+    }
+    .session-meta .state {
+        font-weight: 700; font-size: 13px; padding: 3px 10px;
+        border-radius: 999px; background: var(--grey-bg); color: #5a5a6e;
+    }
+    .session-meta .state.running { background: #e3f0ff; color: #2a62d5; }
+    .session-meta .state.completed { background: var(--sage-bg); color: #2a5a3a; }
+    .session-meta .state.failed, .session-meta .state.cancelled { background: var(--terracotta-bg); color: var(--deep-brown); }
+    .session-meta .phase {
+        font-size: 11.5px; font-weight: 600; padding: 3px 10px;
+        border-radius: 999px; background: #fdf3d9; color: #8a6d1a;
+    }
+    .session-meta .kv { font-size: 12.5px; color: #6e7681; }
+    .session-meta .kv code {
+        font-family: 'JetBrains Mono', monospace; font-size: 12px;
+        color: var(--deep-brown); background: var(--sand); padding: 2px 6px;
+        border-radius: 4px; word-break: break-all;
+    }
+    .session-meta .cost {
+        font-family: 'JetBrains Mono', monospace; font-size: 14px;
+        font-weight: 700; color: #2a5a3a;
+    }
+    .session-meta .cost-label {
+        font-family: 'Inter', -apple-system, sans-serif; font-size: 10px;
+        font-weight: 600; color: #8a7a6a; text-transform: uppercase;
+        letter-spacing: 0.04em; margin-right: 4px;
+    }
+    .session-meta .meta-actions { margin-left: auto; display: flex; gap: 8px; }
+    .session-meta .btn-stop {
+        padding: 6px 12px; font-size: 12px; font-weight: 600;
+        color: #fff; background: var(--deep-brown);
+        border: 1px solid var(--deep-brown); border-radius: 6px; cursor: pointer;
+    }
+    .session-meta .btn-stop:hover { background: #6e2b1d; }
+    .session-meta .btn-stop:disabled { opacity: 0.6; cursor: default; }
+    .session-meta .btn-end {
+        padding: 6px 12px; font-size: 12px; font-weight: 600;
+        color: #2a5a3a; background: #fff;
+        border: 1px solid var(--sage); border-radius: 6px; cursor: pointer;
+    }
+    .session-meta .btn-end:hover { background: var(--sage-bg); }
+    .session-meta .btn-end:disabled { opacity: 0.6; cursor: default; }
+
+    /* ── Chat ── */
+    .session-chat {
+        background: #fff; border: 1px solid #eee5d8; border-radius: 8px;
+        display: flex; flex-direction: column; margin-bottom: 14px;
+    }
+    .session-chat-body {
+        padding: 14px 16px; overflow-y: auto;
+        flex: 1 1 auto; min-height: 0;
+        background: var(--cream);
+    }
+    .chat-turn { margin: 0 0 14px; }
+    .chat-turn .u-msg {
+        background: #e3f0ff; border: 1px solid #c8dcf8; border-radius: 8px;
+        padding: 8px 12px; margin-left: 12%;
+        font-size: 13.5px; color: #1d2c4d; line-height: 1.5;
+        white-space: pre-wrap; word-break: break-word;
+    }
+    .chat-turn .u-label, .chat-turn .a-label {
+        font-size: 10px; font-weight: 700; color: #8a7a6a;
+        text-transform: uppercase; letter-spacing: 0.05em; margin: 0 0 3px 4px;
+    }
+    /* "You" sits ON TOP of the indented bubble, not left of it */
+    .chat-turn .u-label { margin-left: 12%; }
+    .chat-turn .a-label { color: #2a5a3a; }
+    .chat-turn .a-msg {
+        background: #f6f1e6; border: 1px solid #e5dcc8; border-radius: 8px;
+        padding: 8px 12px; max-width: 92%;
+        font-size: 13.5px; color: #2a2a3a; line-height: 1.6;
+    }
+    .chat-turn .a-msg > :last-child { margin-bottom: 0; }
+    .chat-turn .a-msg-failed {
+        background: #fdf0ef; border: 1px solid #ecc5c2;
+        border-left: 3px solid var(--terracotta);
+        padding-left: 10px; color: var(--deep-brown);
+    }
+    .chat-turn .a-msg-failed .err-reason { font-size: 12.5px; opacity: 0.85; }
+    .chat-turn .t-foot {
+        display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+        margin: 6px 0 0 4px; font-size: 11px; color: #8a7a6a;
+    }
+    .chat-turn .t-foot code {
+        font-family: 'JetBrains Mono', monospace; font-size: 10.5px;
+        color: var(--deep-brown); background: var(--sand); padding: 1px 5px;
+        border-radius: 3px; word-break: break-all;
+    }
+    .chat-turn .t-foot a {
+        font-family: 'JetBrains Mono', monospace; font-size: 11px;
+        color: #2a62d5; text-decoration: none; margin-right: 8px;
+    }
+    .chat-turn .t-foot a:hover { text-decoration: underline; }
+    .chat-working {
+        display: flex; align-items: center; gap: 8px;
+        font-size: 12.5px; color: #6e7681; padding: 4px 6px 14px;
+    }
+    .chat-working .dots::after {
+        content: '…'; animation: dots 1.4s steps(4, end) infinite;
+    }
+    @keyframes dots {
+        0% { content: ''; } 25% { content: '·'; } 50% { content: '··'; } 75% { content: '···'; }
+    }
+
+    /* ── Input bar ── */
+    .session-input {
+        display: flex; gap: 10px; align-items: flex-end;
+        padding: 12px 16px; border-top: 1px solid #f5f0e8; background: #fff;
+        border-radius: 0 0 8px 8px;
+    }
+    .session-input textarea {
+        flex: 1; resize: vertical; min-height: 44px; max-height: 160px;
+        font-size: 13.5px; font-family: 'Inter', -apple-system, sans-serif;
+        color: #2a2a3a; border: 1px solid #e2ddc9; border-radius: 6px;
+        padding: 10px 12px; background: var(--cream); outline: none;
+    }
+    .session-input textarea:focus { border-color: var(--sage); box-shadow: 0 0 0 2px rgba(90,158,111,0.15); }
+    .session-input textarea:disabled { opacity: 0.6; }
+    .session-input .btn-send {
+        padding: 10px 18px; font-size: 13px; font-weight: 700;
+        color: #fff; background: var(--sage); border: 1px solid var(--sage);
+        border-radius: 6px; cursor: pointer; white-space: nowrap;
+    }
+    .session-input .btn-send:hover { background: #4c8a5f; }
+    .session-input .btn-send:disabled { opacity: 0.6; cursor: default; }
+    .session-input .hint {
+        font-size: 11px; color: #8a7a6a; padding: 6px 2px 0;
+    }
+
+    /* ── Transcript panel ── */
+    .session-log {
+        background: #fff; border: 1px solid #eee5d8; border-radius: 8px;
+        display: flex; flex-direction: column; margin-bottom: 14px;
+    }
+    .session-log-head {
+        display: flex; align-items: center; gap: 8px;
+        padding: 10px 16px; border-bottom: 1px solid #f5f0e8;
+    }
+    .session-log-head .title {
+        font-size: 13px; font-weight: 700; color: #2a2a3a;
+    }
+    .session-log-head .size {
+        font-family: 'JetBrains Mono', monospace; font-size: 11px;
+        color: #8a7a6a; margin-left: auto;
+    }
+    .session-log-head .pulse {
+        width: 8px; height: 8px; border-radius: 50%; background: var(--terracotta);
+        animation: pulse-ring 2s ease-in-out infinite;
+    }
+    @keyframes pulse-ring {
+        0% { box-shadow: 0 0 0 0 rgba(224,123,90,0.5); }
+        70% { box-shadow: 0 0 0 6px rgba(224,123,90,0); }
+        100% { box-shadow: 0 0 0 0 rgba(224,123,90,0); }
+    }
+    .session-log-body {
+        padding: 14px 16px; overflow-y: auto;
+        flex: 1 1 auto; min-height: 0;
+        font-size: 13.5px; color: #2a2a3a; line-height: 1.55;
+        background: var(--cream);
+    }
+    .session-log-note {
+        display: none; padding: 8px 16px; border-top: 1px solid #f5f0e8;
+        font-size: 11.5px; color: #8a7a6a;
+    }
+
+    /* ── Two-column side panel (agent view) ──
+       Closed by default: the chat fills the whole width. The side arrow in
+       the top bar opens the agent panel as a second column of the main row
+       (the top bar itself never moves); the same arrow (or the chevron in
+       the panel head) closes it again. */
+    .session-log { display: none; }
+    .session-meta .btn-agent {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 6px 12px; font-size: 12px; font-weight: 600;
+        color: #2a5a3a; background: #fff;
+        border: 1px solid var(--sage); border-radius: 6px; cursor: pointer;
+    }
+    .session-meta .btn-agent:hover { background: var(--sage-bg); }
+    .session-meta .btn-agent.on { background: var(--sage); color: #fff; }
+    .session-wrap.panel-open .session-log {
+        display: flex; flex: 0 0 46%; min-width: 400px; margin-bottom: 0;
+        min-height: 0;
+        animation: panel-in .18s ease-out;
+    }
+    @keyframes panel-in {
+        from { opacity: 0; transform: translateX(14px); }
+        to { opacity: 1; transform: none; }
+    }
+    .session-log-head .btn-panel-close {
+        margin-left: 8px; border: none; background: none; cursor: pointer;
+        font-size: 16px; color: #8a7a6a; padding: 2px 6px; border-radius: 4px;
+    }
+    .session-log-head .btn-panel-close:hover { background: var(--grey-bg); color: #2a2a3a; }
+    @media (max-width: 1100px) {
+        /* Stacked: back to natural page flow — the pinned-composer layout
+           only holds side-by-side. */
+        .session-wrap { height: auto; min-height: 0; }
+        .session-main { flex-direction: column; }
+        .session-wrap.panel-open .session-log {
+            flex: none; width: 100%; min-width: 0;
+        }
+        .session-chat-body { max-height: 55vh; min-height: 260px; }
+        .session-wrap.panel-open .session-log-body { max-height: 55vh; }
+    }
+
+    /* Raw-event accordion — the transcript exactly as the container wrote
+       it: one collapsed row per line. The native left arrow toggles the raw
+       event (pretty-printed JSON, plain lines as-is). No markdown here —
+       this is the machinery, not the conversation. */
+    .raw-event { margin: 2px 0; border: 1px solid #efe9dc; border-radius: 4px; background: #fff; }
+    .raw-event summary {
+        cursor: pointer; padding: 4px 8px;
+        font-family: 'JetBrains Mono', monospace; font-size: 11.5px;
+        color: #4a4a5e; background: #faf7f0;
+        overflow-wrap: anywhere;
+    }
+    .raw-event[open] summary { border-bottom: 1px solid #efe9dc; }
+    .raw-event.raw-think summary { background: #f6f1e6; color: #6b5a3e; }
+    .raw-event pre {
+        margin: 0; padding: 8px 10px; background: #fffdf8;
+        font-family: 'JetBrains Mono', monospace; font-size: 11px;
+        line-height: 1.5; color: #4a4a5e;
+        white-space: pre-wrap; word-break: break-word;
+        max-height: 340px; overflow-y: auto;
+    }
+    .log-plain {
+        font-family: 'JetBrains Mono', monospace; font-size: 12px;
+        color: #6e7681; margin: 4px 0; white-space: pre-wrap;
+    }
+    .tool-ok { color: var(--sage); }
+    .tool-err { color: var(--deep-brown); }
+    .tool-unk { color: #8a7a6a; }
+    .tool-think { color: #b08968; }
+    .table-scroll { overflow-x: auto; margin: 0 0 12px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="session-wrap">
+    <div class="session-meta" id="session-meta">
+        <span class="state" id="meta-state">⏳ Loading…</span>
+        <span class="phase" id="meta-phase" style="display:none;"></span>
+        <span class="kv" id="meta-branch"></span>
+        <span class="kv" id="meta-model"></span>
+        <span class="kv" id="meta-elapsed"></span>
+        <span class="cost" id="meta-cost"></span>
+        <span class="meta-actions">
+            <button class="btn-agent" id="btn-agent-view" onclick="toggleAgentPanel()"
+                title="Show / hide the live agent view alongside the chat">
+                <i class="mdi mdi-chevron-right"></i> Agent view
+            </button>
+            <button class="btn-end" id="btn-end-session" onclick="endSession()" style="display:none;">
+                <i class="fa fa-power-off"></i> End session
+            </button>
+            <button class="btn-stop" id="btn-stop-run" onclick="stopSession()" style="display:none;">
+                <i class="fa fa-stop"></i> Stop session
+            </button>
+        </span>
+    </div>
+
+    <div class="session-main">
+    <div class="session-chat">
+        <div class="session-chat-body" id="chat-turns">
+            <div class="log-plain">Loading the conversation…</div>
+        </div>
+        <div class="session-input" id="session-input">
+            <textarea id="turn-text" rows="2"
+                placeholder="Send a message to the session — the agent works on your branch and replies here…"></textarea>
+            <button class="btn-send" id="btn-send-turn" onclick="sendTurn()" disabled>
+                <i class="fa fa-paper-plane"></i> Send
+            </button>
+        </div>
+        <div class="session-input" style="border-top:none; padding-top:0;" id="session-hint">
+            <span class="hint" id="input-hint">The input opens once the session is ready.</span>
+        </div>
+    </div>
+
+    <div class="session-log">
+        <div class="session-log-head">
+            <span class="pulse" id="log-pulse"></span>
+            <span class="title">Agent view (live)</span>
+            <span class="size" id="log-size"></span>
+            <button class="btn-panel-close" onclick="toggleAgentPanel(false)"
+                title="Hide the agent view"><i class="mdi mdi-chevron-right"></i></button>
+        </div>
+        <div class="session-log-body" id="session-transcript">
+            <div class="log-plain">Waiting for the session…</div>
+        </div>
+        <div class="session-log-note" id="log-note"></div>
+    </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.BB_PROJECT_ID = '{{ project_id }}';
+window.BB_RUN_ID = '{{ run_id }}';
+
+let runData = null;
+let lastTranscriptHtml = '';
+let transcriptOk = false;
+let pendingQuery = null;   // the in-flight turn's query (client-side memory)
+let chatRenderedOnce = false;   // first renderChat lands at the live bottom
+
+// ── Agent-view side panel ──
+// Closed by default (the chat fills the view); the side arrow in the meta
+// strip opens it as a second column. The choice persists per browser.
+function toggleAgentPanel(force) {
+    const wrap = document.querySelector('.session-wrap');
+    const open = force !== undefined ? force : !wrap.classList.contains('panel-open');
+    wrap.classList.toggle('panel-open', open);
+    const btn = document.getElementById('btn-agent-view');
+    if (btn) {
+        btn.classList.toggle('on', open);
+        btn.querySelector('i').className = open ? 'mdi mdi-chevron-left' : 'mdi mdi-chevron-right';
+    }
+    try { localStorage.setItem('bb-agent-panel', open ? '1' : '0'); } catch (e) { /* private mode */ }
+    if (open) {
+        // Freshly opened: jump the transcript to the live bottom.
+        const box = document.getElementById('session-transcript');
+        box.scrollTop = box.scrollHeight;
+    }
+}
+(function () {
+    try {
+        if (localStorage.getItem('bb-agent-panel') === '1') toggleAgentPanel(true);
+    } catch (e) { /* private mode */ }
+})();
+
+// ── Markdown renderer (marked, vendored at /static/vendor/marked) ──
+// Raw HTML in rendered content is escaped rather than passed through —
+// agent-produced text is not trusted input. (Contained copy of the
+// run_detail config; plain-escape fallback — no parseDocMarkdown here.)
+if (window.marked && typeof marked.parse === 'function') {
+    const mdRenderer = new marked.Renderer();
+    mdRenderer.html = function (tok) {
+        return esc(typeof tok === 'string' ? tok : (tok && tok.text ? tok.text : ''));
+    };
+    marked.setOptions({ renderer: mdRenderer, gfm: true, breaks: false });
+}
+
+function renderMarkdown(md) {
+    if (window.marked && typeof marked.parse === 'function') {
+        try {
+            let html = marked.parse(md || '');
+            if (html.length < 400000) {
+                html = html.replace(/<table[\s\S]*?<\/table>/g, function (m) {
+                    return '<div class="table-scroll">' + m + '</div>';
+                });
+            }
+            return html;
+        } catch (e) { /* fall through to the plain-escape fallback */ }
+    }
+    return '<p>' + esc(md || '') + '</p>';
+}
+
+// ── Raw event renderer — shared with the workflow results viewer at
+//    /static/bb_agent_events.js (BB_AGENT_EVENTS.render) — collapsed
+//    accordion rows, no markdown, consecutive thinking events summed. ──
+const STATE_LABELS = {
+    'pending': '⏳ Pending',
+    'running': '⚡ Working…',
+    'paused': '⏸ Awaiting input',
+    'completed': '✅ Done',
+    'failed': '✕ Failed',
+    'cancelled': '⊘ Cancelled',
+};
+
+const PHASE_LABELS = {
+    'active': null,                          // live session — no pill
+    'reaping': 'ending after idle…',
+    'ended': 'idle — next message starts a fresh container',
+};
+
+window.addEventListener('bb:userReady', function(e) {
+    const data = e.detail;
+
+    // Verify membership — same gate as run_detail
+    const membership = (data.memberships || []).find(m => m.project_id === window.BB_PROJECT_ID);
+    if (!membership) {
+        document.getElementById('chat-turns').innerHTML =
+            '<div class="log-plain" style="color:#f85149;">You are not a member of this project.</div>';
+        return;
+    }
+
+    document.getElementById('bc-project').href = '/projects/' + window.BB_PROJECT_ID + '?tab=runs';
+    document.getElementById('bc-project').textContent = membership.project_name;
+
+    loadSession();
+});
+
+function loadSession() {
+    fetch('/api/runs/' + window.BB_RUN_ID, { headers: authHeaders() })
+        .then(r => { if (!r.ok) throw new Error('Run not found'); return r.json(); })
+        .then(run => {
+            // A session viewed through the pipeline page bounces here — and
+            // vice versa; the two pages are shaped for their run kind.
+            if (run.run_kind !== 'adhoc') {
+                window.location.replace('/projects/' + window.BB_PROJECT_ID + '/runs/' + run.id);
+                return;
+            }
+            runData = run;
+            renderMeta(run);
+            renderChat(run);
+
+            const runIdShort = run.id.substring(0, 8);
+            const heading = 'Session — #' + runIdShort;
+            document.getElementById('bc-run').textContent = heading;
+            document.getElementById('run-title').textContent = heading;
+            document.title = heading + ' — BheemBhai';
+
+            const active = run.state === 'pending' || run.state === 'running';
+            const stage = (run.stages || [])[0];
+            if (stage) loadTranscript(stage, active);
+            if (run.state !== 'completed' && run.state !== 'failed' && run.state !== 'cancelled') {
+                setTimeout(loadSession, 3000);
+            }
+        })
+        .catch(err => {
+            document.getElementById('chat-turns').innerHTML =
+                '<div class="log-plain" style="color:#f85149;">Failed to load: ' + esc(err.message) + '</div>';
+        });
+}
+
+function renderMeta(run) {
+    const stateEl = document.getElementById('meta-state');
+    stateEl.textContent = STATE_LABELS[run.state] || run.state;
+    stateEl.className = 'state ' + (run.state || '');
+
+    const phaseEl = document.getElementById('meta-phase');
+    const phaseLabel = PHASE_LABELS[run.session_phase];
+    if (phaseLabel && run.state === 'paused') {
+        phaseEl.style.display = '';
+        phaseEl.textContent = phaseLabel;
+    } else {
+        phaseEl.style.display = 'none';
+    }
+
+    const branchEl = document.getElementById('meta-branch');
+    branchEl.textContent = '';
+    if (run.run_branch) {
+        branchEl.innerHTML = '⎇ <code>' + esc(run.run_branch) + '</code>';
+    }
+
+    const stage = (run.stages || [])[0] || {};
+    document.getElementById('meta-model').textContent =
+        stage.model ? ('model: ' + stage.model) : (run.workflow_name || '');
+    document.getElementById('meta-elapsed').textContent = run.elapsed_total || '';
+    document.getElementById('meta-cost').innerHTML =
+        '<span class="cost-label">Total cost</span>$' + Number(run.cost_usd || 0).toFixed(2);
+
+    const pulse = document.getElementById('log-pulse');
+    pulse.style.display = (run.state === 'running' || run.state === 'pending') ? '' : 'none';
+
+    const terminal = run.state === 'completed' || run.state === 'failed' || run.state === 'cancelled';
+    const stopBtn = document.getElementById('btn-stop-run');
+    stopBtn.style.display = terminal ? 'none' : '';
+    stopBtn.disabled = false;
+    const endBtn = document.getElementById('btn-end-session');
+    endBtn.style.display = (run.state === 'paused' && !terminal) ? '' : 'none';
+
+    // Input: only while awaiting input and not mid-reap.
+    const reaping = run.session_phase === 'reaping';
+    const inputReady = run.state === 'paused' && !terminal;
+    const text = document.getElementById('turn-text');
+    const send = document.getElementById('btn-send-turn');
+    text.disabled = !inputReady || reaping;
+    send.disabled = !inputReady || reaping;
+    if (terminal) {
+        setInputHint('The session has ended.');
+        text.placeholder = 'The session has ended.';
+    } else if (reaping) {
+        setInputHint('The session is ending after idle — a moment…');
+    } else if (run.state === 'running') {
+        setInputHint('The agent is working — the input re-opens when it answers.');
+    } else if (run.session_phase === 'ended') {
+        setInputHint('This session was paused after idle — your next message starts a fresh container.');
+    } else {
+        setInputHint('The agent works on ' + esc(run.run_branch || 'your branch') +
+            ' and commits + pushes after each turn.');
+    }
+}
+
+function setInputHint(msg) {
+    document.getElementById('input-hint').textContent = msg;
+}
+
+function turnFoot(t) {
+    let html = '';
+    if (t.cost_usd != null && t.cost_usd !== '') {
+        html += '<span>' + (t.cost_reported ? '' : '≥') + '$' +
+            Number(t.cost_usd).toFixed(4) + (t.cost_reported ? '' : ' (partial)') + '</span>';
+    }
+    if (t.commit) {
+        html += '<code>' + esc(t.commit.substring(0, 12)) + '</code>';
+    }
+    for (const f of (t.files || [])) {
+        const params = new URLSearchParams({ path: f.path, step_id: 'adhoc' });
+        if (t.commit) params.set('commit', t.commit);
+        html += '<a href="/api/runs/' + window.BB_RUN_ID + '/file?' + params.toString() +
+            '" target="_blank">' + esc(f.path) + '</a>';
+    }
+    return html ? '<div class="t-foot">' + html + '</div>' : '';
+}
+
+function renderChat(run) {
+    const box = document.getElementById('chat-turns');
+    const terminal = run.state === 'completed' || run.state === 'failed' || run.state === 'cancelled';
+    const turns = (run.turns || []).slice();
+
+    // First turn still in flight: turns[] is empty but the query is on the run.
+    if (!turns.length && run.user_query && !terminal) {
+        turns.push({ query: run.user_query, response: '', pending: true });
+    }
+
+    let html = '';
+    let anyPending = false;
+    for (const t of turns) {
+        html += '<div class="chat-turn">';
+        if (t.query) {
+            html += '<div class="u-label">You</div>';
+            html += '<div class="u-msg">' + esc(t.query) + '</div>';
+        }
+        if (t.pending && !t.response) {
+            html += '<div class="chat-working"><span class="dots"></span> working…</div>';
+            anyPending = true;
+        } else if (t.result_status && t.result_status !== 'completed') {
+            html += '<div class="a-label">Agent — turn failed</div>';
+            html += '<div class="a-msg a-msg-failed">' +
+                '<span class="err-reason">' + esc(t.result_status) + ': ' +
+                esc(t.response || t.result_status) + '</span></div>';
+            html += turnFoot(t);
+        } else {
+            html += '<div class="a-label">Agent</div>';
+            html += '<div class="a-msg">' + renderMarkdown(t.response || '') + '</div>';
+            html += turnFoot(t);
+        }
+        html += '</div>';
+    }
+    // A later turn in flight (turns[] already has completed ones): the
+    // pending query is client-side memory, or unknown after a reload.
+    if (run.state === 'running' && !anyPending) {
+        html += '<div class="chat-turn">';
+        if (pendingQuery) {
+            html += '<div class="u-label">You</div>';
+            html += '<div class="u-msg">' + esc(pendingQuery) + '</div>';
+        }
+        html += '<div class="chat-working"><span class="dots"></span> working…</div></div>';
+    }
+    // Stick to the bottom when the user is already there (and on the very
+    // first render); a reader who scrolled up keeps their place while the
+    // poll re-renders.
+    const stick = !chatRenderedOnce ||
+        box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    chatRenderedOnce = true;
+    box.innerHTML = html || '<div class="log-plain">Say hello to start.</div>';
+    if (stick) box.scrollTop = box.scrollHeight;
+}
+
+function sendTurn() {
+    const text = document.getElementById('turn-text');
+    const query = (text.value || '').trim();
+    if (!query) return;
+    const send = document.getElementById('btn-send-turn');
+    text.disabled = true;
+    send.disabled = true;
+    pendingQuery = query;
+    text.value = '';
+    // The composer is pinned, so the user may have sent while scrolled up —
+    // bring the chat to the bottom so the working indicator is visible.
+    document.getElementById('chat-turns').scrollTop =
+        document.getElementById('chat-turns').scrollHeight;
+    fetch('/api/runs/' + window.BB_RUN_ID + '/turn', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({ query: query }),
+    })
+        .then(r => r.json().then(d => ({ ok: r.ok, d: d })))
+        .then(({ ok, d }) => {
+            if (!ok) {
+                pendingQuery = null;
+                text.disabled = false;
+                send.disabled = false;
+                alert('Turn rejected: ' + (d.detail || 'unknown error'));
+                return;
+            }
+            // The dispatch flips the run to running shortly — poll eagerly.
+            setTimeout(loadSession, 500);
+        })
+        .catch(err => {
+            pendingQuery = null;
+            text.disabled = false;
+            send.disabled = false;
+            alert('Send failed: ' + err.message);
+        });
+}
+
+function endSession() {
+    if (!confirm('End this session? The agent commits + pushes, closes the container, and completes the run.')) return;
+    const endBtn = document.getElementById('btn-end-session');
+    endBtn.disabled = true;
+    fetch('/api/runs/' + window.BB_RUN_ID + '/end', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) })
+        .then(r => r.json().then(d => ({ ok: r.ok, d: d })))
+        .then(({ ok, d }) => {
+            if (!ok) {
+                endBtn.disabled = false;
+                alert('End rejected: ' + (d.detail || 'unknown error'));
+                return;
+            }
+            setTimeout(loadSession, 500);
+        })
+        .catch(err => {
+            endBtn.disabled = false;
+            alert('End failed: ' + err.message);
+        });
+}
+
+function loadTranscript(stage, active) {
+    const params = new URLSearchParams({
+        step_id: stage.step_id,
+        attempt_no: stage.attempt_no || 1,
+        kind: 'agent',
+        mode: 'tail',
+    });
+    params.set('render', 'raw');
+    const box = document.getElementById('session-transcript');
+    const sizeEl = document.getElementById('log-size');
+    const noteEl = document.getElementById('log-note');
+
+    fetch('/api/runs/' + window.BB_RUN_ID + '/logs?' + params.toString(),
+          { headers: authHeaders() })
+        .then(r => {
+            // No RunLog row yet — the launch hasn't happened (or the log
+            // isn't registered). Waiting, not an error.
+            if (r.status === 404) return { missing: true };
+            if (!r.ok) {
+                return r.text().then(t => {
+                    let msg = r.statusText;
+                    try { msg = JSON.parse(t).detail || msg; } catch (e) { /* not JSON */ }
+                    throw new Error(msg);
+                });
+            }
+            return r.json();
+        })
+        .then(d => {
+            if (d.missing || d.pending) {
+                sizeEl.textContent = 'waiting…';
+                noteEl.style.display = 'none';
+                if (!transcriptOk && !lastTranscriptHtml) {
+                    box.innerHTML = '<div class="log-plain">(waiting for the agent to start — '
+                        + 'the log uploads every ~5 s while it works)</div>';
+                }
+                return;
+            }
+            transcriptOk = true;
+            sizeEl.textContent = (d.size || 0) > 0 ? '~' + d.size + ' bytes (tail)' : 'empty';
+            if (d.truncated_render) {
+                noteEl.style.display = '';
+                noteEl.textContent = 'Showing only the most recent portion of the transcript (raw view).';
+            } else {
+                noteEl.style.display = 'none';
+            }
+            const html = window.BB_AGENT_EVENTS.render(d.text || '');
+            if (html !== lastTranscriptHtml) {
+                // Stick to the bottom when the user is already there; a
+                // reader who scrolled up keeps their place.
+                const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+                lastTranscriptHtml = html;
+                box.innerHTML = html;
+                if (stick || !active) box.scrollTop = box.scrollHeight;
+            }
+        })
+        .catch(err => {
+            sizeEl.textContent = '';
+            noteEl.style.display = 'none';
+            if (!transcriptOk) {
+                box.innerHTML = '<div class="log-plain" style="color:#f85149;">'
+                    + esc(err.message) + '</div>';
+            }
+        });
+}
+
+function stopSession() {
+    if (!confirm('Stop this session? The engine cancels the run and stops the container.')) return;
+    fetch('/api/runs/' + window.BB_RUN_ID + '/cancel', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()) })
+        .then(r => {
+            if (!r.ok && r.status !== 404) {
+                return r.text().then(t => {
+                    let msg = r.statusText;
+                    try { msg = JSON.parse(t).detail || msg; } catch (e) { /* not JSON */ }
+                    throw new Error(msg);
+                });
+            }
+            loadSession();
+        })
+        .catch(err => alert('Cancel failed: ' + err.message));
+}
+</script>
+{% endblock %}

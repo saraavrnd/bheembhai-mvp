@@ -8,6 +8,9 @@ from bheembhai.log_keys import (
     log_key,
     progress_key,
     result_key,
+    session_transcript_key,
+    turn_inbox_key,
+    turn_outbox_key,
 )
 
 
@@ -77,3 +80,39 @@ def test_log_key_rejects_unknown_kind():
 
 def test_kinds_cover_canonical_files():
     assert KINDS == ("agent", "container", "diagnostics")
+
+
+# ── Session turn channels (ADR-016) ─────────────────────────────────────
+
+def test_turn_inbox_key_is_canonical():
+    assert turn_inbox_key("r1", "adhoc", 1) == "turns/r1/adhoc/1/inbox.json"
+
+
+def test_turn_outbox_key_is_canonical():
+    assert turn_outbox_key("r1", "adhoc", 1) == "turns/r1/adhoc/1/outbox.json"
+
+
+def test_turn_keys_share_the_slug_rules():
+    """The turns/ namespace uses the same slug sanitizer — a rebuilt Handle
+    derives the same keys, and odd ids can never escape the attempt dir."""
+    assert turn_inbox_key("r1", "../../etc/passwd", 2) == \
+        "turns/r1/etc-passwd/2/inbox.json"
+    assert turn_outbox_key("r1", "", 1) == "turns/r1/step/1/outbox.json"
+
+
+def test_turn_keys_are_attempt_scoped_not_turn_scoped():
+    """One stable key per container incarnation: the engine overwrites the
+    inbox per turn and the outbox matches on `seq` inside the payload —
+    turn number never appears in the key."""
+    assert turn_inbox_key("r1", "adhoc", 3) == turn_inbox_key("r1", "adhoc", 3)
+    assert "seq" not in turn_inbox_key("r1", "adhoc", 3)
+
+
+def test_session_transcript_key_is_session_scoped():
+    """Session-scoped, NOT attempt-scoped: the transcript must survive
+    incarnations so a cold-start container can restore it and --resume
+    (ADR-016 §3). One engine-minted id per run — the run id alone scopes it,
+    and the filename mirrors the CLI's on-disk name (<session-id>.jsonl)."""
+    assert session_transcript_key("r1", "11111111-2222-3333-4444-555555555555") == \
+        "transcripts/r1/11111111-2222-3333-4444-555555555555.jsonl"
+    assert session_transcript_key("r1", "abc-123").endswith("/abc-123.jsonl")

@@ -33,9 +33,9 @@ def ri(iid, rtype, label, config, credential="sec-ret", ref="ref-1"):
 
 
 def make_ctx(*, vendor_type="claude", vendor_config=None, jira_config=None,
-             git_config=None, env_vars=None):
+             git_config=None, env_vars=None, run_kind="workflow"):
     run = SimpleNamespace(id=uuid.UUID("12345678-1234-1234-1234-123456789abc"),
-                          story_id="LNPRTL-101")
+                          story_id="LNPRTL-101", run_kind=run_kind)
     wf = WorkflowSpec.load_yaml(WF_YAML)
     pol = PolicySpec.load_yaml(POLICY_YAML)
     github = ri("gh-1", "github", "GitHub", git_config or {
@@ -106,6 +106,13 @@ def test_model_group():
     env = bundle()
     assert env["BB_MODEL"] == "model-A"
     assert env["BB_ALLOWED_MODELS"] == "model-A,model-B,model-C"
+
+
+def test_bb_mode_defaults_to_workflow_and_adhoc_switches():
+    """ADR-016: the runner keys its prompt contract off BB_MODE — workflow
+    steps keep the skill-vocabulary prompt, ad-hoc runs use the user query."""
+    assert bundle()["BB_MODE"] == "workflow"
+    assert bundle(run_kind="adhoc")["BB_MODE"] == "adhoc"
 
 
 def test_claude_vendor_uses_anthropic_api_key():
